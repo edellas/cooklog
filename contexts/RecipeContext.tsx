@@ -1,16 +1,20 @@
+import { mockRecipes } from '@/data/mockRecipes';
 import { buildSimulatedPhotoRecipe } from '@/data/simulatedPhotoRecipe';
 import type { Recipe, RecipeCategory } from '@/types/cooklog';
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { mockRecipes } from '@/data/mockRecipes';
+const RECIPES_STORAGE_KEY = 'cooklog.recipes.v1';
 
 type RecipeContextValue = {
   recipes: Recipe[];
-  addRecipe: (recipe: Recipe) => void;
-  updateRecipe: (id: string, patch: Partial<Recipe>) => void;
-  replaceRecipe: (recipe: Recipe) => void;
-  deleteRecipe: (id: string) => void;
-  toggleFavorite: (id: string) => void;
+  isLoading: boolean;
+  error: string | null;
+  loadRecipes: () => Promise<void>;
+  createRecipe: (recipe: Recipe) => Promise<void>;
+  updateRecipe: (id: string, patch: Partial<Recipe>) => Promise<void>;
+  deleteRecipe: (id: string) => Promise<void>;
+  toggleFavorite: (id: string) => Promise<void>;
   simulateRecipeFromPhoto: (dishName?: string, notes?: string) => Recipe;
   getRecipeById: (id: string) => Recipe | undefined;
 };
@@ -18,34 +22,104 @@ type RecipeContextValue = {
 const RecipeContext = createContext<RecipeContextValue | null>(null);
 
 export function RecipeProvider({ children }: { children: React.ReactNode }) {
-  const [recipes, setRecipes] = useState<Recipe[]>(() => [...mockRecipes]);
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const addRecipe = useCallback((recipe: Recipe) => {
-    setRecipes((prev) => [recipe, ...prev]);
+  const persistRecipes = useCallback(async (nextRecipes: Recipe[]) => {
+    try {
+      await AsyncStorage.setItem(RECIPES_STORAGE_KEY, JSON.stringify(nextRecipes));
+    } catch (err) {
+      console.error('Errore salvataggio ricette', err);
+      setError('Non sono riuscito a salvare le ricette in locale.');
+    }
   }, []);
 
-  const updateRecipe = useCallback((id: string, patch: Partial<Recipe>) => {
-    const updatedAt = new Date().toISOString();
-    setRecipes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, ...patch, updatedAt } : r)),
-    );
+  const loadRecipes = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const raw = await AsyncStorage.getItem(RECIPES_STORAGE_KEY);
+      if (!raw) {
+        const seeded = [...mockRecipes];
+        setRecipes(seeded);
+        await AsyncStorage.setItem(RECIPES_STORAGE_KEY, JSON.stringify(seeded));
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as Recipe[];
+      if (!Array.isArray(parsed)) {
+        throw new Error('Formato storage non valido');
+      }
+      setRecipes(parsed);
+    } catch (err) {
+      console.error('Errore caricamento ricette', err);
+      setError('Non sono riuscito a caricare le ricette salvate.');
+      setRecipes([...mockRecipes]);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
-  const replaceRecipe = useCallback((recipe: Recipe) => {
-    const updatedAt = new Date().toISOString();
-    setRecipes((prev) => prev.map((r) => (r.id === recipe.id ? { ...recipe, updatedAt } : r)));
-  }, []);
+  useEffect(() => {
+    void loadRecipes();
+  }, [loadRecipes]);
 
-  const deleteRecipe = useCallback((id: string) => {
-    setRecipes((prev) => prev.filter((r) => r.id !== id));
-  }, []);
+  const createRecipe = useCallback(
+    async (recipe: Recipe) => {
+      setError(null);
+      let nextRecipes: Recipe[] = [];
+      setRecipes((prev) => {
+        nextRecipes = [recipe, ...prev];
+        return nextRecipes;
+      });
+      await persistRecipes(nextRecipes);
+    },
+    [persistRecipes],
+  );
 
-  const toggleFavorite = useCallback((id: string) => {
-    const updatedAt = new Date().toISOString();
-    setRecipes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, isFavorite: !r.isFavorite, updatedAt } : r)),
-    );
-  }, []);
+  const updateRecipe = useCallback(
+    async (id: string, patch: Partial<Recipe>) => {
+      setError(null);
+      const updatedAt = new Date().toISOString();
+      let nextRecipes: Recipe[] = [];
+      setRecipes((prev) => {
+        nextRecipes = prev.map((r) => (r.id === id ? { ...r, ...patch, updatedAt } : r));
+        return nextRecipes;
+      });
+      await persistRecipes(nextRecipes);
+    },
+    [persistRecipes],
+  );
+
+  const deleteRecipe = useCallback(
+    async (id: string) => {
+      setError(null);
+      let nextRecipes: Recipe[] = [];
+      setRecipes((prev) => {
+        nextRecipes = prev.filter((r) => r.id !== id);
+        return nextRecipes;
+      });
+      await persistRecipes(nextRecipes);
+    },
+    [persistRecipes],
+  );
+
+  const toggleFavorite = useCallback(
+    async (id: string) => {
+      setError(null);
+      const updatedAt = new Date().toISOString();
+      let nextRecipes: Recipe[] = [];
+      setRecipes((prev) => {
+        nextRecipes = prev.map((r) =>
+          r.id === id ? { ...r, isFavorite: !r.isFavorite, updatedAt } : r,
+        );
+        return nextRecipes;
+      });
+      await persistRecipes(nextRecipes);
+    },
+    [persistRecipes],
+  );
 
   const simulateRecipeFromPhoto = useCallback((dishName?: string, notes?: string) => {
     return buildSimulatedPhotoRecipe(dishName, notes);
@@ -59,9 +133,11 @@ export function RecipeProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       recipes,
-      addRecipe,
+      isLoading,
+      error,
+      loadRecipes,
+      createRecipe,
       updateRecipe,
-      replaceRecipe,
       deleteRecipe,
       toggleFavorite,
       simulateRecipeFromPhoto,
@@ -69,9 +145,11 @@ export function RecipeProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       recipes,
-      addRecipe,
+      isLoading,
+      error,
+      loadRecipes,
+      createRecipe,
       updateRecipe,
-      replaceRecipe,
       deleteRecipe,
       toggleFavorite,
       simulateRecipeFromPhoto,

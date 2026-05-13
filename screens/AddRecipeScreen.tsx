@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export function AddRecipeScreen() {
   const router = useRouter();
-  const { addRecipe, simulateRecipeFromPhoto } = useRecipes();
+  const { createRecipe, simulateRecipeFromPhoto } = useRecipes();
   const insets = useSafeAreaInsets();
   const [dishName, setDishName] = useState('');
   const [notes, setNotes] = useState('');
@@ -26,10 +26,15 @@ export function AddRecipeScreen() {
   const onSimulate = () => {
     setBusy(true);
     setTimeout(() => {
-      const recipe = simulateRecipeFromPhoto(dishName, notes);
-      addRecipe(recipe);
-      setBusy(false);
-      router.replace(hrefRecipeDetail(recipe.id));
+      void (async () => {
+        try {
+          const recipe = simulateRecipeFromPhoto(dishName, notes);
+          await createRecipe(recipe);
+          router.replace(hrefRecipeDetail(recipe.id));
+        } finally {
+          setBusy(false);
+        }
+      })();
     }, 1400);
   };
 

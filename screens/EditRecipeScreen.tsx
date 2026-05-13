@@ -49,7 +49,7 @@ export function EditRecipeScreen({ mode }: Props) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id?: string }>();
-  const { getRecipeById, addRecipe, replaceRecipe, deleteRecipe } = useRecipes();
+  const { getRecipeById, createRecipe, updateRecipe, deleteRecipe } = useRecipes();
 
   const [draft, setDraft] = useState<Recipe>(() => emptyRecipe());
 
@@ -125,7 +125,7 @@ export function EditRecipeScreen({ mode }: Props) {
     });
   };
 
-  const onSave = () => {
+  const onSave = async () => {
     if (!draft.title.trim()) {
       Alert.alert('Titolo mancante', 'Inserisci un titolo per salvare la ricetta.');
       return;
@@ -151,10 +151,10 @@ export function EditRecipeScreen({ mode }: Props) {
       createdAt: mode === 'create' ? now : draft.createdAt,
     };
     if (mode === 'create') {
-      addRecipe(toSave);
+      await createRecipe(toSave);
       router.replace(hrefRecipeDetail(toSave.id));
     } else {
-      replaceRecipe(toSave);
+      await updateRecipe(toSave.id, toSave);
       router.back();
     }
   };
@@ -167,8 +167,10 @@ export function EditRecipeScreen({ mode }: Props) {
         text: 'Elimina',
         style: 'destructive',
         onPress: () => {
-          deleteRecipe(id);
-          router.replace('/(tabs)');
+          void (async () => {
+            await deleteRecipe(id);
+            router.replace('/(tabs)');
+          })();
         },
       },
     ]);

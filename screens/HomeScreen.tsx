@@ -8,7 +8,7 @@ import type { RecipeListFilter } from '@/types/cooklog';
 import { hrefRecipeDetail } from '@/lib/cooklogHref';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 function matchesFilter(
   filter: RecipeListFilter,
@@ -21,7 +21,7 @@ function matchesFilter(
 
 export function HomeScreen() {
   const router = useRouter();
-  const { recipes } = useRecipes();
+  const { recipes, isLoading, error, loadRecipes } = useRecipes();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<RecipeListFilter>('Tutte');
 
@@ -49,6 +49,20 @@ export function HomeScreen() {
       </View>
 
       <View style={styles.list}>
+        {isLoading ? (
+          <View style={styles.centerBox}>
+            <ActivityIndicator color={CooklogColors.primary} />
+            <Text style={styles.info}>Caricamento ricette salvate...</Text>
+          </View>
+        ) : null}
+        {error ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{error}</Text>
+            <Pressable onPress={() => void loadRecipes()} style={styles.retryBtn}>
+              <Text style={styles.retryText}>Riprova</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <Text style={styles.sectionTitle}>
           {filtered.length === 1 ? '1 ricetta' : `${filtered.length} ricette`}
         </Text>
@@ -102,5 +116,40 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: CooklogColors.textSubtle,
     fontSize: 15,
+  },
+  centerBox: {
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  info: {
+    color: CooklogColors.textMuted,
+    fontSize: 14,
+  },
+  errorBox: {
+    borderWidth: 1,
+    borderColor: CooklogColors.danger,
+    backgroundColor: CooklogColors.surface,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+  errorText: {
+    color: CooklogColors.danger,
+    fontSize: 14,
+  },
+  retryBtn: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: CooklogColors.danger,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  retryText: {
+    color: CooklogColors.danger,
+    fontWeight: '600',
+    fontSize: 13,
   },
 });
