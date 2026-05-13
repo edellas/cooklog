@@ -25,6 +25,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="search"
+        options={{
+          title: 'Cerca',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="magnifyingglass" color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="add"
         options={{
           title: 'Aggiungi',

@@ -1,5 +1,5 @@
-import { ProfileScreen } from '@/screens/ProfileScreen';
+import { ProfileSocialScreen } from '@/src/screens/ProfileSocialScreen';
 
 export default function ProfileRoute() {
-  return <ProfileScreen />;
+  return <ProfileSocialScreen />;
 }

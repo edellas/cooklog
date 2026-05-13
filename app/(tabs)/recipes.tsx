@@ -1,5 +1,5 @@
-import { RecipesTabScreen } from '@/screens/RecipesTabScreen';
+import { RecipesScreen } from '@/src/screens/RecipesScreen';
 
 export default function RecipesRoute() {
-  return <RecipesTabScreen />;
+  return <RecipesScreen />;
 }

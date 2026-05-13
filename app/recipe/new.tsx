@@ -1,9 +1,9 @@
-import { EditRecipeScreen } from '@/screens/EditRecipeScreen';
+import { AddPostScreen } from '@/src/screens/AddPostScreen';
 
 export const options = {
-  title: 'Nuova ricetta',
+  title: 'Nuovo contenuto',
 };
 
 export default function NewRecipeRoute() {
-  return <EditRecipeScreen mode="create" />;
+  return <AddPostScreen />;
 }

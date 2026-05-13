@@ -1,9 +1,9 @@
-import { EditRecipeScreen } from '@/screens/EditRecipeScreen';
+import { EditRecipeSocialScreen } from '@/src/screens/EditRecipeSocialScreen';
 
 export const options = {
   title: 'Modifica ricetta',
 };
 
 export default function EditRecipeRoute() {
-  return <EditRecipeScreen mode="edit" />;
+  return <EditRecipeSocialScreen />;
 }

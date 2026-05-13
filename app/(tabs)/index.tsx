@@ -1,5 +1,5 @@
-import { HomeScreen } from '@/screens/HomeScreen';
+import { FeedScreen } from '@/src/screens/FeedScreen';
 
 export default function HomeRoute() {
-  return <HomeScreen />;
+  return <FeedScreen />;
 }
