@@ -1,0 +1,8 @@
+node_modules/
+dist/
+public/models/
+.dev.vars
+.wrangler/
+tests/e2e/out/
+tests/e2e/fixtures/*.jpg
+tests/e2e/fixtures/*.png

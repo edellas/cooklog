@@ -1,0 +1,21 @@
+{
+  "name": "idphoto",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Passport / ID photo maker that runs entirely in the browser. Static site + 2 serverless functions for payments.",
+  "scripts": {
+    "fetch-models": "node scripts/fetch-models.mjs",
+    "build": "node scripts/fetch-models.mjs && node scripts/build.mjs",
+    "serve": "node scripts/serve.mjs",
+    "dev": "node scripts/build.mjs && node scripts/serve.mjs",
+    "test": "node --test tests/unit/",
+    "e2e": "node tests/e2e/run.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1"
+  }
+}

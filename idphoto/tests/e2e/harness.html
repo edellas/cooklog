@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>harness</title>
+<style>body{background:#888;margin:0;font:12px sans-serif} canvas,img{display:block;margin:4px;max-width:100%} .row{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}</style>
+</head><body><div class="row" id="out"></div>
+<script type="module">
+import { loadModels, decodeImage, analyze } from '/app/engine.js';
+import { buildLayer, renderPhoto, renderSheet, renderDigital, toJpeg } from '/app/render.js';
+import { getSpec } from '/app/specs.js';
+import { digitalSize } from '/app/geometry.js';
+const q = new URLSearchParams(location.search);
+const t0 = performance.now();
+const models = await loadModels('/');
+const tModels = performance.now() - t0;
+const blob = await (await fetch(q.get('img'))).blob();
+const src = await decodeImage(blob);
+const t1 = performance.now();
+const a = await analyze(src, models);
+const tAnalyze = performance.now() - t1;
+if (!a.faces) { window.__result = { faces: 0 }; document.title = 'done'; throw new Error('no face'); }
+const spec = getSpec(q.get('spec') || 'it-cie');
+const bg = q.get('keep') ? '#ffffff' : spec.bg;
+const layer = buildLayer(a, { keepBackground: !!q.get('keep') });
+const out = document.getElementById('out');
+const { canvas, placement } = renderDigital(a, layer, spec, {}, bg);
+out.append(canvas);
+const sheet = renderSheet(a, layer, spec, {}, bg, '10x15');
+sheet.canvas.style.width = '400px';
+out.append(sheet.canvas);
+const jpg = await toJpeg(canvas, { maxKB: spec.digital?.maxKB || 2000 });
+const work = a.work; work.style.width='300px'; out.append(work);
+const al = a.alpha; al.style.width='300px'; al.style.background='#000'; out.append(al);
+window.__result = { tModels, tAnalyze, faces: a.faces, rollDeg: a.rollDeg, yaw: a.yaw, blend: Object.fromEntries(Object.entries(a.blend).filter(([k,v])=>/Blink|jawOpen|Smile/.test(k))), face: a.face, measures: placement.measures, headPx: a.headPx, quality: a.quality, crownClipped: a.crownClipped, jpgKB: jpg.size/1024, sheet: {count: sheet.layout.count, w: sheet.canvas.width, h: sheet.canvas.height}, digital: digitalSize(spec) };
+document.title = 'done';
+</script></body></html>
