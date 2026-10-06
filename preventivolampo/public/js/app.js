@@ -28,7 +28,11 @@ import {
   verificaImpronta,
   voceDaConferma,
   urlSicuro,
+  creaLinkRichiesta,
+  leggiAvviso,
 } from "./link.js";
+import * as inc from "./incassi.js";
+import { svgQr } from "./qr.js";
 
 // ------------------------------------------------------------------
 // Stato
@@ -50,6 +54,10 @@ const AZIENDA_DEFAULT = {
   iban: "",
   intestatarioIban: "",
   linkPagamento: "",
+  tipoAnticipo: "acconto", // "caparra" = caparra confirmatoria (art. 1385 c.c.)
+  giorniSaldo: 30, // giorni dalla fine lavori per pagare il saldo
+  tassoMora: "", // tasso annuo per gli interessi di mora (facoltativo)
+  linkRecensioni: "",
   regime: "ordinario",
   ivaDefault: 22,
   addebitaBollo: true,
@@ -117,6 +125,31 @@ function totaliDi(prev) {
     addebitaBollo: prev.addebitaBollo ?? state.azienda.addebitaBollo,
     ivaDefault: state.azienda.ivaDefault,
   });
+}
+
+// ------------------------------------------------------------------
+// Incassi (vedi incassi.js): pagamenti, scadenze, solleciti
+// ------------------------------------------------------------------
+const opzioniIncasso = () => ({ oggi: core.oggiISO(), giorniSaldo: Number(state.azienda.giorniSaldo) || 0 });
+const incassoDi = (prev) => inc.statoIncasso(prev, totaliDi(prev), opzioniIncasso());
+const nomeAnticipo = (prev) => (prev.caparra ? "Caparra" : "Acconto");
+const waLink = (tel, testo) => `https://wa.me/${core.telefonoWhatsApp(tel)}?text=${encodeURIComponent(testo)}`;
+const nomeFile = (prefisso, prev, estensione) =>
+  `${prefisso}-${String(prev.numero).replace(/[^\w-]+/g, "-")}.${estensione}`;
+
+function incassoModificabile(prev) {
+  prev.incasso = inc.normalizzaIncasso(prev.incasso);
+  return prev.incasso;
+}
+
+function mostraIncassi(prev) {
+  const i = inc.normalizzaIncasso(prev.incasso);
+  return prev.stato === "accettato" || i.pagamenti.length > 0 || i.segnalazioni.some((x) => x.stato === "attesa");
+}
+
+function giornoMese(iso) {
+  const d = new Date(iso + "T12:00:00");
+  return { giorno: d.getDate(), mese: d.toLocaleDateString("it-IT", { month: "short" }).replace(".", "") };
 }
 
 function ivaRiga(prev) {
@@ -265,7 +298,7 @@ function render() {
   return codaRender;
 }
 
-const PAGINE_SENZA_ONBOARDING = new Set(["benvenuto", "pro", "accettazione"]);
+const PAGINE_SENZA_ONBOARDING = new Set(["benvenuto", "pro", "accettazione", "pagamento"]);
 
 async function eseguiRender() {
   clearTimeout(timerSalva);
@@ -282,7 +315,7 @@ async function eseguiRender() {
     return;
   }
   state.corrente = null;
-  const senzaTab = pagina === "p" || pagina === "benvenuto" || pagina === "accettazione" || pagina === "pro";
+  const senzaTab = ["p", "benvenuto", "accettazione", "pagamento", "pro"].includes(pagina);
   document.body.classList.toggle("no-tabbar", senzaTab);
   $$(".tabbar a.tab").forEach((a) => a.classList.toggle("on", a.dataset.tab === (pagina || "lista")));
 
@@ -290,13 +323,14 @@ async function eseguiRender() {
     window.scrollTo(0, 0);
     if (pagina === "") return viewLista();
     if (pagina === "nuovo") return nuovoPreventivo(q);
-    if (pagina === "p") return viewEditor(parti[1]);
+    if (pagina === "p") return viewEditor(parti[1], q);
     if (pagina === "clienti") return viewClienti();
     if (pagina === "listino") return viewListino();
     if (pagina === "impostazioni") return viewImpostazioni();
     if (pagina === "pro") return viewPro(q);
     if (pagina === "benvenuto") return viewBenvenuto();
     if (pagina === "accettazione") return viewAccettazione(q);
+    if (pagina === "pagamento") return viewAvviso(q);
     vai("#/");
   });
 }
@@ -361,6 +395,80 @@ function htmlRicontatti() {
         <div class="corpo"><div class="t">${esc(core.nomeCliente(x.prev.cliente))} · ${esc(euroCorto(totaliDi(x.prev).totale))}</div>
           <div class="s">Inviato ${x.giorniDaInvio === 1 ? "ieri" : `${x.giorniDaInvio} giorni fa`}${x.scadenza ? ` · scade il ${esc(core.formatData(x.scadenza))}` : ""}</div></div>
         <button class="btn wa small" data-action="ricontatta" data-id="${esc(x.prev.id)}">${ICONE.whatsapp} Scrivi</button>
+      </div>`,
+      )
+      .join("")}
+  </section>`;
+}
+
+function descriviIncasso(prev, s) {
+  if (s.segnalazioniAttesa.length) return `Dice di aver pagato ${core.formatEuro(s.daVerificare)}: da verificare`;
+  if (s.fase === "scaduto")
+    return `${core.formatEuro(s.importoScaduto)} scaduti da ${s.giorniRitardo} ${s.giorniRitardo === 1 ? "giorno" : "giorni"}`;
+  if (s.fase === "attesa-acconto")
+    return `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} entro il ${core.formatData(s.scadenzaAcconto)}`;
+  if (s.fase === "da-saldare") return `Saldo entro il ${core.formatData(s.scadenzaSaldo)}`;
+  return "Lavori in corso · saldo a fine lavori";
+}
+
+function htmlDaIncassare() {
+  const r = inc.daIncassare(state.preventivi, totaliDi, opzioniIncasso());
+  if (!r.voci.length) return "";
+  return `<section class="card" id="da-incassare">
+    <div class="sezione-titolo"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.euro}</span>
+      <div><h2>Da incassare <span class="tnum">${esc(euroCorto(r.totale))}</span></h2>
+      <div class="muted xsmall">${r.nScaduti ? `<b class="testo-bad">${esc(euroCorto(r.scaduto))} scaduti</b> · ` : ""}${r.voci.length} ${r.voci.length === 1 ? "lavoro" : "lavori"} da pagare${r.daVerificare ? ` · ${esc(euroCorto(r.daVerificare))} da verificare` : ""}</div></div></div>
+    ${r.voci
+      .slice(0, 4)
+      .map(
+        ({ prev, stato }) => `<a class="ricontatto" href="#/p/${esc(prev.id)}?sez=incassi">
+        ${avatar(core.nomeCliente(prev.cliente), "small")}
+        <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))} · ${esc(euroCorto(stato.residuo))}</div>
+          <div class="s">${esc(descriviIncasso(prev, stato))}</div></div>
+        <span class="badge ${esc(stato.fase)}">${esc(inc.FASI[stato.fase])}</span>
+      </a>`,
+      )
+      .join("")}
+    ${r.voci.length > 4 ? `<div class="muted xsmall" style="margin-top:8px;text-align:center">e altri ${r.voci.length - 4}</div>` : ""}
+  </section>`;
+}
+
+function htmlAgenda() {
+  const lista = inc.prossimiLavori(state.preventivi, { oggi: core.oggiISO(), giorni: 21 }).slice(0, 4);
+  if (!lista.length) return "";
+  return `<section class="card">
+    <div class="sezione-titolo"><span class="ico">${ICONE.orologio}</span><div><h2>Prossimi lavori</h2><div class="muted xsmall">Date concordate con i clienti</div></div></div>
+    ${lista
+      .map(({ prev, app: a }) => {
+        const { giorno, mese } = giornoMese(a.data);
+        return `<a class="ricontatto" href="#/p/${esc(prev.id)}">
+        <span class="data-tile" aria-hidden="true"><b>${giorno}</b><small>${esc(mese)}</small></span>
+        <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))}</div>
+          <div class="s">${esc(inc.testoAppuntamento(a))}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div>
+        ${a.da === "cliente" ? `<span class="badge inviato nodot">Scelta dal cliente</span>` : ""}
+      </a>`;
+      })
+      .join("")}
+  </section>`;
+}
+
+function htmlRecensioni() {
+  const lista = inc.daRecensire(state.preventivi, totaliDi, { oggi: core.oggiISO() }).slice(0, 3);
+  if (!lista.length) return "";
+  const link = urlSicuro(state.azienda.linkRecensioni);
+  return `<section class="card">
+    <div class="sezione-titolo"><span class="ico" style="background:var(--warn-soft);color:var(--warn)">${ICONE.stella}</span>
+      <div><h2>Chiedi una recensione</h2><div class="muted xsmall">Lavori appena pagati: il cliente è contento, è il momento giusto</div></div></div>
+    ${lista
+      .map(
+        ({ prev }) => `<div class="ricontatto">
+        ${avatar(core.nomeCliente(prev.cliente), "small")}
+        <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))}</div><div class="s">${esc(prev.oggetto || "Lavoro pagato")}</div></div>
+        ${
+          link
+            ? `<a class="btn wa small" href="${esc(waLink(prev.cliente.telefono, inc.messaggioRecensione(prev, state.azienda, link)))}" target="_blank" rel="noopener" data-action="recensione-chiesta" data-id="${esc(prev.id)}">${ICONE.whatsapp} Chiedi</a>`
+            : `<a class="btn small" href="#/impostazioni">Imposta link</a>`
+        }
       </div>`,
       )
       .join("")}
@@ -434,7 +542,10 @@ function viewLista() {
     <main class="pagina">
       ${bannerInstalla}
       ${state.preventivi.length ? htmlHero() : ""}
+      ${htmlDaIncassare()}
+      ${htmlAgenda()}
       ${htmlRicontatti()}
+      ${htmlRecensioni()}
       ${htmlPiano()}
       ${
         state.preventivi.length
@@ -559,7 +670,7 @@ function htmlFoto(prev) {
     </div>`;
 }
 
-function viewEditor(id) {
+function viewEditor(id, q = new URLSearchParams()) {
   const prev = state.preventivi.find((p) => p.id === id);
   if (!prev) {
     toast("Preventivo non trovato");
@@ -586,6 +697,7 @@ function viewEditor(id) {
     </header>
     <main class="pagina">
       ${prev.accettazioneOnline ? `<div class="banner ok"><span class="ico">✅</span><div><b>Accettato online</b> da ${esc(prev.firma?.nome || "il cliente")}${prev.accettazioneOnline.facoltativeAggiunte?.length ? ` · aggiunte: ${esc(prev.accettazioneOnline.facoltativeAggiunte.join(", "))}` : ""}</div></div>` : ""}
+      <section class="card stack" id="sezione-incassi" ${mostraIncassi(prev) ? "" : "hidden"}>${mostraIncassi(prev) ? htmlIncassi(prev) : ""}</section>
       <section class="card stack">
         <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.utente}</span><h2>Cliente</h2></div>
         <input data-campo="cliente.nome" list="lista-clienti" autocomplete="off" placeholder="Nome e cognome o ragione sociale" value="${esc(c.nome)}" aria-label="Nome cliente">
@@ -609,6 +721,8 @@ function viewEditor(id) {
         <div class="con-mic"><input data-campo="oggetto" placeholder="Oggetto, es. Rifacimento bagno" value="${esc(prev.oggetto)}" aria-label="Oggetto">${micBtn("oggetto")}</div>
         <input data-campo="luogo" placeholder="Indirizzo del cantiere (se diverso)" value="${esc(prev.luogo)}" aria-label="Luogo dell'intervento">
       </section>
+
+      <section class="card stack" id="sezione-date">${htmlDate(prev)}</section>
 
       <section class="card">
         <div class="sezione-titolo"><span class="ico">${ICONE.listino}</span><h2>Voci <span class="muted" id="n-righe">(${prev.righe.length})</span></h2></div>
@@ -637,6 +751,12 @@ function viewEditor(id) {
           </label>
           <label class="campo">Valore acconto<input data-campo="acconto.valore" inputmode="decimal" placeholder="0" value="${numIn(prev.acconto.valore, true)}"></label>
         </div>
+        <label class="campo">L'anticipo vale come
+          <select data-campo="caparra">
+            <option value="0" ${prev.caparra ? "" : "selected"}>Acconto (anticipo sul prezzo)</option>
+            <option value="1" ${prev.caparra ? "selected" : ""}>Caparra confirmatoria (art. 1385 c.c.)</option>
+          </select>
+        </label>
         <label class="campo">Tempi di esecuzione<input data-campo="tempi" placeholder="es. 3 giorni lavorativi dall'accettazione" value="${esc(prev.tempi)}"></label>
         <label class="campo">Modalità di pagamento<textarea data-campo="pagamento" rows="2">${esc(prev.pagamento)}</textarea></label>
         <label class="campo">Note e condizioni<textarea data-campo="note" rows="3">${esc(prev.note)}</textarea></label>
@@ -654,6 +774,393 @@ function viewEditor(id) {
   $$("textarea", app()).forEach(autoAltezza);
   collegaInputFoto();
   ombraTopbar();
+  if (q.get("sez") === "incassi") $("#sezione-incassi")?.scrollIntoView({ block: "start" });
+}
+
+// ------------------------------------------------------------------
+// Editor: incassi (pagamenti, scadenze, solleciti, QR, PDF di recupero)
+// ------------------------------------------------------------------
+function sottotitoloIncasso(prev, s) {
+  if (s.fase === "non-accettato") return "Segna il preventivo come accettato per seguire le scadenze";
+  if (s.fase === "pagato") return "Tutto incassato";
+  const p = s.prossima;
+  if (!p) return "";
+  if (p.tipo === "acconto")
+    return `${nomeAnticipo(prev)} ${core.formatEuro(p.importo)} entro il ${core.formatData(p.data)}`;
+  return p.data
+    ? `Saldo ${core.formatEuro(p.importo)} entro il ${core.formatData(p.data)}`
+    : `Saldo ${core.formatEuro(p.importo)}: scade ${s.giorniSaldo ? `${s.giorniSaldo} giorni dopo la` : "alla"} fine dei lavori`;
+}
+
+function htmlIncassi(prev) {
+  const s = incassoDi(prev);
+  const a = state.azienda;
+  const sug = inc.sollecitoSuggerito(s);
+  const recensioni = urlSicuro(a.linkRecensioni);
+  const scad = s.fase === "scaduto";
+  const giaSollecitato = s.solleciti.length > 0;
+  const pro = state.pro ? "" : ` <span class="badge pro">PRO</span>`;
+  return `<div class="sezione-titolo" style="margin:0"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.euro}</span>
+      <div><h2>Incassi</h2><div class="muted xsmall">${esc(sottotitoloIncasso(prev, s))}</div></div><span class="badge ${esc(s.fase)} dx">${esc(inc.FASI[s.fase])}</span></div>
+    <div class="inc-totali">
+      <div><div class="muted xsmall">Incassato</div><b class="tnum">${esc(core.formatEuro(s.incassato))}</b></div>
+      <div><div class="muted xsmall">Da incassare</div><b class="tnum ${scad ? "testo-bad" : ""}">${esc(core.formatEuro(s.residuo))}</b></div>
+    </div>
+    <div class="barra-limite" role="progressbar" aria-label="Quota incassata" aria-valuenow="${s.percentuale}" aria-valuemin="0" aria-valuemax="100"><i style="width:${s.percentuale}%"></i></div>
+    ${s.segnalazioniAttesa
+      .map(
+        (
+          x,
+        ) => `<div class="banner info"><span class="ico">🔔</span><div style="flex:1;min-width:0"><b>Il cliente dice di aver pagato ${esc(core.formatEuro(x.importo))}</b>
+        <div class="small">${esc(inc.METODI[x.metodo])}${x.data ? ` · ${esc(core.formatData(x.data))}` : ""}${x.nota ? ` · ${esc(x.nota)}` : ""}. Controlla sul conto prima di confermare.</div>
+        <div class="row wrap" style="margin-top:8px"><button class="btn small primary" data-action="segnalazione-ok" data-rif="${esc(x.rif)}" data-il="${x.il}">${ICONE.check} È arrivato</button><button class="btn small" data-action="segnalazione-no" data-rif="${esc(x.rif)}" data-il="${x.il}">Non è arrivato</button></div></div></div>`,
+      )
+      .join("")}
+    ${scad ? `<div class="banner bad"><span class="ico">⏰</span><div><b>${esc(core.formatEuro(s.importoScaduto))} scaduti</b> dal ${esc(core.formatData(s.scadutoDal))} (${s.giorniRitardo} ${s.giorniRitardo === 1 ? "giorno" : "giorni"}). Manda un sollecito: il primo è gentile, poi il tono sale.</div></div>` : ""}
+    ${s.fase === "attesa-acconto" ? `<div class="banner warn"><span class="ico">🛡️</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
+    <div class="grid2">
+      <button class="btn primary" data-action="registra-pagamento">${ICONE.piu} Pagamento</button>
+      <button class="btn" data-action="mostra-qr">${ICONE.euro} QR per pagare</button>
+    </div>
+    ${
+      s.pagamenti.length
+        ? `<div class="inc-lista">${s.pagamenti
+            .map(
+              (
+                x,
+              ) => `<div class="inc-riga"><div class="corpo"><b class="tnum">${esc(core.formatEuro(x.importo))}</b> <span class="muted small">${esc(inc.METODI[x.metodo])} · ${esc(core.formatData(x.data))}</span>${x.nota ? `<div class="muted xsmall">${esc(x.nota)}</div>` : ""}</div>
+              <button class="icon-btn" data-action="togli-pagamento" data-id="${esc(x.id)}" aria-label="Elimina pagamento di ${esc(core.formatEuro(x.importo))}">${ICONE.cestino}</button></div>`,
+            )
+            .join("")}</div>`
+        : ""
+    }
+    <div class="grid2">
+      <label class="campo">Fine lavori<input type="date" data-inc="fineLavori" value="${esc(s.fineLavori)}"></label>
+      <label class="campo">Saldo entro<select data-inc="giorniSaldo">${[0, 7, 15, 30, 60, 90]
+        .map(
+          (n) =>
+            `<option value="${n}" ${s.giorniSaldo === n ? "selected" : ""}>${n === 0 ? "fine lavori" : `${n} giorni`}</option>`,
+        )
+        .join("")}</select></label>
+    </div>
+    ${
+      s.residuo > 0.005 && s.fase !== "non-accettato"
+        ? `<div class="stack inc-recupero">
+      <button class="btn wa block" data-action="sollecito" data-livello="${scad || giaSollecitato ? sug.livello : 0}">${ICONE.whatsapp} ${scad || giaSollecitato ? `Sollecita: ${esc(inc.LIVELLI_SOLLECITO[sug.livello].toLowerCase())}` : "Chiedi il pagamento"}</button>
+      ${giaSollecitato ? `<div class="muted xsmall">Solleciti: ${s.solleciti.map((x) => `${esc(core.formatData(core.oggiISO(new Date(x.il))))} (${x.canale === "lettera" ? "lettera di messa in mora" : esc(inc.LIVELLI_SOLLECITO[x.livello].toLowerCase())})`).join(" · ")}</div>` : ""}
+      <div class="grid2">
+        <button class="btn small" data-action="pdf-diffida">${ICONE.documento} Messa in mora${pro}</button>
+        <button class="btn small" data-action="pdf-fascicolo">${ICONE.documento} Fascicolo${pro}</button>
+      </div>
+    </div>`
+        : ""
+    }
+    ${
+      s.fase === "pagato"
+        ? `<div class="banner ok"><span class="ico">🎉</span><div><b>Pagato tutto.</b>${s.eccedenza > 0 ? ` Hai registrato ${esc(core.formatEuro(s.eccedenza))} in più del totale: controlla i pagamenti.` : ""}</div></div>
+      ${
+        recensioni
+          ? `<a class="btn wa block" href="${esc(waLink(prev.cliente.telefono, inc.messaggioRecensione(prev, a, recensioni)))}" target="_blank" rel="noopener" data-action="recensione-chiesta" data-id="${esc(prev.id)}">${ICONE.stella} ${s.recensioneChiestaIl ? "Chiedi di nuovo la recensione" : "Chiedi una recensione su WhatsApp"}</a>`
+          : `<a class="btn ghost block" href="#/impostazioni">${ICONE.stella} Imposta il link per chiedere recensioni</a>`
+      }`
+        : ""
+    }`;
+}
+
+function aggiornaIncassi() {
+  const prev = state.corrente;
+  const el = $("#sezione-incassi");
+  if (!prev || !el) return;
+  const mostra = mostraIncassi(prev);
+  el.hidden = !mostra;
+  el.innerHTML = mostra ? htmlIncassi(prev) : "";
+}
+
+async function salvaIncasso(prev, messaggio, tipo = "ok") {
+  prev.incasso = inc.normalizzaIncasso(prev.incasso);
+  await salvaPreventivo(prev);
+  aggiornaIncassi();
+  if (messaggio) toast(messaggio, tipo);
+}
+
+function foglioPagamento() {
+  const prev = state.corrente;
+  const s = incassoDi(prev);
+  const proposta = s.prossima ? s.prossima.importo : 0;
+  const f = apriFoglio(
+    `${titoloFoglio("Registra un pagamento", `Da incassare ${esc(core.formatEuro(s.residuo))}`)}
+    <div class="stack">
+      <div class="grid2">
+        <label class="campo">Importo €<input id="pag-importo" inputmode="decimal" placeholder="0,00" value="${numIn(proposta, true)}"></label>
+        <label class="campo">Data<input id="pag-data" type="date" value="${core.oggiISO()}"></label>
+      </div>
+      ${
+        s.prossima && s.residuo > s.prossima.importo + 0.005
+          ? `<div class="row wrap"><button type="button" class="chip" data-action="pag-importo" data-v="${s.prossima.importo}">${esc(s.prossima.tipo === "acconto" ? nomeAnticipo(prev) : "Saldo")} ${esc(core.formatEuro(s.prossima.importo))}</button><button type="button" class="chip" data-action="pag-importo" data-v="${s.residuo}">Tutto ${esc(core.formatEuro(s.residuo))}</button></div>`
+          : ""
+      }
+      <label class="campo">Metodo<select id="pag-metodo">${Object.entries(inc.METODI)
+        .map(([k, v]) => `<option value="${k}">${esc(v)}</option>`)
+        .join("")}</select></label>
+      <input id="pag-nota" maxlength="300" placeholder="Nota facoltativa, es. CRO del bonifico" aria-label="Nota" data-no-focus="1">
+      <button class="btn primary big block" data-action="pag-salva">${ICONE.check} Registra</button>
+    </div>`,
+  );
+  azioni["pag-importo"] = (el) => ($("#pag-importo", f).value = numIn(Number(el.dataset.v)));
+  azioni["pag-salva"] = async () => {
+    const importo = inc.importoValido($("#pag-importo", f).value);
+    if (!(importo > 0)) return toast("Inserisci l'importo ricevuto");
+    const data = $("#pag-data", f).value;
+    const i = incassoModificabile(prev);
+    i.pagamenti.push({
+      id: core.uid(),
+      importo,
+      data: inc.dataValida(data) ? data : core.oggiISO(),
+      metodo: $("#pag-metodo", f).value,
+      nota: $("#pag-nota", f).value.trim(),
+    });
+    chiudiFoglio();
+    vibra(30);
+    traccia("Pagamento registrato");
+    await salvaIncasso(prev);
+    const dopo = incassoDi(prev);
+    toast(dopo.fase === "pagato" ? "Pagato tutto! 🎉" : `Registrato · restano ${core.formatEuro(dopo.residuo)}`, "ok");
+  };
+}
+
+async function confermaSegnalazione(rif, il, arrivato) {
+  const prev = state.corrente;
+  const i = incassoModificabile(prev);
+  const seg = i.segnalazioni.find((x) => x.rif === rif && x.il === il && x.stato === "attesa");
+  if (!seg) return;
+  seg.stato = arrivato ? "confermata" : "respinta";
+  if (arrivato && !(seg.rif && i.pagamenti.some((x) => x.rif === seg.rif))) {
+    i.pagamenti.push({
+      id: core.uid(),
+      importo: seg.importo,
+      data: seg.data || core.oggiISO(),
+      metodo: seg.metodo,
+      nota: ["Segnalato dal cliente", seg.nota].filter(Boolean).join(": "),
+      rif: seg.rif,
+    });
+  }
+  await salvaIncasso(prev, arrivato ? "Pagamento registrato" : "Segnato come non arrivato", arrivato ? "ok" : "");
+}
+
+// Importo e tipo da chiedere adesso: se è scaduto anche il saldo si chiede tutto il dovuto.
+function daChiedere(prev, s) {
+  const tipo = s.prossima ? s.prossima.tipo : "saldo";
+  const importo = s.importoScaduto > 0 ? s.importoScaduto : s.prossima ? s.prossima.importo : s.residuo;
+  const tipoRichiesta = tipo === "acconto" && importo > s.prossima.importo + 0.005 ? "residuo" : tipo;
+  return { importo, tipo: tipoRichiesta, causale: inc.causale(prev, tipoRichiesta) };
+}
+
+function foglioQr() {
+  const prev = state.corrente;
+  const a = state.azienda;
+  if (!inc.ibanValido(a.iban))
+    return toast(
+      a.iban ? "L'IBAN nelle impostazioni non è valido: controllalo" : "Inserisci il tuo IBAN nelle impostazioni",
+    );
+  const s = incassoDi(prev);
+  if (!(s.residuo > 0.005)) return toast("Non c'è nulla da incassare");
+  const { importo, causale } = daChiedere(prev, s);
+  const payload = inc.payloadEpc({ nome: a.intestatarioIban || a.ragioneSociale, iban: a.iban, importo, causale });
+  if (!payload) return toast("Controlla nome e IBAN nelle impostazioni");
+  apriFoglio(
+    `${titoloFoglio("Fai inquadrare il QR", `${esc(core.formatEuro(importo))} · ${esc(causale)}`)}
+    <div class="qr-grande">${svgQr(payload, { etichetta: `QR per pagare ${core.formatEuro(importo)} con bonifico` })}</div>
+    <p class="muted small" style="text-align:center;margin:12px 0">Il cliente lo inquadra con l'app della sua banca e il bonifico si compila da solo: importo, IBAN e causale. Funziona con le app che leggono i QR SEPA.</p>
+    <button class="btn primary big block" data-action="registra-pagamento">${ICONE.check} Ha pagato: registra</button>`,
+  );
+}
+
+async function foglioSollecito(livelloRichiesto) {
+  const prev = state.corrente;
+  const s = incassoDi(prev);
+  if (!(s.residuo > 0.005)) return toast("Non c'è nulla da incassare");
+  let livello = state.pro ? livelloRichiesto : Math.min(livelloRichiesto, 1);
+  const sug = inc.sollecitoSuggerito(s);
+  const richiesta = daChiedere(prev, s);
+  let link = "";
+  try {
+    link = (
+      await creaLinkRichiesta(BASE(), prev, state.azienda, {
+        ...richiesta,
+        scadenza: s.scadutoDal || s.prossima?.data || "",
+        totale: s.totale,
+        incassato: s.incassato,
+        pro: state.pro,
+      })
+    ).url;
+  } catch {
+    link = "";
+  }
+  const testo = (l) => inc.messaggioSollecito(prev, state.azienda, s, l, { link });
+  const email = prev.cliente.email || "";
+  const f = apriFoglio(
+    `${titoloFoglio(livello ? "Sollecita il pagamento" : "Chiedi il pagamento", `${esc(core.nomeCliente(prev.cliente))} · ${esc(core.formatEuro(richiesta.importo))}`)}
+    <div class="stack">
+      <div class="seg seg-pieno" role="group" aria-label="Tono del messaggio">${[0, 1, 2, 3]
+        .map(
+          (l) =>
+            `<button type="button" data-action="tono" data-l="${l}" class="${l === livello ? "on" : ""}" aria-pressed="${l === livello}">${esc(inc.TONI_MESSAGGIO[l])}${l >= 2 && !state.pro ? " ★" : ""}</button>`,
+        )
+        .join("")}</div>
+      ${sug.troppoPresto ? `<div class="banner warn"><span class="ico">⏳</span><div>Hai già sollecitato il ${esc(core.formatData(core.oggiISO(new Date(sug.ultimo))))}: di solito conviene aspettare una settimana tra un messaggio e l'altro.</div></div>` : ""}
+      <textarea id="sol-testo" rows="9" aria-label="Messaggio da inviare">${esc(testo(livello))}</textarea>
+      ${link ? `<p class="muted xsmall" style="margin:0">Il messaggio contiene un link dove il cliente trova importo, IBAN, QR del bonifico e il pulsante "Ho pagato".</p>` : ""}
+      <div class="lista-azioni">
+        <a href="#" id="sol-wa" target="_blank" rel="noopener" data-action="sol-inviato" data-canale="whatsapp"><span class="ico wa">${ICONE.whatsapp}</span><span class="corpo">Invia su WhatsApp<small>${esc(prev.cliente.telefono || "Scegli il contatto")}</small></span></a>
+        <button data-action="sol-copia"><span class="ico">${ICONE.copia}</span><span class="corpo">Copia il messaggio<small>Per SMS, Telegram...</small></span></button>
+        <a href="#" id="sol-mail" data-action="sol-inviato" data-canale="email"><span class="ico">${ICONE.mail}</span><span class="corpo">Email<small>${esc(email || "Scegli il destinatario")}</small></span></a>
+      </div>
+    </div>`,
+  );
+  const area = $("#sol-testo", f);
+  const aggiornaLink = () => {
+    $("#sol-wa", f).href = waLink(prev.cliente.telefono, area.value);
+    $("#sol-mail", f).href =
+      `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(`Pagamento preventivo n. ${prev.numero}`)}&body=${encodeURIComponent(area.value)}`;
+  };
+  aggiornaLink();
+  autoAltezza(area);
+  area.addEventListener("input", aggiornaLink);
+  azioni.tono = (el) => {
+    const l = Number(el.dataset.l);
+    if (l >= 2 && !state.pro) return paywall("crediti");
+    livello = l;
+    area.value = testo(l);
+    autoAltezza(area);
+    aggiornaLink();
+    $$("[data-action=tono]", f).forEach((b) => {
+      b.classList.toggle("on", Number(b.dataset.l) === l);
+      b.setAttribute("aria-pressed", String(Number(b.dataset.l) === l));
+    });
+  };
+  const registra = async (canale) => {
+    if (livello < 1) return;
+    incassoModificabile(prev).solleciti.push({ il: Date.now(), livello, canale });
+    await salvaIncasso(prev);
+    traccia("Sollecito", { livello, canale });
+  };
+  azioni["sol-inviato"] = (el) => {
+    registra(el.dataset.canale);
+    setTimeout(() => chiudiFoglio(), 300);
+  };
+  azioni["sol-copia"] = async () => {
+    toast((await copiaTesto(area.value)) ? "Messaggio copiato" : "Copia non riuscita");
+    registra("copia");
+  };
+}
+
+async function pdfDiffida() {
+  if (!state.pro) return paywall("crediti");
+  const prev = state.corrente;
+  const s = incassoDi(prev);
+  if (!(s.residuo > 0.005)) return toast("Non c'è nulla da incassare");
+  if (!core.nomeCliente(prev.cliente) || !prev.cliente.nome) return toast("Inserisci il nome del cliente");
+  try {
+    await caricaPdfLib();
+    const { creaDiffidaBlob } = await import("./pdf.js");
+    const blob = creaDiffidaBlob({
+      prev,
+      azienda: state.azienda,
+      totali: totaliDi(prev),
+      stato: s,
+      config: CONFIG,
+      tassoMora: state.azienda.tassoMora,
+    });
+    scaricaBlob(blob, nomeFile("Messa-in-mora", prev, "pdf"));
+  } catch (err) {
+    return toast(err.message || "Errore nella creazione del PDF");
+  }
+  incassoModificabile(prev).solleciti.push({ il: Date.now(), livello: 3, canale: "lettera" });
+  await salvaIncasso(prev, "Lettera pronta: firmala e inviala con PEC o raccomandata A/R", "ok");
+  traccia("Messa in mora");
+}
+
+async function pdfFascicolo() {
+  if (!state.pro) return paywall("crediti");
+  const prev = state.corrente;
+  try {
+    await caricaPdfLib();
+    const { creaPdfBlob } = await import("./pdf.js");
+    const blob = creaPdfBlob({
+      prev,
+      azienda: { ...state.azienda, logo: immagineSicura(state.azienda.logo) },
+      totali: totaliDi(prev),
+      pro: state.pro,
+      config: CONFIG,
+      fascicolo: { stato: incassoDi(prev) },
+    });
+    scaricaBlob(blob, nomeFile("Fascicolo-credito", prev, "pdf"));
+    traccia("Fascicolo credito");
+  } catch (err) {
+    toast(err.message || "Errore nella creazione del PDF");
+  }
+}
+
+// ------------------------------------------------------------------
+// Editor: date proposte e inizio lavori
+// ------------------------------------------------------------------
+function htmlDate(prev) {
+  const app = inc.normalizzaAppuntamento(prev.appuntamento);
+  const lista = Array.isArray(prev.disponibilita) ? prev.disponibilita : [];
+  const titolo = `<div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.orologio}</span><div><h2>Inizio lavori</h2><div class="muted xsmall">${app ? "Data concordata con il cliente" : "Proponi fino a 3 date: il cliente ne sceglie una quando firma"}</div></div></div>`;
+  if (app) {
+    const { giorno, mese } = giornoMese(app.data);
+    return `${titolo}
+      <div class="appuntamento"><span class="data-tile" aria-hidden="true"><b>${giorno}</b><small>${esc(mese)}</small></span>
+        <div class="corpo"><b>${esc(inc.testoAppuntamento(app))}</b><div class="muted xsmall">${app.da === "cliente" ? "Scelta dal cliente accettando online" : "Fissata da te"}</div></div></div>
+      <div class="grid2"><button class="btn" data-action="appuntamento-ics">${ICONE.orologio} Calendario</button><button class="btn" data-action="appuntamento-togli">Cambia data</button></div>`;
+  }
+  return `${titolo}
+    ${lista
+      .map(
+        (d, i) => `<div class="riga-data">
+        <input type="date" data-disp="${i}.data" value="${esc(inc.dataValida(d.data) ? d.data : "")}" min="${core.oggiISO()}" aria-label="Data proposta ${i + 1}">
+        <select data-disp="${i}.fascia" aria-label="Fascia oraria ${i + 1}">${Object.entries(inc.FASCE)
+          .map(([k, v]) => `<option value="${k}" ${d.fascia === k ? "selected" : ""}>${esc(v)}</option>`)
+          .join("")}</select>
+        <button class="icon-btn" data-action="data-togli" data-i="${i}" aria-label="Togli la data ${i + 1}">${ICONE.cestino}</button></div>`,
+      )
+      .join("")}
+    <div class="grid2">
+      ${lista.length < inc.MAX_DISPONIBILITA ? `<button class="btn soft" data-action="data-aggiungi">${ICONE.piu} Proponi data</button>` : ""}
+      <button class="btn" data-action="fissa-data">${ICONE.check} Fissa data</button>
+    </div>`;
+}
+
+function aggiornaDate() {
+  const el = $("#sezione-date");
+  if (el && state.corrente) el.innerHTML = htmlDate(state.corrente);
+}
+
+function foglioFissaData() {
+  const prev = state.corrente;
+  const prima = inc.normalizzaDisponibilita(prev.disponibilita)[0];
+  const f = apriFoglio(
+    `${titoloFoglio("Fissa l'inizio dei lavori", "Finisce in agenda e nel PDF")}
+    <div class="stack">
+      <div class="grid2">
+        <label class="campo">Data<input type="date" id="app-data" value="${esc(prima ? prima.data : core.aggiungiGiorni(core.oggiISO(), 1))}"></label>
+        <label class="campo">Fascia<select id="app-fascia">${Object.entries(inc.FASCE)
+          .map(([k, v]) => `<option value="${k}" ${prima && prima.fascia === k ? "selected" : ""}>${esc(v)}</option>`)
+          .join("")}</select></label>
+      </div>
+      <button class="btn primary big block" data-action="app-salva">${ICONE.check} Salva</button>
+    </div>`,
+  );
+  azioni["app-salva"] = async () => {
+    const data = $("#app-data", f).value;
+    if (!inc.dataValida(data)) return toast("Scegli una data");
+    prev.appuntamento = { data, fascia: $("#app-fascia", f).value, da: "impresa", il: Date.now() };
+    await salvaPreventivo(prev);
+    chiudiFoglio();
+    aggiornaDate();
+    toast("Data fissata", "ok");
+  };
 }
 
 function htmlFirma(prev) {
@@ -704,6 +1211,7 @@ function aggiornaTotali() {
     if (el) el.textContent = core.formatEuro(core.importoRiga(r));
   });
   $("#riepilogo").innerHTML = htmlRiepilogo(prev);
+  if (!$("#sezione-incassi")?.hidden) aggiornaIncassi();
 }
 
 function rerenderRighe() {
@@ -762,9 +1270,30 @@ function suInputEditor(e) {
   const el = e.target;
   if (el.tagName === "TEXTAREA") autoAltezza(el);
   const campo = el.dataset.campo;
-  if (campo && CAMPI_EDITOR.has(campo)) {
+  if (campo === "caparra") {
+    prev.caparra = el.value === "1";
+  } else if (campo && CAMPI_EDITOR.has(campo)) {
     const valore = CAMPI_NUMERICI.has(campo) ? core.parseNumero(el.value) : el.value;
     impostaPercorso(prev, campo, valore);
+    if (campo === "stato") {
+      if (valore === "accettato" && !prev.accettatoIl) prev.accettatoIl = core.oggiISO();
+      aggiornaIncassi();
+    }
+  } else if (el.dataset.inc) {
+    const i = incassoModificabile(prev);
+    if (el.dataset.inc === "fineLavori") i.fineLavori = inc.dataValida(el.value) ? el.value : "";
+    if (el.dataset.inc === "giorniSaldo") i.giorniSaldo = Number(el.value);
+    salvaDopo(prev);
+    if (e.type === "change") aggiornaIncassi();
+    return;
+  } else if (el.dataset.disp) {
+    const [k, chiave] = el.dataset.disp.split(".");
+    prev.disponibilita = Array.isArray(prev.disponibilita) ? prev.disponibilita : [];
+    const d = prev.disponibilita[Number(k)];
+    if (!d || (chiave !== "data" && chiave !== "fascia")) return;
+    d[chiave] = el.value;
+    salvaDopo(prev);
+    return;
   } else if (el.dataset.r && CAMPI_RIGA.has(el.dataset.r)) {
     const riga = el.closest(".riga");
     const r = riga && prev.righe[Number(riga.dataset.i)];
@@ -1128,12 +1657,14 @@ function foglioFirma() {
       data: new Date().toISOString(),
     };
     prev.stato = "accettato";
+    prev.accettatoIl = prev.accettatoIl || core.oggiISO();
     await salvaPreventivo(prev);
     traccia("Firma cliente");
     chiudiFoglio();
     vibra(30);
     $("#sezione-firma").innerHTML = htmlFirma(prev);
     $('[data-campo="stato"]').value = "accettato";
+    aggiornaIncassi();
     toast("Firmato! Preventivo accettato", "ok");
   };
 }
@@ -1400,10 +1931,88 @@ async function viewAccettazione(q) {
 }
 
 // ------------------------------------------------------------------
+// Avviso "Ho pagato" mandato dal cliente
+// ------------------------------------------------------------------
+async function viewAvviso(q) {
+  const codice = q.get("d") || "";
+  const pagina = (corpo) => {
+    app().innerHTML = `<header class="topbar"><a class="back" href="#/" aria-label="Chiudi">${ICONE.indietro}</a><div class="titolo"><div class="sopra">Avviso di pagamento</div><strong>Il cliente ha pagato?</strong></div></header>
+      <main class="pagina">${corpo}</main>`;
+  };
+  let avviso;
+  try {
+    avviso = await leggiAvviso(codice);
+  } catch (err) {
+    return pagina(
+      `<div class="card vuoto"><div class="illustrazione">${ICONE.link}</div><h3>Avviso non leggibile</h3><p class="muted">${esc(err.message)}. Chiedi al cliente di rimandare il messaggio.</p></div>`,
+    );
+  }
+  const prev = state.preventivi.find((p) => p.id === avviso.id);
+  if (!prev) {
+    return pagina(
+      `<div class="card stack"><div class="banner warn"><span class="ico">📱</span><div>Il preventivo n. ${esc(avviso.numero)} non è su questo dispositivo. Apri il link sul telefono dove l'hai creato.</div></div></div>`,
+    );
+  }
+  const i = inc.normalizzaIncasso(prev.incasso);
+  const apri = `<a class="btn ghost block" href="#/p/${esc(prev.id)}?sez=incassi">Apri il preventivo</a>`;
+  if (i.pagamenti.some((x) => x.rif === avviso.rif)) {
+    return pagina(
+      `<div class="card stack"><div class="banner ok"><span class="ico">✅</span><div>Pagamento di ${esc(core.formatEuro(avviso.importo))} già registrato.</div></div>${apri}</div>`,
+    );
+  }
+  const giaInAttesa = i.segnalazioni.some((x) => x.rif === avviso.rif && x.stato === "attesa");
+  const s = incassoDi(prev);
+  pagina(`<section class="card stack">
+      <div class="row">${avatar(core.nomeCliente(prev.cliente))}<div><div style="font-weight:750;font-size:17px">${esc(core.nomeCliente(prev.cliente))} dice di aver pagato</div><div class="muted small">Preventivo n. ${esc(prev.numero)}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div></div>
+      <div class="risultato-calc"><div class="muted small">${esc(inc.METODI[avviso.metodo])} · ${esc(core.formatData(avviso.data))}</div><div class="big tnum">${esc(core.formatEuro(avviso.importo))}</div>${avviso.nota ? `<div class="small">${esc(avviso.nota)}</div>` : ""}</div>
+      <div class="banner warn"><span class="ico">🔎</span><div><b>Controlla sul conto</b> che il pagamento sia arrivato davvero prima di registrarlo: l'avviso lo manda il cliente.</div></div>
+      ${avviso.importo > s.residuo + 0.005 ? `<div class="banner bad"><span class="ico">⚠️</span><div>L'importo è superiore a quanto resta da incassare (${esc(core.formatEuro(s.residuo))}).</div></div>` : ""}
+      <div class="muted small">Da incassare prima di questo pagamento: <b class="tnum">${esc(core.formatEuro(s.residuo))}</b></div>
+      <button class="btn primary big block" data-action="avviso-registra">${ICONE.check} È arrivato: registra</button>
+      ${giaInAttesa ? "" : `<button class="btn block" data-action="avviso-attesa">Non ancora: lo controllo dopo</button>`}
+      ${apri}
+    </section>`);
+  azioni["avviso-registra"] = async () => {
+    const dati = incassoModificabile(prev);
+    if (!dati.pagamenti.some((x) => x.rif === avviso.rif)) {
+      dati.pagamenti.push({
+        id: core.uid(),
+        importo: avviso.importo,
+        data: avviso.data,
+        metodo: avviso.metodo,
+        nota: ["Segnalato dal cliente", avviso.nota].filter(Boolean).join(": "),
+        rif: avviso.rif,
+      });
+    }
+    for (const x of dati.segnalazioni) if (x.rif === avviso.rif) x.stato = "confermata";
+    await salvaIncasso(prev, "Pagamento registrato");
+    traccia("Avviso pagamento registrato");
+    vai(`#/p/${prev.id}?sez=incassi`);
+  };
+  azioni["avviso-attesa"] = async () => {
+    const dati = incassoModificabile(prev);
+    if (!dati.segnalazioni.some((x) => x.rif === avviso.rif)) {
+      dati.segnalazioni.push({
+        il: Date.now(),
+        data: avviso.data,
+        importo: avviso.importo,
+        metodo: avviso.metodo,
+        nota: avviso.nota,
+        rif: avviso.rif,
+        stato: "attesa",
+      });
+    }
+    await salvaIncasso(prev, "Lo trovi nel preventivo, da verificare");
+    vai(`#/p/${prev.id}?sez=incassi`);
+  };
+}
+
+// ------------------------------------------------------------------
 // Paywall e Pro
 // ------------------------------------------------------------------
 const VANTAGGI_PRO = [
   "Preventivi e link di accettazione illimitati",
+  "Recupero crediti: solleciti decisi, lettera di messa in mora e fascicolo del credito in PDF",
   "Il tuo logo e i tuoi colori su PDF e pagina del cliente",
   "Firma del cliente sul tuo telefono, in cantiere",
   "Foto del lavoro allegate al preventivo",
@@ -1419,6 +2028,7 @@ function paywall(motivo) {
     firma: "La firma sul posto è una funzione Pro",
     logo: "Logo e colori sono funzioni Pro",
     foto: "Le foto nel preventivo sono una funzione Pro",
+    crediti: "Il recupero crediti è una funzione Pro",
   };
   apriFoglio(
     `${titoloFoglio(titoli[motivo] || "Passa a Pro")}
@@ -1732,8 +2342,30 @@ function viewImpostazioni() {
       <div class="etichetta-sez">Pagamenti</div>
       <section class="card stack">
         <div class="grid2 stack-mobile">${campo("iban", "IBAN")}${campo("intestatarioIban", "Intestatario IBAN")}</div>
+        <div id="iban-stato" class="xsmall">${htmlStatoIban(a.iban)}</div>
         ${campo("linkPagamento", "Link per pagare l'acconto online", "https://paypal.me/... o link Satispay/Stripe", "url")}
-        <p class="muted xsmall" style="margin:0">Il cliente che accetta online vede IBAN e pulsante "Paga online" per l'acconto.</p>
+        <p class="muted xsmall" style="margin:0">Il cliente che accetta online vede QR del bonifico, IBAN e pulsante "Paga online" per l'acconto.</p>
+      </section>
+
+      <div class="etichetta-sez">Protezione dai mancati pagamenti</div>
+      <section class="card stack">
+        <label class="campo">L'anticipo nei nuovi preventivi vale come
+          <select data-az="tipoAnticipo">
+            <option value="acconto" ${a.tipoAnticipo !== "caparra" ? "selected" : ""}>Acconto (anticipo sul prezzo)</option>
+            <option value="caparra" ${a.tipoAnticipo === "caparra" ? "selected" : ""}>Caparra confirmatoria (art. 1385 c.c.)</option>
+          </select></label>
+        <p class="muted xsmall" style="margin:0">Con la caparra confirmatoria, se il cliente non rispetta l'accordo puoi recedere e trattenerla (se invece sei tu a non rispettarlo, il cliente può chiederne il doppio).</p>
+        <label class="campo">Il saldo va pagato entro
+          <select data-az="giorniSaldo">${[0, 7, 15, 30, 60, 90]
+            .map(
+              (n) =>
+                `<option value="${n}" ${Number(a.giorniSaldo) === n ? "selected" : ""}>${n === 0 ? "la fine dei lavori" : `${n} giorni dalla fine dei lavori`}</option>`,
+            )
+            .join("")}</select></label>
+        ${campo("tassoMora", "Tasso annuo interessi di mora % (facoltativo)", "es. 10,15")}
+        <p class="muted xsmall" style="margin:0">Serve alla lettera di messa in mora per calcolare gli interessi maturati. I tassi di legge cambiano periodicamente: inserisci quello in vigore.</p>
+        ${campo("linkRecensioni", "Link per lasciarti una recensione (Google)", "https://g.page/r/...", "url")}
+        <button class="btn soft block" data-action="clausola-pagamenti">${ICONE.condizioni} Aggiungi alle condizioni la clausola sui ritardi</button>
       </section>
 
       <div class="etichetta-sez">Logo e colore ${proBadge}</div>
@@ -1835,6 +2467,16 @@ function viewImpostazioni() {
   });
 }
 
+const CLAUSOLA_PAGAMENTI =
+  "I lavori iniziano dopo il versamento dell'anticipo pattuito. In caso di ritardato pagamento sono dovuti gli interessi di mora nella misura di legge e le spese di recupero del credito.";
+
+function htmlStatoIban(iban) {
+  if (!iban) return `<span class="muted">Con un IBAN valido il cliente può pagare inquadrando un QR.</span>`;
+  return inc.ibanValido(iban)
+    ? `<span style="color:var(--ok)">✓ IBAN valido: QR di pagamento attivo su PDF e pagina del cliente</span>`
+    : `<span class="testo-bad">⚠ IBAN non valido: controlla le cifre (un errore manda i soldi altrove o li fa tornare indietro)</span>`;
+}
+
 const CAMPI_AZIENDA = new Set(
   Object.keys(AZIENDA_DEFAULT).filter((k) => !["onboarded", "logo", "mestiere"].includes(k)),
 );
@@ -1845,11 +2487,19 @@ function suInputImpostazioni(e) {
   if (!k || !CAMPI_AZIENDA.has(k)) return;
   if (k === "colore" && !state.pro) return;
   let v = el.type === "checkbox" ? el.checked : el.value;
-  if (k === "ivaDefault" || k === "validitaGiorni" || k === "giorniRicontatto") v = core.parseNumero(v);
-  if (k === "linkPagamento" && e.type === "change" && v && !urlSicuro(v)) {
+  if (k === "ivaDefault" || k === "validitaGiorni" || k === "giorniRicontatto" || k === "giorniSaldo")
+    v = core.parseNumero(v);
+  const conLink = k === "linkPagamento" || k === "linkRecensioni";
+  if (conLink && e.type === "change" && v && !urlSicuro(v)) {
     toast("Il link deve iniziare con https://");
   }
-  state.azienda[k] = k === "linkPagamento" ? (urlSicuro(v) ? v.trim() : e.type === "change" ? "" : v) : v;
+  if (k === "tassoMora" && e.type === "change") {
+    const t = core.parseNumero(v);
+    v = t > 0 && t <= 100 ? String(core.round2(t)).replace(".", ",") : "";
+    el.value = v;
+  }
+  if (k === "iban") $("#iban-stato").innerHTML = htmlStatoIban(v);
+  state.azienda[k] = conLink ? (urlSicuro(v) ? v.trim() : e.type === "change" ? "" : v) : v;
   salvaAziendaDopo();
   if (k === "regime" && e.type === "change") viewImpostazioni();
 }
@@ -2053,6 +2703,10 @@ const azioni = {
       link: null,
       linkPrecedenti: [],
       accettazioneOnline: null,
+      accettatoIl: "",
+      incasso: null,
+      appuntamento: null,
+      disponibilita: [],
       inviatoIl: null,
       ricontattatoIl: null,
       regime: state.azienda.regime,
@@ -2158,6 +2812,91 @@ const azioni = {
     transizione(viewBenvenuto);
   },
   "fine-benvenuto": () => fineBenvenuto(),
+
+  // Incassi
+  "registra-pagamento": () => foglioPagamento(),
+  "togli-pagamento": async (el) => {
+    const prev = state.corrente;
+    const i = incassoModificabile(prev);
+    const pag = i.pagamenti.find((x) => x.id === el.dataset.id);
+    if (!pag) return;
+    if (
+      !(await chiedi({
+        titolo: `Eliminare il pagamento di ${core.formatEuro(pag.importo)}?`,
+        ok: "Elimina",
+        pericolo: true,
+      }))
+    )
+      return;
+    i.pagamenti = i.pagamenti.filter((x) => x.id !== pag.id);
+    // Se veniva da un avviso del cliente, l'avviso torna "da verificare".
+    for (const x of i.segnalazioni) if (pag.rif && x.rif === pag.rif) x.stato = "attesa";
+    await salvaIncasso(prev, "Pagamento eliminato");
+  },
+  "segnalazione-ok": (el) => confermaSegnalazione(el.dataset.rif, Number(el.dataset.il), true),
+  "segnalazione-no": (el) => confermaSegnalazione(el.dataset.rif, Number(el.dataset.il), false),
+  "mostra-qr": () => foglioQr(),
+  sollecito: (el) => foglioSollecito(Number(el.dataset.livello) || 0),
+  "pdf-diffida": () => pdfDiffida(),
+  "pdf-fascicolo": () => pdfFascicolo(),
+  "recensione-chiesta": async (el) => {
+    const prev = state.preventivi.find((x) => x.id === el.dataset.id);
+    if (!prev) return;
+    incassoModificabile(prev).recensioneChiestaIl = Date.now();
+    await salvaPreventivo(prev);
+    traccia("Recensione chiesta");
+    // Il link si apre comunque; la pagina si aggiorna subito dopo.
+    setTimeout(() => (state.corrente ? aggiornaIncassi() : viewLista()), 400);
+  },
+
+  // Date e inizio lavori
+  "data-aggiungi": () => {
+    const prev = state.corrente;
+    prev.disponibilita = Array.isArray(prev.disponibilita) ? prev.disponibilita : [];
+    if (prev.disponibilita.length >= inc.MAX_DISPONIBILITA) return;
+    prev.disponibilita.push({ data: "", fascia: "mattina" });
+    aggiornaDate();
+    salvaDopo(prev);
+    $(`[data-disp="${prev.disponibilita.length - 1}.data"]`)?.focus();
+  },
+  "data-togli": (el) => {
+    const prev = state.corrente;
+    (prev.disponibilita || []).splice(Number(el.dataset.i), 1);
+    aggiornaDate();
+    salvaDopo(prev);
+  },
+  "fissa-data": () => foglioFissaData(),
+  "appuntamento-togli": async () => {
+    const prev = state.corrente;
+    if (!(await chiedi({ titolo: "Cambiare la data di inizio?", testo: "La data attuale verrà tolta.", ok: "Cambia" })))
+      return;
+    prev.appuntamento = null;
+    await salvaPreventivo(prev);
+    aggiornaDate();
+  },
+  "appuntamento-ics": () => {
+    const prev = state.corrente;
+    const a = inc.normalizzaAppuntamento(prev.appuntamento);
+    if (!a) return;
+    const c = prev.cliente;
+    const ics = inc.creaIcs({
+      id: prev.id,
+      titolo: inc.titoloAgenda(prev),
+      data: a.data,
+      fascia: a.fascia,
+      luogo: prev.luogo || [c.indirizzo, c.citta].filter(Boolean).join(", "),
+      descrizione: [`Preventivo n. ${prev.numero}`, c.telefono ? `Tel. ${c.telefono}` : ""].filter(Boolean).join("\n"),
+    });
+    scaricaBlob(new Blob([ics], { type: "text/calendar" }), nomeFile("Lavoro", prev, "ics"));
+  },
+  "clausola-pagamenti": async () => {
+    const a = state.azienda;
+    if ((a.condizioni || "").includes(CLAUSOLA_PAGAMENTI)) return toast("La clausola c'è già");
+    a.condizioni = [a.condizioni, CLAUSOLA_PAGAMENTI].filter(Boolean).join("\n");
+    await salvaAzienda();
+    viewImpostazioni();
+    toast("Clausola aggiunta alle condizioni dei nuovi preventivi", "ok");
+  },
 };
 
 document.addEventListener("click", (e) => {
@@ -2183,7 +2922,7 @@ document.addEventListener("input", (e) => {
 });
 document.addEventListener("change", (e) => {
   if (state.corrente) {
-    if (e.target.tagName === "SELECT") suInputEditor(e);
+    if (e.target.tagName === "SELECT" || e.target.dataset.inc || e.target.dataset.disp) suInputEditor(e);
     suChangeEditor(e);
   } else if (e.target.dataset.az) suInputImpostazioni(e);
 });

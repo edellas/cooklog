@@ -1,6 +1,6 @@
 // Service worker: l'app funziona anche senza connessione (cantieri, cantine, zone senza campo).
 // Cambia VERSIONE a ogni pubblicazione importante per forzare l'aggiornamento della cache.
-const VERSIONE = "pl-v2";
+const VERSIONE = "pl-v3";
 const FILE_APP = [
   "app.html",
   "accetta.html",
@@ -20,8 +20,11 @@ const FILE_APP = [
   "js/ui.js",
   "js/mestieri.js",
   "js/icone.js",
+  "js/incassi.js",
+  "js/qr.js",
   "vendor/jspdf.umd.min.js",
   "vendor/jspdf.plugin.autotable.min.js",
+  "vendor/qrcode.js",
   "manifest.webmanifest",
   "img/icona.svg",
   "img/icona-192.png",

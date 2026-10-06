@@ -386,6 +386,11 @@ export function preventivoVuoto(azienda, numerazione, oggi = oggiISO()) {
     righe: [],
     scontoGlobale: 0,
     acconto: { tipo: "perc", valore: 0 },
+    // Caparra confirmatoria invece del semplice acconto (art. 1385 c.c.), dalle impostazioni.
+    caparra: azienda.tipoAnticipo === "caparra",
+    disponibilita: [], // date proposte al cliente per iniziare i lavori
+    appuntamento: null,
+    incasso: null, // pagamenti ricevuti, fine lavori, solleciti (vedi incassi.js)
     pagamento: azienda.pagamento || "",
     tempi: "",
     note: azienda.condizioni || "",

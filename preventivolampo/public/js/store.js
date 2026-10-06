@@ -1,5 +1,6 @@
 // Archivio locale: tutti i dati restano sul dispositivo dell'utente (IndexedDB).
 // Nessun dato dei clienti passa dai nostri server: privacy semplice e costi zero.
+import { normalizzaIncasso, normalizzaDisponibilita, normalizzaAppuntamento, dataValida } from "./incassi.js";
 
 const DB_NOME = "preventivolampo";
 const DB_VERSIONE = 1;
@@ -131,6 +132,11 @@ export function validaBackup(dati) {
       acconto: oggetto(p.acconto) ? p.acconto : { tipo: "perc", valore: 0 },
       foto: lista(p.foto).filter(oggetto),
       firma: oggetto(p.firma) ? p.firma : null,
+      caparra: p.caparra === true,
+      disponibilita: normalizzaDisponibilita(p.disponibilita),
+      appuntamento: normalizzaAppuntamento(p.appuntamento),
+      accettatoIl: dataValida(p.accettatoIl) ? p.accettatoIl : "",
+      incasso: p.incasso == null ? null : normalizzaIncasso(p.incasso),
     }));
   const clienti = lista(dati.clienti).filter(conId);
   const listino = lista(dati.listino)

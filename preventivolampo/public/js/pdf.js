@@ -7,7 +7,20 @@ import {
   oggiISO,
   FRASE_FORFETTARIO,
   IMPORTO_BOLLO,
+  nomeCliente,
 } from "./core.js";
+import {
+  payloadEpc,
+  causale,
+  METODI,
+  LIVELLI_SOLLECITO,
+  normalizzaDisponibilita,
+  normalizzaAppuntamento,
+  testoAppuntamento,
+  interessiMora,
+  ibanValido,
+} from "./incassi.js";
+import { matriceQr, rettangoliQr } from "./qr.js";
 
 const MARGINE = 15;
 const GRIGIO = [90, 98, 110];
@@ -24,8 +37,67 @@ function righeNonVuote(...valori) {
   return valori.map((v) => (v == null ? "" : String(v).trim())).filter(Boolean);
 }
 
-// opts: { prev, azienda, totali, pro, config, linkAccettazione }
-export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione = "" }) {
+const due = (n) => String(n).padStart(2, "0");
+function dataOra(v) {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${formatData(oggiISO(d))} ore ${due(d.getHours())}:${due(d.getMinutes())}`;
+}
+
+export const FRASE_CAPARRA =
+  "La somma è versata a titolo di caparra confirmatoria ai sensi dell'art. 1385 c.c.: se il cliente è inadempiente l'impresa può recedere dal contratto e trattenerla; se inadempiente è l'impresa, il cliente può recedere ed esigerne il doppio.";
+
+// QR del bonifico SEPA (vettoriale: nitido anche stampato). Restituisce false se l'IBAN non è valido.
+function disegnaQr(doc, payload, x, y, lato) {
+  if (!payload) return false;
+  const m = matriceQr(payload);
+  const modulo = lato / (m.length + 4);
+  doc.setFillColor(255, 255, 255);
+  doc.rect(x, y, lato, lato, "F");
+  doc.setFillColor(0, 0, 0);
+  for (const q of rettangoliQr(m)) doc.rect(x + (q.x + 2) * modulo, y + (q.y + 2) * modulo, q.w * modulo, modulo, "F");
+  return true;
+}
+
+function payloadPerImporto(azienda, importo, causaleTesto) {
+  if (!ibanValido(azienda.iban)) return null;
+  return payloadEpc({
+    nome: azienda.intestatarioIban || azienda.ragioneSociale,
+    iban: azienda.iban,
+    importo,
+    causale: causaleTesto,
+  });
+}
+
+// Riquadro "Paga con il QR": QR a sinistra, istruzioni a destra.
+function riquadroQr(doc, { x, y, larghezza, payload, titolo, righe, accento }) {
+  const lato = 30;
+  const h = lato + 6;
+  doc.setDrawColor(...accento);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(x, y, larghezza, h, 2, 2, "S");
+  disegnaQr(doc, payload, x + 3, y + 3, lato);
+  const xt = x + lato + 8;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9.5);
+  doc.setTextColor(...accento);
+  doc.text(titolo, xt, y + 9);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(...NERO);
+  let yy = y + 14;
+  for (const r of righe) {
+    for (const l of doc.splitTextToSize(r, larghezza - lato - 12)) {
+      doc.text(l, xt, yy);
+      yy += 3.7;
+    }
+  }
+  return h;
+}
+
+// opts: { prev, azienda, totali, pro, config, linkAccettazione, fascicolo }
+// fascicolo: { stato } (da statoIncasso) -> aggiunge in fondo il "fascicolo del credito".
+export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione = "", fascicolo = null }) {
   const { jsPDF } = globalThis.jspdf;
   const autoTable = globalThis.autoTable;
   const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
@@ -265,7 +337,7 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     doc.setTextColor(...NERO);
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
-    doc.text("Acconto all'accettazione", xEt, y);
+    doc.text(prev.caparra ? "Caparra confirmatoria all'accettazione" : "Acconto all'accettazione", xEt, y);
     doc.text(formatEuro(totali.acconto), W - MARGINE - 2, y, { align: "right" });
     y += 5;
     doc.setFont("helvetica", "normal");
@@ -328,6 +400,17 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   }
 
   sezione("Tempi di esecuzione", prev.tempi);
+  const appuntamento = normalizzaAppuntamento(prev.appuntamento);
+  const proposte = normalizzaDisponibilita(prev.disponibilita);
+  if (appuntamento) {
+    sezione("Inizio lavori concordato", testoAppuntamento(appuntamento));
+  } else if (proposte.length) {
+    sezione(
+      "Date proposte per l'inizio dei lavori",
+      proposte.map((d) => "- " + testoAppuntamento(d)).join("\n") +
+        "\nIl cliente può sceglierne una accettando online.",
+    );
+  }
   sezione(
     "Modalità di pagamento",
     [
@@ -335,10 +418,29 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
       azienda.iban
         ? `IBAN: ${azienda.iban}${azienda.intestatarioIban ? " - intestato a " + azienda.intestatarioIban : ""}`
         : "",
+      totali.acconto > 0 && prev.caparra ? FRASE_CAPARRA : "",
     ]
       .filter(Boolean)
       .join("\n"),
   );
+  // QR del bonifico per l'acconto: il cliente lo inquadra con l'app della banca.
+  const qrAcconto = totali.acconto > 0 ? payloadPerImporto(azienda, totali.acconto, causale(prev, "acconto")) : null;
+  if (qrAcconto) {
+    spazio(42);
+    y +=
+      riquadroQr(doc, {
+        x: MARGINE,
+        y,
+        larghezza,
+        payload: qrAcconto,
+        titolo: `Paga ${prev.caparra ? "la caparra" : "l'acconto"} di ${formatEuro(totali.acconto)} con il QR`,
+        righe: [
+          "Inquadra il codice con l'app della tua banca: il bonifico si compila da solo (se la tua app non legge i QR SEPA, usa l'IBAN qui sopra).",
+          `Beneficiario: ${azienda.intestatarioIban || azienda.ragioneSociale} - Causale: ${causale(prev, "acconto")}`,
+        ],
+        accento,
+      }) + 5;
+  }
   sezione("Note e condizioni", prev.note, 8.2);
 
   if (totali.forfettario) {
@@ -356,8 +458,8 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     y += linee.length * 3.4 + 3;
   }
 
-  // --- Accettazione e firma ---
-  spazio(40);
+  // --- Accettazione e firma (il blocco è alto circa 54 mm: non deve finire sul piè di pagina) ---
+  spazio(56);
   y += 2;
   doc.setDrawColor(210, 214, 220);
   doc.setLineWidth(0.3);
@@ -464,6 +566,10 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     });
   }
 
+  if (fascicolo && fascicolo.stato) {
+    paginaFascicolo(doc, { prev, azienda, totali, stato: fascicolo.stato, accento, autoTable });
+  }
+
   // --- Piè di pagina su tutte le pagine ---
   const pagine = doc.getNumberOfPages();
   for (let p = 1; p <= pagine; p++) {
@@ -490,4 +596,300 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
 
 export function creaPdfBlob(opts) {
   return creaPdf(opts).output("blob");
+}
+
+// ------------------------------------------------------------------
+// Fascicolo del credito: tutto ciò che serve per dimostrare l'accordo e il mancato pagamento
+// ------------------------------------------------------------------
+function descriviAccettazione(prev) {
+  const f = prev.firma;
+  if (prev.accettazioneOnline && f) {
+    const imp = prev.accettazioneOnline.hash
+      ? ` - impronta del preventivo accettato: ${prev.accettazioneOnline.hash}`
+      : "";
+    return `Online tramite link, firmato da ${f.nome || "il cliente"} il ${dataOra(f.data)}${imp}`;
+  }
+  if (f && f.img)
+    return `Firmato sul dispositivo dell'impresa da ${f.nome || "il cliente"} il ${dataOra(f.data)}${f.luogo ? ` a ${f.luogo}` : ""}`;
+  return "Segnato come accettato dall'impresa (senza firma registrata nell'app)";
+}
+
+function paginaFascicolo(doc, { prev, azienda, totali, stato, accento, autoTable }) {
+  doc.addPage();
+  let y = MARGINE;
+  const W = doc.internal.pageSize.getWidth();
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.setTextColor(...accento);
+  doc.text("FASCICOLO DEL CREDITO", MARGINE, y + 5);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(...GRIGIO);
+  doc.text(`Preventivo n. ${prev.numero} - riepilogo generato il ${dataOra(Date.now())}`, MARGINE, y + 11);
+  y += 16;
+  const c = prev.cliente || {};
+  const app = normalizzaAppuntamento(prev.appuntamento);
+  const righe = [
+    ["Impresa", righeNonVuote(azienda.ragioneSociale, azienda.piva ? `P.IVA ${azienda.piva}` : "").join(" - ")],
+    ["Cliente", righeNonVuote(nomeCliente(c), c.cfpiva ? `C.F./P.IVA ${c.cfpiva}` : "").join(" - ")],
+    ["Recapiti cliente", righeNonVuote(c.indirizzo, c.citta, c.telefono, c.email).join(" - ") || "-"],
+    ["Preventivo", `N. ${prev.numero} del ${formatData(prev.data)}${prev.oggetto ? ` - ${prev.oggetto}` : ""}`],
+    ["Importo totale", `${formatEuro(stato.totale)}${totali.forfettario ? "" : " IVA inclusa"}`],
+    ["Accettazione", descriviAccettazione(prev)],
+  ];
+  const aggiunte = prev.accettazioneOnline?.facoltativeAggiunte || [];
+  if (aggiunte.length) righe.push(["Voci aggiunte dal cliente", aggiunte.join(", ")]);
+  if (totali.acconto > 0)
+    righe.push([
+      prev.caparra ? "Caparra confirmatoria" : "Acconto",
+      `${formatEuro(totali.acconto)} ${stato.accontoPagato ? "(versato)" : "(non versato)"}`,
+    ]);
+  if (app)
+    righe.push([
+      "Inizio lavori concordato",
+      testoAppuntamento(app) + (app.da === "cliente" ? " (scelto dal cliente)" : ""),
+    ]);
+  if (stato.fineLavori) righe.push(["Fine lavori", formatData(stato.fineLavori)]);
+  if (stato.scadenzaSaldo) righe.push(["Scadenza del saldo", formatData(stato.scadenzaSaldo)]);
+  righe.push(["Incassato", formatEuro(stato.incassato)]);
+  righe.push(["Da incassare", formatEuro(stato.residuo)]);
+  if (stato.importoScaduto > 0)
+    righe.push([
+      "Scaduto",
+      `${formatEuro(stato.importoScaduto)} dal ${formatData(stato.scadutoDal)} (${stato.giorniRitardo} giorni)`,
+    ]);
+
+  const stile = {
+    theme: "plain",
+    margin: { left: MARGINE, right: MARGINE, bottom: 22 },
+    styles: { font: "helvetica", fontSize: 8.6, cellPadding: 1.8, textColor: NERO, overflow: "linebreak" },
+  };
+  autoTable(doc, {
+    ...stile,
+    startY: y,
+    body: righe,
+    columnStyles: { 0: { cellWidth: 46, fontStyle: "bold", textColor: GRIGIO } },
+    alternateRowStyles: { fillColor: [248, 249, 251] },
+  });
+  y = doc.lastAutoTable.finalY + 7;
+
+  const tabella = (titolo, head, body, vuoto) => {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(...accento);
+    if (y > doc.internal.pageSize.getHeight() - 40) {
+      doc.addPage();
+      y = MARGINE;
+    }
+    doc.text(titolo, MARGINE, y);
+    autoTable(doc, {
+      ...stile,
+      startY: y + 2,
+      head: [head],
+      body: body.length ? body : [[{ content: vuoto, colSpan: head.length }]],
+      headStyles: { fillColor: accento, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
+    });
+    y = doc.lastAutoTable.finalY + 7;
+  };
+  tabella(
+    "PAGAMENTI RICEVUTI",
+    ["Data", "Metodo", "Importo", "Nota"],
+    stato.pagamenti.map((p) => [formatData(p.data), METODI[p.metodo] || "", formatEuro(p.importo), p.nota || ""]),
+    "Nessun pagamento ricevuto",
+  );
+  tabella(
+    "SOLLECITI INVIATI",
+    ["Data e ora", "Tipo", "Canale"],
+    stato.solleciti.map((s) => [
+      dataOra(s.il),
+      LIVELLI_SOLLECITO[s.livello] || "",
+      { whatsapp: "WhatsApp", email: "Email", lettera: "Lettera di messa in mora", copia: "Messaggio copiato" }[
+        s.canale
+      ] || "",
+    ]),
+    "Nessun sollecito registrato",
+  );
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(7.5);
+  doc.setTextColor(...GRIGIO);
+  doc.text(
+    doc.splitTextToSize(
+      "Il preventivo accettato è riportato nelle pagine precedenti di questo documento. Riepilogo generato dai dati registrati dall'impresa nell'app: conserva anche i messaggi WhatsApp/email e le ricevute dei pagamenti.",
+      W - MARGINE * 2,
+    ),
+    MARGINE,
+    y,
+  );
+}
+
+// ------------------------------------------------------------------
+// Lettera di sollecito e costituzione in mora (art. 1219 c.c.)
+// opts: { prev, azienda, totali, stato, config, oggi, tassoMora }
+// ------------------------------------------------------------------
+export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiISO(), tassoMora = "" }) {
+  const { jsPDF } = globalThis.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const larghezza = W - MARGINE * 2;
+  const c = prev.cliente || {};
+  const a = azienda;
+  doc.setProperties({
+    title: `Messa in mora - preventivo ${prev.numero}`,
+    author: a.ragioneSociale || "",
+    creator: config.nomeProdotto,
+  });
+  let y = MARGINE + 4;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(...NERO);
+  doc.text(doc.splitTextToSize(a.ragioneSociale || "", 90), MARGINE, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(...GRIGIO);
+  let ym = y + 5;
+  for (const r of righeNonVuote(
+    a.indirizzo,
+    [a.cap, a.citta, a.provincia ? `(${a.provincia})` : ""].filter(Boolean).join(" "),
+    a.piva ? `P.IVA ${a.piva}` : "",
+    [a.telefono ? `Tel. ${a.telefono}` : "", a.email].filter(Boolean).join(" - "),
+    a.pec ? `PEC ${a.pec}` : "",
+  )) {
+    doc.text(r, MARGINE, ym);
+    ym += 4;
+  }
+
+  const xd = W / 2 + 10;
+  let yd = ym + 8;
+  doc.setFontSize(9.5);
+  doc.setTextColor(...NERO);
+  doc.text("Spett.le / Gent.mo", xd, yd);
+  yd += 5;
+  doc.setFont("helvetica", "bold");
+  doc.text(doc.splitTextToSize(nomeCliente(c), W - MARGINE - xd), xd, yd);
+  doc.setFont("helvetica", "normal");
+  yd += 5;
+  for (const r of righeNonVuote(c.indirizzo, c.citta, c.cfpiva ? `C.F./P.IVA ${c.cfpiva}` : "")) {
+    for (const l of doc.splitTextToSize(r, W - MARGINE - xd)) {
+      doc.text(l, xd, yd);
+      yd += 4.5;
+    }
+  }
+  y = Math.max(ym, yd) + 8;
+  doc.text(`${a.citta ? a.citta + ", " : ""}${formatData(oggi)}`, W - MARGINE, y, { align: "right" });
+  y += 10;
+
+  doc.setFont("helvetica", "bold");
+  const oggetto = `Oggetto: sollecito di pagamento e costituzione in mora - Preventivo n. ${prev.numero} del ${formatData(prev.data)}${prev.oggetto ? ` ("${prev.oggetto}")` : ""}`;
+  for (const l of doc.splitTextToSize(oggetto, larghezza)) {
+    doc.text(l, MARGINE, y);
+    y += 5;
+  }
+  y += 3;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9.5);
+
+  const scrivi = (testo, rientro = 0) => {
+    for (const l of doc.splitTextToSize(testo, larghezza - rientro)) {
+      if (y > H - 30) {
+        doc.addPage();
+        y = MARGINE;
+      }
+      doc.text(l, MARGINE + rientro, y);
+      y += 4.8;
+    }
+    y += 2;
+  };
+  const punto = (testo) => {
+    doc.text("-", MARGINE + 2, y);
+    scrivi(testo, 6);
+  };
+
+  const iva = totali.forfettario ? "" : " IVA inclusa";
+  const modo = prev.accettazioneOnline
+    ? "online, con firma apposta tramite il link ricevuto"
+    : prev.firma && prev.firma.img
+      ? "sottoscrivendolo"
+      : "";
+  scrivi(`Gentile ${nomeCliente(c)},`);
+  scrivi("con la presente Le ricordiamo che:");
+  punto(
+    `in data ${formatData(stato.dataAccettazione || prev.data)} Lei ha accettato${modo ? ` ${modo},` : ""} il preventivo n. ${prev.numero} del ${formatData(prev.data)}${prev.oggetto ? ` relativo a "${prev.oggetto}"` : ""}, per un importo complessivo di ${formatEuro(stato.totale)}${iva};`,
+  );
+  if (stato.fineLavori) punto(`i lavori sono stati eseguiti e ultimati in data ${formatData(stato.fineLavori)};`);
+  punto(
+    stato.incassato > 0
+      ? `a fronte di tale importo risultano versati ${formatEuro(stato.incassato)} (${stato.pagamenti.map((p) => `${formatEuro(p.importo)} il ${formatData(p.data)}`).join(", ")});`
+      : "a oggi non risulta effettuato alcun pagamento;",
+  );
+  punto(
+    `residua pertanto a Suo carico la somma di ${formatEuro(stato.residuo)}${stato.scadutoDal ? `, scaduta il ${formatData(stato.scadutoDal)}` : ""};`,
+  );
+  const precedenti = stato.solleciti.filter((s) => s.canale !== "lettera");
+  if (precedenti.length)
+    punto(
+      `nonostante i solleciti del ${precedenti.map((s) => formatData(oggiISO(new Date(s.il)))).join(", ")}, il pagamento non è stato effettuato.`,
+    );
+  y += 2;
+  scrivi(
+    `La invitiamo pertanto formalmente a corrispondere la somma di ${formatEuro(stato.residuo)} entro e non oltre 15 (quindici) giorni dal ricevimento della presente${
+      a.iban
+        ? `, mediante bonifico bancario sul conto IBAN ${a.iban}${a.intestatarioIban ? ` intestato a ${a.intestatarioIban}` : ""}, causale "${causale(prev, "saldo")}"`
+        : ""
+    }.`,
+  );
+  const giorni = stato.giorniRitardo;
+  const interessi = interessiMora(stato.importoScaduto || stato.residuo, tassoMora, giorni);
+  scrivi(
+    "La presente vale quale atto di costituzione in mora ai sensi e per gli effetti dell'art. 1219 del Codice civile. Sulla somma dovuta decorrono gli interessi moratori nella misura di legge" +
+      (interessi > 0
+        ? ` (tasso annuo applicato ${String(tassoMora).replace(".", ",")}%: ${formatEuro(interessi)} maturati alla data odierna per ${giorni} giorni di ritardo).`
+        : "."),
+  );
+  scrivi(
+    "In mancanza del pagamento nel termine indicato, ci vedremo costretti a tutelare le nostre ragioni nelle sedi competenti, senza ulteriore avviso, con aggravio di spese a Suo carico.",
+  );
+  scrivi("Restiamo a disposizione per concordare, se necessario, le modalità di pagamento.");
+  y += 4;
+  scrivi("Distinti saluti");
+  y += 2;
+  doc.setFont("helvetica", "bold");
+  scrivi(a.ragioneSociale || "");
+  doc.setFont("helvetica", "normal");
+  doc.setDrawColor(...GRIGIO);
+  doc.setLineWidth(0.3);
+  if (y > H - 60) {
+    doc.addPage();
+    y = MARGINE;
+  }
+  doc.line(MARGINE, y + 10, MARGINE + 65, y + 10);
+  doc.setFontSize(7.5);
+  doc.setTextColor(...GRIGIO);
+  doc.text("Firma", MARGINE, y + 14);
+  y += 22;
+
+  const payload = payloadPerImporto(a, stato.residuo, causale(prev, "saldo"));
+  if (payload) {
+    riquadroQr(doc, {
+      x: MARGINE,
+      y,
+      larghezza,
+      payload,
+      titolo: `Paga ${formatEuro(stato.residuo)} con il QR del bonifico`,
+      righe: [
+        "Inquadra il codice con l'app della tua banca: importo, IBAN e causale si compilano da soli.",
+        `Causale: ${causale(prev, "saldo")}`,
+      ],
+      accento: NERO,
+    });
+  }
+  doc.setFontSize(7.5);
+  doc.setTextColor(...GRIGIO);
+  doc.text(`Allegato: copia del preventivo n. ${prev.numero} accettato.`, MARGINE, H - 10);
+  return doc;
+}
+
+export function creaDiffidaBlob(opts) {
+  return creaDiffida(opts).output("blob");
 }

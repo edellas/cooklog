@@ -179,7 +179,19 @@ const passo = async (nome, fn) => {
 
 let linkAccettazione;
 let linkConferma;
+let linkPagamento;
+let idP1;
 let creati = 0;
+const isoTra = (giorni) => {
+  const d = new Date(Date.now() + giorni * 86400000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const scarica = async (p, selettore, nome) => {
+  const [download] = await Promise.all([p.waitForEvent("download"), p.click(selettore)]);
+  const file = path.join(tmp, nome);
+  await download.saveAs(file);
+  return file;
+};
 
 try {
   await passo("primo avvio porta al benvenuto", async () => {
@@ -374,6 +386,141 @@ try {
     await page.waitForSelector("text=già registrata");
   });
 
+  await passo("incassi: acconto in attesa, QR del bonifico sul PDF e sulla pagina del cliente", async () => {
+    await page.goto(`${BASE}/app.html#/`);
+    await page.waitForSelector("#da-incassare");
+    const card = await page.textContent("#da-incassare");
+    assert.match(card, /Giulia Bianchi · € 291,50/);
+    assert.match(card, /Acconto di € 87,45 entro il/);
+    await page.click("#da-incassare a.ricontatto");
+    await page.waitForSelector("#sezione-incassi:not([hidden])");
+    idP1 = page.url().match(/#\/p\/([^?]+)/)[1];
+    assert.match(await page.textContent("#sezione-incassi"), /Attesa acconto/);
+    const t = testoPdf(await scaricaPdfDalMenu("p1-qr.pdf"));
+    assert.ok(/con il QR/.test(t), `manca il QR nel PDF:\n${t}`);
+    const c = cliente.page;
+    await c.goto(linkAccettazione);
+    await c.waitForSelector("text=Preventivo accettato");
+    assert.equal(await c.locator(".qr svg").count(), 1, "QR SEPA per l'acconto");
+    assert.match(await c.textContent(".cp-successo"), /Acconto preventivo n\. /);
+  });
+
+  await passo("cliente: 'Ho pagato' manda un avviso, l'artigiano controlla e registra (una volta sola)", async () => {
+    const c = cliente.page;
+    await c.click('[data-azione="ho-pagato"]');
+    await c.waitForSelector('input[name="hp-metodo"]');
+    await attendiAnimazioni(c);
+    await c.fill("#hp-nota", "CRO 0001 <b>x</b>");
+    await c.click('[data-azione="hp-conferma"]');
+    await c.waitForSelector("#cp-avviso-wa");
+    const testo = new URL(await c.getAttribute("#cp-avviso-wa", "href")).searchParams.get("text");
+    assert.match(testo, /ho pagato € 87,45/);
+    const avviso = testo.match(/https?:\/\/\S+/)[0];
+    assert.ok(avviso.startsWith(`${BASE}/app.html#/pagamento?d=z`));
+    // riaprendo il link il cliente ritrova l'avviso da inviare
+    await c.reload();
+    await c.waitForSelector("#cp-avviso-wa");
+    await page.goto(avviso);
+    await page.waitForSelector("text=dice di aver pagato");
+    assert.ok((await page.textContent("main")).includes("CRO 0001 <b>x</b>"));
+    await controllaAccessibilita(page, "avviso di pagamento");
+    await page.click('[data-action="avviso-registra"]');
+    await page.waitForSelector("#sezione-incassi:not([hidden])");
+    await page.waitForFunction(() =>
+      /Incassato\s*€ 87,45/.test(document.querySelector("#sezione-incassi").textContent),
+    );
+    assert.match(await page.textContent("#sezione-incassi"), /Lavori in corso/);
+    await page.goto(avviso);
+    await page.waitForSelector("text=già registrato");
+  });
+
+  await passo("incassi: fine lavori, saldo scaduto, sollecito a tono crescente con link di pagamento", async () => {
+    await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await page.waitForSelector('[data-inc="fineLavori"]');
+    await page.fill('[data-inc="fineLavori"]', isoTra(-45));
+    await page.locator('[data-inc="fineLavori"]').dispatchEvent("change");
+    await page.waitForSelector("#sezione-incassi .badge.scaduto");
+    assert.match(await page.textContent("#sezione-incassi"), /€ 204,05 scaduti/);
+    await controllaAccessibilita(page, "incassi");
+    await page.click('[data-action="sollecito"]');
+    await page.waitForSelector("#sol-testo");
+    const msg = await page.inputValue("#sol-testo");
+    assert.match(msg, /di € 204,05 per il preventivo/);
+    assert.match(msg, /scaduto il \d{2}\/\d{2}\/\d{4} \(da 15 giorni\)/);
+    assert.match(msg, /IBAN IT60 X054 2811 1010 0000 0123 456/);
+    linkPagamento = msg.match(/https?:\/\/\S+accetta\.html#\S+/)[0];
+    assert.match(await page.getAttribute("#sol-wa", "href"), /^https:\/\/wa\.me\/393477654321\?text=/);
+    // i toni più duri sono Pro
+    await page.click('[data-action="tono"][data-l="3"]');
+    await page.waitForSelector("text=Il recupero crediti è una funzione Pro");
+    await page.keyboard.press("Escape");
+    await page.click('[data-action="sollecito"]');
+    await page.waitForSelector("#sol-wa");
+    await attendiAnimazioni(page);
+    // il link aprirebbe WhatsApp: si blocca la navigazione e si controlla che il sollecito sia registrato
+    await page.evaluate(() =>
+      document.querySelector("#sol-wa").addEventListener("click", (e) => e.preventDefault(), { once: true }),
+    );
+    await page.click("#sol-wa");
+    await page.waitForFunction(() =>
+      /Solleciti: .*promemoria cortese/.test(document.querySelector("#sezione-incassi").textContent),
+    );
+    assert.match(await page.textContent('[data-action="sollecito"]'), /Sollecita: sollecito/);
+  });
+
+  await passo("cliente: richiesta di pagamento con importo, QR del bonifico e pulsante 'Ho pagato'", async () => {
+    const c = cliente.page;
+    await c.goto(linkPagamento);
+    await c.waitForSelector("text=Richiesta di pagamento");
+    assert.equal((await c.textContent("h1")).trim(), "€ 204,05");
+    const corpo = await c.textContent("main");
+    assert.match(corpo, /Totale del preventivo\s*€ 291,50/);
+    assert.match(corpo, /Già pagato\s*- € 87,45/);
+    assert.equal(await c.locator(".qr svg").count(), 1);
+    assert.equal(
+      await c.getAttribute("text=Paga online >> xpath=ancestor-or-self::a", "href"),
+      "https://paypal.me/idraulicarossi",
+    );
+    assert.equal(await c.locator('[data-azione="ho-pagato"]').count(), 1);
+    await controllaAccessibilita(c, "richiesta di pagamento");
+    await c.screenshot({ path: path.join(tmp, "richiesta-pagamento.png") });
+  });
+
+  await passo("sicurezza: richiesta di pagamento e avviso costruiti ad arte non eseguono codice", async () => {
+    const xss = '<img src=x onerror="window.__xss=1">';
+    const c = cliente.page;
+    const richiesta = {
+      v: 1,
+      k: "pg",
+      id: "x",
+      n: xss,
+      o: xss,
+      cl: { n: xss },
+      az: { r: xss, t: "333", pay: "javascript:window.__xss=1", ib: "IT60X0542811101000000123456", it: "Mario\nRossi" },
+      im: "1e99",
+      tp: "boh",
+      ca: 'Saldo"\nBCD',
+      sc: "2026-02-30",
+      tt: -5,
+      ic: "abc",
+      wm: 1,
+    };
+    await c.goto(`${BASE}/accetta.html#${await comprimi(JSON.stringify(richiesta))}`);
+    await c.waitForSelector("text=Richiesta di pagamento");
+    assert.ok((await c.textContent("body")).includes(xss), "il testo va mostrato com'è");
+    assert.equal((await c.textContent("h1")).trim(), "€ 10.000.000,00");
+    assert.equal(await c.locator("text=Paga online").count(), 0);
+    assert.equal(await c.locator('a[href^="javascript"]').count(), 0);
+    const avviso = { v: 1, k: "av", id: idP1, n: xss, im: 5, me: "__proto__", dt: "x", nt: xss };
+    await page.goto(`${BASE}/app.html#/pagamento?d=${await comprimi(JSON.stringify(avviso))}`);
+    await page.waitForSelector("text=dice di aver pagato");
+    assert.ok((await page.textContent("main")).includes(xss));
+    await page.goto(`${BASE}/app.html#/pagamento?d=${await comprimi(JSON.stringify({ ...avviso, im: 0 }))}`);
+    await page.waitForSelector("text=senza importo");
+    assert.equal(await c.evaluate(() => window.__xss), undefined, "codice iniettato eseguito!");
+    assert.equal(await page.evaluate(() => window.__xss), undefined, "codice iniettato eseguito!");
+  });
+
   await passo("sicurezza: un link con prezzi manomessi viene segnalato all'artigiano", async () => {
     const codice = linkAccettazione.split("#")[1];
     const dati = JSON.parse(await decomprimi(codice));
@@ -549,6 +696,52 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".foto-griglia figure").length === 1);
   });
 
+  await passo("Pro: lettera di messa in mora e fascicolo del credito in PDF", async () => {
+    await page.goto(`${BASE}/app.html#/impostazioni`);
+    await page.fill('[data-az="tassoMora"]', "10,15");
+    await page.locator('[data-az="tassoMora"]').blur();
+    await page.waitForTimeout(400);
+    await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await page.waitForSelector('[data-action="pdf-diffida"]');
+    const t1 = testoPdf(await scarica(page, '[data-action="pdf-diffida"]', "messa-in-mora.pdf"));
+    for (const atteso of [
+      "costituzione in mora",
+      "art. 1219",
+      "€ 204,05",
+      "Giulia Bianchi",
+      "15 (quindici) giorni",
+      "IT60 X054 2811 1010 0000 0123 456",
+      "10,15%",
+      "Idraulica Rossi di Mario Rossi",
+      "online, con firma",
+    ]) {
+      assert.ok(t1.includes(atteso), `nella lettera manca: ${atteso}\n---\n${t1}`);
+    }
+    await page.waitForFunction(() =>
+      /lettera di messa in mora/.test(document.querySelector("#sezione-incassi").textContent),
+    );
+    const t2 = testoPdf(await scarica(page, '[data-action="pdf-fascicolo"]', "fascicolo.pdf"));
+    for (const atteso of [
+      "PREVENTIVO",
+      "FASCICOLO DEL CREDITO",
+      "Online tramite link",
+      "PAGAMENTI RICEVUTI",
+      "Segnalato dal cliente",
+      "SOLLECITI INVIATI",
+      "Promemoria cortese",
+      "Da incassare",
+      "€ 204,05",
+    ]) {
+      assert.ok(t2.includes(atteso), `nel fascicolo manca: ${atteso}\n---\n${t2}`);
+    }
+    // con Pro i toni più decisi sono disponibili
+    await page.click('[data-action="sollecito"]');
+    await page.waitForSelector("#sol-testo");
+    await page.click('[data-action="tono"][data-l="3"]');
+    assert.match(await page.inputValue("#sol-testo"), /lettera formale di messa in mora/);
+    await page.keyboard.press("Escape");
+  });
+
   await passo("calcolatore metri quadri per stanza", async () => {
     await page.goto(`${BASE}/app.html#/nuovo`);
     await page.waitForSelector(`text=N. ${num(5)}`);
@@ -693,6 +886,54 @@ try {
     await page.click('[data-esito="si"]');
     await page.waitForSelector("#lista-prev");
     assert.equal(await page.locator(".voce-lista", { hasText: num(8) }).count(), 0);
+  });
+
+  await passo("date proposte: il cliente sceglie quando iniziare firmando; agenda e calendario", async () => {
+    await page.goto(`${BASE}/app.html#/nuovo`);
+    await page.waitForSelector('[data-action="data-aggiungi"]');
+    creati++;
+    await page.fill('[data-campo="cliente.nome"]', "Paolo Conti");
+    await page.fill('[data-campo="cliente.telefono"]', "347 1110001");
+    await page.click('[data-action="aggiungi-riga"]');
+    await page.locator('[data-r="descrizione"]').last().fill("Sostituzione scaldabagno");
+    await page.locator('[data-r="prezzo"]').last().fill("300");
+    const d1 = isoTra(3);
+    const d2 = isoTra(5);
+    await page.click('[data-action="data-aggiungi"]');
+    await page.fill('[data-disp="0.data"]', d1);
+    await page.click('[data-action="data-aggiungi"]');
+    await page.fill('[data-disp="1.data"]', d2);
+    await page.selectOption('[data-disp="1.fascia"]', "pomeriggio");
+    await page.waitForTimeout(600);
+    await page.click('[data-action="invia"]');
+    await page.waitForSelector('[data-action="invio-link"]');
+    const testo = new URL(await page.getAttribute('[data-action="invio-link"]', "href")).searchParams.get("text");
+    const link = testo.match(/https?:\/\/\S+/)[0];
+    await page.keyboard.press("Escape");
+    const c = cliente.page;
+    await c.goto(link);
+    await c.waitForSelector("text=Quando iniziamo?");
+    await c.click('[data-azione="accetta"]');
+    await c.waitForSelector('input[name="acc-data"]');
+    await c.check('input[name="acc-data"][value="1"]');
+    await firma(c, "#acc-firma");
+    await c.fill("#acc-nome", "Paolo Conti");
+    await c.check("#acc-ok");
+    await c.click('[data-azione="conferma"]');
+    await c.waitForSelector("text=Inizio lavori");
+    const conferma = new URL(await c.getAttribute("#cp-invia-wa", "href")).searchParams.get("text");
+    assert.match(conferma, /Per iniziare scelgo: .*pomeriggio/);
+    const ics = readFileSync(await scarica(c, '[data-azione="ics"]', "lavori.ics"), "utf8");
+    assert.match(ics, new RegExp(`DTSTART:${d2.replace(/-/g, "")}T140000`));
+    assert.match(ics, /BEGIN:VEVENT[\s\S]*END:VEVENT/);
+    await page.goto(conferma.match(/https?:\/\/\S+/)[0]);
+    await page.click('[data-action="registra-accettazione"]');
+    await page.waitForSelector("text=Scelta dal cliente accettando online");
+    const icsApp = readFileSync(await scarica(page, '[data-action="appuntamento-ics"]', "lavoro-app.ics"), "utf8");
+    assert.match(icsApp, /\r\nSUMMARY:Paolo Conti\r\n/);
+    await page.goto(`${BASE}/app.html#/`);
+    await page.waitForSelector("text=Prossimi lavori");
+    assert.match(await page.textContent("main"), /Paolo Conti/);
   });
 
   await passo("sicurezza: un backup costruito per attaccare l'app non esegue codice", async () => {

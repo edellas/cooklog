@@ -14,6 +14,12 @@ import {
   verificaImpronta,
   urlSicuro,
   MAX_LUNGHEZZA_LINK,
+  creaLinkRichiesta,
+  leggiLinkCliente,
+  richiestaDaDati,
+  datiRichiesta,
+  creaLinkAvviso,
+  leggiAvviso,
 } from "../public/js/link.js";
 import { codificaTratti, decodificaTratti, semplifica, lunghezzaTratti } from "../public/js/firma.js";
 import { calcolaTotali } from "../public/js/core.js";
@@ -258,4 +264,158 @@ test("firma: semplificazione, codifica compatta e limiti di sicurezza", () => {
   assert.equal(ostile[0].length, 1);
   assert.ok(ostile.length <= 80);
   assert.deepEqual(decodificaTratti(null), []);
+});
+
+test("date proposte e caparra viaggiano nel link; il cliente sceglie solo l'indice della data", async () => {
+  const prev = preventivo();
+  prev.caparra = true;
+  prev.disponibilita = [
+    { data: "2026-10-12", fascia: "mattina" },
+    { data: "2026-02-30", fascia: "mattina" },
+    { data: "2026-10-14", fascia: "pomeriggio" },
+  ];
+  const { codice, hash } = await creaLinkAccettazione("https://x.it/", prev, AZIENDA, { pro: true });
+  const letto = await leggiLinkAccettazione(codice);
+  assert.equal(letto.prev.caparra, true);
+  assert.deepEqual(letto.prev.disponibilita, [
+    { data: "2026-10-12", fascia: "mattina" },
+    { data: "2026-10-14", fascia: "pomeriggio" },
+  ]);
+  // date ostili nel link: scartate
+  const dati = JSON.parse(await decomprimi(codice));
+  dati.dt = [
+    ["<script>", "mattina"],
+    ["2026-10-20", "notte"],
+    "x",
+    ...Array.from({ length: 50 }, () => ["2026-11-01", "mattina"]),
+  ];
+  const ostile = preventivoDaDati(dati);
+  assert.deepEqual(ostile.disponibilita, [
+    { data: "2026-10-20", fascia: "giornata" },
+    { data: "2026-11-01", fascia: "mattina" },
+  ]);
+  // conferma con la seconda data proposta (indice 1 della lista "pulita")
+  const url = await creaLinkConferma("https://x.it/", {
+    id: prev.id,
+    numero: prev.numero,
+    hash,
+    scelte: [],
+    descrizioni: [],
+    nome: "Giulia",
+    firma: [],
+    appuntamento: 1,
+  });
+  const conferma = await leggiConferma(url.split("?d=")[1]);
+  assert.equal(conferma.appuntamento, 1);
+  applicaConferma(prev, conferma, "data:image/png;base64,xx");
+  assert.equal(prev.appuntamento.data, "2026-10-14");
+  assert.equal(prev.appuntamento.fascia, "pomeriggio");
+  assert.equal(prev.appuntamento.da, "cliente");
+  assert.match(prev.accettatoIl, /^\d{4}-\d{2}-\d{2}$/);
+  // indici fuori lista o non numerici non fissano nessuna data
+  for (const ap of [7, -3, "1", 1.5]) {
+    const u = await creaLinkConferma("https://x.it/", {
+      id: "a",
+      numero: "1",
+      hash,
+      scelte: [],
+      descrizioni: [],
+      nome: "x",
+      firma: [],
+      appuntamento: ap,
+    });
+    assert.equal((await leggiConferma(u.split("?d=")[1])).appuntamento, -1);
+  }
+  const p2 = preventivo();
+  p2.disponibilita = [{ data: "2026-10-12", fascia: "mattina" }];
+  applicaConferma(p2, { ...conferma, appuntamento: 2 }, "x");
+  assert.equal(p2.appuntamento, undefined);
+});
+
+test("richiesta di pagamento: andata e ritorno e dati ostili ripuliti", async () => {
+  const prev = preventivo();
+  const { url, codice } = await creaLinkRichiesta("https://x.it/", prev, AZIENDA, {
+    importo: 204.05,
+    tipo: "saldo",
+    causale: "Saldo preventivo n. 2026-007",
+    scadenza: "2026-10-20",
+    totale: 291.5,
+    incassato: 87.45,
+    pro: false,
+  });
+  assert.ok(url.startsWith("https://x.it/accetta.html#z"));
+  const letto = await leggiLinkCliente(codice);
+  assert.equal(letto.tipo, "pagamento");
+  assert.equal(letto.richiesta.importo, 204.05);
+  assert.equal(letto.richiesta.azienda.iban, "IT60X0542811101000000123456");
+  assert.equal(letto.richiesta.conMarchio, true);
+  assert.ok(
+    !JSON.stringify(datiRichiesta(prev, AZIENDA, { importo: 1 })).includes("347 000"),
+    "niente telefono del cliente",
+  );
+  await assert.rejects(leggiLinkAccettazione(codice), /link di pagamento/);
+  const preventivoLink = await leggiLinkCliente(
+    (await creaLinkAccettazione("https://x.it/", prev, AZIENDA, { pro: true })).codice,
+  );
+  assert.equal(preventivoLink.tipo, "preventivo");
+  const r = richiestaDaDati({
+    v: 1,
+    k: "pg",
+    id: "a<b>",
+    az: { pay: "javascript:alert(1)", col: "red", ib: "it60<x>" },
+    im: "1e99",
+    tp: "tutto",
+    ca: "riga1\nBCD\r\nriga3",
+    sc: "2026-13-01",
+    tt: -4,
+    wm: 0,
+  });
+  assert.equal(r.id, "ab");
+  assert.equal(r.azienda.linkPagamento, "");
+  assert.equal(r.azienda.colore, "#1d4ed8");
+  assert.equal(r.azienda.iban, "IT60X");
+  assert.equal(r.importo, 1e7);
+  assert.equal(r.tipo, "residuo");
+  assert.equal(r.causale, "riga1 BCD riga3");
+  assert.equal(r.scadenza, "");
+  assert.equal(r.totale, 0);
+  assert.equal(r.conMarchio, false);
+  assert.throws(() => richiestaDaDati({ v: 1 }), /non valido/);
+});
+
+test("avviso 'Ho pagato': andata e ritorno, impronta per non registrarlo due volte, rifiuti", async () => {
+  const url = await creaLinkAvviso("https://x.it/", {
+    id: "8f0c2a1e-1111-4222-8333-944445555666",
+    numero: "2026-007",
+    importo: 87.45,
+    metodo: "bonifico",
+    data: "2026-10-06",
+    nota: "CRO 123",
+  });
+  assert.ok(url.startsWith("https://x.it/app.html#/pagamento?d=z"));
+  const codice = url.split("?d=")[1];
+  const a = await leggiAvviso(codice);
+  assert.deepEqual(
+    { ...a, rif: undefined },
+    {
+      id: "8f0c2a1e-1111-4222-8333-944445555666",
+      numero: "2026-007",
+      importo: 87.45,
+      metodo: "bonifico",
+      data: "2026-10-06",
+      nota: "CRO 123",
+      rif: undefined,
+    },
+  );
+  assert.equal(a.rif, await impronta(codice));
+  const fai = async (d) => leggiAvviso(await comprimi(JSON.stringify(d)));
+  await assert.rejects(fai({ v: 1, k: "av", id: "x", im: 0 }), /senza importo/);
+  await assert.rejects(fai({ v: 1, k: "pg", id: "x", im: 5 }), /non valido/);
+  await assert.rejects(leggiAvviso("zAAAA"), /non valid|danneggiato|incompleto/);
+  const strano = await fai({ v: 1, k: "av", id: "x<y>", im: "1e20", me: "__proto__", dt: "ieri", nt: "n".repeat(900) });
+  assert.equal(strano.id, "xy");
+  assert.equal(strano.importo, 1e7);
+  assert.equal(strano.metodo, "altro");
+  assert.match(strano.data, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(strano.nota.length, 300);
 });

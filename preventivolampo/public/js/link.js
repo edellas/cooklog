@@ -4,6 +4,7 @@
 // Il cliente lo apre, sceglie le voci facoltative, firma e rimanda all'artigiano un secondo link
 // con l'accettazione. Un'impronta SHA-256 permette all'app di accorgersi se i dati sono stati alterati.
 import { parseNumero, oggiISO } from "./core.js";
+import { normalizzaDisponibilita, dataValida, importoValido, METODI } from "./incassi.js";
 
 export const VERSIONE_LINK = 1;
 export const MAX_LUNGHEZZA_LINK = 16000; // WhatsApp e i browser gestiscono link molto più lunghi
@@ -162,6 +163,9 @@ export function datiPerLink(prev, azienda, { pro }) {
     pg: prev.pagamento || "",
     tm: prev.tempi || "",
     nt: prev.note || "",
+    cp: prev.caparra ? 1 : 0,
+    // Date proposte per iniziare: il cliente ne sceglie una quando firma.
+    dt: normalizzaDisponibilita(prev.disponibilita).map((d) => [d.data, d.fascia]),
     wm: pro ? 0 : 1,
   };
 }
@@ -170,6 +174,22 @@ export async function creaLinkAccettazione(base, prev, azienda, opzioni) {
   const codice = await comprimi(JSON.stringify(datiPerLink(prev, azienda, opzioni)));
   const url = `${base}accetta.html#${codice}`;
   return { url, codice, hash: await impronta(codice), troppoLungo: url.length > MAX_LUNGHEZZA_LINK };
+}
+
+function aziendaDaDati(az, ff = "") {
+  return {
+    ragioneSociale: str(az.r, 120),
+    piva: str(az.pi, 30),
+    telefono: telefono(az.t),
+    email: str(az.e, 120),
+    indirizzo: str(az.i, 200),
+    citta: str(az.c, 120),
+    iban: iban(az.ib),
+    intestatarioIban: str(az.it, 120),
+    linkPagamento: urlSicuro(az.pay),
+    colore: colore(az.col),
+    fraseForfettario: str(ff, 600),
+  };
 }
 
 // Dati del link (non fidati) -> preventivo da mostrare, con tutti i campi sanificati.
@@ -216,38 +236,134 @@ export function preventivoDaDati(d) {
     pagamento: str(d.pg, 1000),
     tempi: str(d.tm, 300),
     note: str(d.nt, 3000),
+    caparra: d.cp === 1,
+    disponibilita: normalizzaDisponibilita(
+      (Array.isArray(d.dt) ? d.dt : [])
+        .slice(0, 10)
+        .map((x) => (Array.isArray(x) ? { data: x[0], fascia: x[1] } : null)),
+    ),
     firma: null,
-    azienda: {
-      ragioneSociale: str(az.r, 120),
-      piva: str(az.pi, 30),
-      telefono: telefono(az.t),
-      email: str(az.e, 120),
-      indirizzo: str(az.i, 200),
-      citta: str(az.c, 120),
-      iban: iban(az.ib),
-      intestatarioIban: str(az.it, 120),
-      linkPagamento: urlSicuro(az.pay),
-      colore: colore(az.col),
-      fraseForfettario: str(d.ff, 600),
-    },
+    azienda: aziendaDaDati(az, d.ff),
     conMarchio: d.wm !== 0,
   };
 }
 
-export async function leggiLinkAccettazione(codice) {
+async function leggiJson(codice) {
   const testo = await decomprimi(codice);
-  let dati;
   try {
-    dati = JSON.parse(testo);
+    return JSON.parse(testo);
   } catch {
     throw new Error("Link danneggiato");
   }
+}
+
+export async function leggiLinkAccettazione(codice) {
+  const dati = await leggiJson(codice);
+  if (dati && dati.k === "pg") throw new Error("Questo è un link di pagamento, non un preventivo");
   return { prev: preventivoDaDati(dati), hash: await impronta(codice) };
+}
+
+// La pagina del cliente apre due tipi di link: il preventivo da accettare e la richiesta di pagamento.
+export async function leggiLinkCliente(codice) {
+  const dati = await leggiJson(codice);
+  const hash = await impronta(codice);
+  if (dati && dati.k === "pg") return { tipo: "pagamento", richiesta: richiestaDaDati(dati), hash };
+  return { tipo: "preventivo", prev: preventivoDaDati(dati), hash };
+}
+
+// ---------------- richiesta di pagamento (impresa -> cliente) ----------------
+// Un link con importo, IBAN, QR e pulsante "Ho pagato": si manda col sollecito o dopo i lavori.
+export function datiRichiesta(prev, azienda, { importo, tipo, causale, scadenza, totale, incassato, pro }) {
+  const a = azienda || {};
+  return {
+    v: VERSIONE_LINK,
+    k: "pg",
+    id: prev.id,
+    n: prev.numero,
+    o: prev.oggetto || "",
+    cl: { n: prev.cliente?.nome || "" },
+    az: {
+      r: a.ragioneSociale || "",
+      pi: a.piva || "",
+      t: a.telefono || "",
+      e: a.email || "",
+      ib: a.iban || "",
+      it: a.intestatarioIban || "",
+      pay: a.linkPagamento || "",
+      col: pro ? a.colore || "" : "",
+    },
+    im: Number(importo) || 0,
+    tp: tipo,
+    ca: causale || "",
+    sc: scadenza || "",
+    tt: Number(totale) || 0,
+    ic: Number(incassato) || 0,
+    cp: prev.caparra ? 1 : 0,
+    wm: pro ? 0 : 1,
+  };
+}
+
+export async function creaLinkRichiesta(base, prev, azienda, opzioni) {
+  const codice = await comprimi(JSON.stringify(datiRichiesta(prev, azienda, opzioni)));
+  return { url: `${base}accetta.html#${codice}`, codice, hash: await impronta(codice) };
+}
+
+export function richiestaDaDati(d) {
+  if (!d || typeof d !== "object" || d.v !== VERSIONE_LINK || d.k !== "pg") throw new Error("Link non valido");
+  const az = d.az && typeof d.az === "object" ? d.az : {};
+  const cl = d.cl && typeof d.cl === "object" ? d.cl : {};
+  return {
+    id: str(d.id, 64).replace(/[^a-zA-Z0-9-]/g, ""),
+    numero: str(d.n, 40),
+    oggetto: str(d.o, 300),
+    cliente: { nome: str(cl.n, 120) },
+    azienda: aziendaDaDati(az),
+    importo: importoValido(d.im),
+    tipo: ["acconto", "saldo", "residuo"].includes(d.tp) ? d.tp : "residuo",
+    causale: str(d.ca, 140).replace(/[\r\n]+/g, " "),
+    scadenza: dataValida(d.sc) ? d.sc : "",
+    totale: importoValido(d.tt),
+    incassato: importoValido(d.ic),
+    caparra: d.cp === 1,
+    conMarchio: d.wm !== 0,
+  };
+}
+
+// ---------------- avviso "Ho pagato" (cliente -> impresa) ----------------
+export async function creaLinkAvviso(base, { id, numero, importo, metodo, data, nota }) {
+  const dati = { v: VERSIONE_LINK, k: "av", id, n: numero, im: importo, me: metodo, dt: data, nt: nota };
+  return `${base}app.html#/pagamento?d=${await comprimi(JSON.stringify(dati))}`;
+}
+
+export async function leggiAvviso(codice) {
+  let d;
+  try {
+    d = await leggiJson(codice);
+  } catch (err) {
+    throw new Error(err.message && err.message.startsWith("Link") ? err.message : "Avviso non valido");
+  }
+  if (!d || d.v !== VERSIONE_LINK || d.k !== "av") throw new Error("Avviso di pagamento non valido");
+  const importo = importoValido(d.im);
+  if (!(importo > 0)) throw new Error("Avviso di pagamento senza importo");
+  return {
+    id: str(d.id, 64).replace(/[^a-zA-Z0-9-]/g, ""),
+    numero: str(d.n, 40),
+    importo,
+    metodo: Object.hasOwn(METODI, d.me) ? d.me : "altro",
+    data: dataValida(d.dt) ? d.dt : oggiISO(),
+    nota: str(d.nt, 300),
+    rif: await impronta(String(codice)),
+  };
 }
 
 // ---------------- risposta del cliente ----------------
 // scelte: indici delle voci facoltative scelte; descrizioni: le stesse voci, per controllo e riepilogo.
-export async function creaLinkConferma(base, { id, numero, hash, scelte, descrizioni, nome, firma }) {
+// appuntamento: indice della data proposta scelta dal cliente (-1 = nessuna). Viaggia solo l'indice:
+// la data vera la legge l'app dell'impresa dal suo preventivo, il cliente non può inventarla.
+export async function creaLinkConferma(
+  base,
+  { id, numero, hash, scelte, descrizioni, nome, firma, appuntamento = -1 },
+) {
   const dati = {
     v: VERSIONE_LINK,
     id,
@@ -258,6 +374,7 @@ export async function creaLinkConferma(base, { id, numero, hash, scelte, descriz
     nm: nome,
     dt: new Date().toISOString(),
     f: firma,
+    ap: appuntamento,
   };
   return `${base}app.html#/accettazione?d=${await comprimi(JSON.stringify(dati))}`;
 }
@@ -280,6 +397,7 @@ export async function leggiConferma(codice) {
     nome: str(d.nm, 120),
     data: Number.isFinite(dt) ? new Date(dt).toISOString() : new Date().toISOString(),
     firma: Array.isArray(d.f) ? d.f : [],
+    appuntamento: Number.isInteger(d.ap) && d.ap >= 0 && d.ap < 3 ? d.ap : -1,
   };
 }
 
@@ -305,7 +423,10 @@ export function applicaConferma(prev, conferma, firmaPng) {
   });
   prev.firma = { img: firmaPng, nome: conferma.nome, luogo: "", data: conferma.data, online: true };
   prev.stato = "accettato";
+  prev.accettatoIl = oggiISO(new Date(conferma.data));
   prev.accettazioneOnline = { il: Date.now(), hash: conferma.hash, facoltativeAggiunte: facoltative };
+  const scelta = normalizzaDisponibilita(prev.disponibilita)[conferma.appuntamento ?? -1];
+  if (scelta) prev.appuntamento = { ...scelta, da: "cliente", il: Date.now() };
   return facoltative;
 }
 

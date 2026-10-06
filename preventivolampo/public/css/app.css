@@ -321,6 +321,11 @@ details[open] summary { margin-bottom: 10px; }
 .badge.accettato { background: var(--ok-soft); color: var(--ok); }
 .badge.rifiutato { background: var(--bad-soft); color: var(--bad); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.scaduto { background: var(--bad-soft); color: var(--bad); }
+.badge.pagato { background: var(--ok-soft); color: var(--ok); }
+.badge.attesa-acconto { background: var(--warn-soft); color: var(--warn); }
+.badge.da-saldare { background: var(--brand-soft); color: var(--brand-ink); }
+.badge.in-corso, .badge.non-accettato { background: var(--surface-2); color: var(--muted); }
 .badge.pro { background: linear-gradient(135deg, #f59e0b, #f97316); color: #fff; letter-spacing: 0.05em; }
 .badge.pro::before { display: none; }
 .avatar {
@@ -368,6 +373,9 @@ details[open] summary { margin-bottom: 10px; }
 .voce-lista .importo { font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 .ricontatto { display: flex; gap: 12px; align-items: center; padding: 12px; border-radius: 16px; background: var(--surface-2); }
 .ricontatto + .ricontatto { margin-top: 8px; }
+a.ricontatto { color: inherit; text-decoration: none; transition: background 0.15s; }
+a.ricontatto:hover { background: var(--surface-3); }
+.ricontatto .badge { flex: none; }
 .ricontatto .corpo { flex: 1; min-width: 0; }
 .ricontatto .t { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ricontatto .s { font-size: 12.5px; color: var(--muted); }
@@ -536,11 +544,19 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 .mestiere .em { font-size: 22px; line-height: 1; width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; background: var(--surface-2); flex: none; }
 .mestiere.on { border-color: var(--brand); background: var(--brand-soft); box-shadow: 0 0 0 3px var(--brand-soft); }
 .mestiere.on .em { background: var(--surface); }
-.scelta-iva { display: grid; gap: 8px; }
-.scelta-iva label { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-radius: 16px; border: 1.5px solid var(--line-2); cursor: pointer; font-weight: 650; }
-.scelta-iva label small { display: block; font-weight: 500; color: var(--muted); font-size: 12.5px; }
-.scelta-iva input { width: 20px; height: 20px; accent-color: var(--brand); -webkit-appearance: radio; appearance: auto; min-height: 0; padding: 0; }
-.scelta-iva label:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.scelta-iva, .scelta { display: grid; gap: 8px; }
+.scelta-iva label, .scelta label { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-radius: 16px; border: 1.5px solid var(--line-2); cursor: pointer; font-weight: 650; }
+.scelta-iva label small, .scelta label small { display: block; font-weight: 500; color: var(--muted); font-size: 12.5px; }
+.scelta-iva input, .scelta input { width: 20px; height: 20px; flex: none; accent-color: var(--brand); -webkit-appearance: radio; appearance: auto; min-height: 0; padding: 0; }
+.scelta-iva label:has(input:checked), .scelta label:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+.scelta label { padding: 11px 13px; }
+
+/* ---------- QR del bonifico ---------- */
+.qr-box { display: flex; gap: 14px; align-items: center; }
+.qr { flex: none; width: 132px; padding: 6px; border-radius: 14px; background: #fff; border: 1px solid var(--line); }
+.qr svg { display: block; width: 100%; height: auto; }
+.qr-box .muted { flex: 1; min-width: 0; line-height: 1.45; }
+@media (max-width: 340px) { .qr-box { flex-direction: column; align-items: flex-start; } }
 
 /* ---------- Pagina del cliente (accettazione online) ---------- */
 .cp-testa {
@@ -600,3 +616,25 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- Incassi, agenda, solleciti ---------- */
+.testo-bad { color: var(--bad); }
+#sezione-incassi, #sezione-date { scroll-margin-top: 76px; }
+.inc-totali { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.inc-totali > div { padding: 10px 12px; border-radius: 14px; background: var(--surface-2); min-width: 0; }
+.inc-totali b { font-size: 19px; letter-spacing: -0.02em; }
+.inc-lista { display: flex; flex-direction: column; gap: 6px; }
+.inc-riga { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); }
+.inc-riga .corpo { flex: 1; min-width: 0; }
+.inc-recupero { padding-top: 4px; border-top: 1px dashed var(--line-2); }
+.inc-recupero .badge.pro { padding: 2px 6px; font-size: 10px; }
+.data-tile { flex: none; width: 44px; height: 46px; border-radius: 12px; background: var(--brand-soft); color: var(--brand-ink); display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+.data-tile b { font-size: 18px; }
+.data-tile small { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+.appuntamento { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); }
+.appuntamento .corpo { flex: 1; min-width: 0; }
+.riga-data { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.seg.seg-pieno { display: flex; width: 100%; }
+.seg.seg-pieno button { flex: 1; min-width: 0; padding: 8px 4px; font-size: 12.5px; }
+.qr-grande { width: min(100%, 300px); margin: 6px auto 0; padding: 12px; border-radius: 20px; background: #fff; border: 1px solid var(--line); }
+.qr-grande svg { display: block; width: 100%; height: auto; }

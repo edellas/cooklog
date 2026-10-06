@@ -52,3 +52,40 @@ test("backup: record malformati scartati o ripuliti, licenza mai importata", () 
     ["azienda"],
   );
 });
+
+test("backup: incassi, date e appuntamenti ostili vengono ripuliti", () => {
+  const { preventivi } = validaBackup({
+    app: "preventivolampo",
+    preventivi: [
+      {
+        id: "p1",
+        caparra: "sì",
+        disponibilita: [{ data: "<script>" }, { data: "2026-10-12", fascia: "notte" }],
+        appuntamento: { data: "2026-02-30" },
+        accettatoIl: "ieri",
+        incasso: {
+          pagamenti: [{ importo: "50", metodo: "constructor", data: "x", id: "../x" }, "x"],
+          solleciti: "tanti",
+          segnalazioni: [{ importo: -1 }],
+          fineLavori: "2026-10-01",
+          giorniSaldo: 9999,
+        },
+      },
+      { id: "p2" },
+    ],
+  });
+  const [p1, p2] = preventivi;
+  assert.equal(p1.caparra, false);
+  assert.deepEqual(p1.disponibilita, [{ data: "2026-10-12", fascia: "giornata" }]);
+  assert.equal(p1.appuntamento, null);
+  assert.equal(p1.accettatoIl, "");
+  assert.equal(p1.incasso.pagamenti.length, 1);
+  assert.equal(p1.incasso.pagamenti[0].metodo, "altro");
+  assert.notEqual(p1.incasso.pagamenti[0].id, "../x");
+  assert.deepEqual(p1.incasso.solleciti, []);
+  assert.deepEqual(p1.incasso.segnalazioni, []);
+  assert.equal(p1.incasso.fineLavori, "2026-10-01");
+  assert.equal(p1.incasso.giorniSaldo, 365);
+  assert.equal(p2.incasso, null);
+  assert.deepEqual(p2.disponibilita, []);
+});
