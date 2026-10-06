@@ -1,7 +1,7 @@
 # PreventivoLampo
 
 **Preventivi professionali dal telefono in 60 secondi, per artigiani.**
-Il cliente chiede un preventivo, l'artigiano lo fa sul posto dal telefono (listino già pronto per il suo mestiere o dettatura vocale), lo invia in PDF su WhatsApp e, se il cliente accetta, lo fa firmare sul display.
+Il cliente chiede un preventivo, l'artigiano lo fa sul posto dal telefono (listino già pronto per il suo mestiere o dettatura vocale), lo manda su WhatsApp con un **link di accettazione**: il cliente lo apre sul suo telefono, sceglie le voci facoltative, firma e rimanda la conferma. Tutto senza server e senza database.
 
 Modello di business: **freemium** (3 preventivi PDF al mese gratis, con la scritta "Creato con PreventivoLampo") → **Pro a 9,90 €/mese o 79 €/anno**.
 
@@ -15,10 +15,11 @@ Modello di business: **freemium** (3 preventivi PDF al mese gratis, con la scrit
 |---|---|---|
 | Sito di vendita | `public/index.html` | Landing con prezzi, FAQ, link ai modelli |
 | App | `public/app.html` + `public/js/` | L'app vera e propria (funziona offline, si installa sul telefono) |
+| Pagina del cliente | `public/accetta.html` + `public/js/accetta.js` | Dove il cliente vede, accetta e firma il preventivo ricevuto via link |
 | 27 pagine "modello di preventivo" | `public/modelli/` | Pagine per Google ("fac simile preventivo idraulico"…): portano clienti gratis |
 | Verifica licenze | `lib/licenza.mjs` + `netlify/functions/` + `functions/api/` | Controlla il codice Pro con Polar o Lemon Squeezy |
 | Configurazione | `public/js/config.js` | **L'unico file che devi modificare**: link di pagamento, prezzi, email, dati titolare |
-| Test | `tests/` | 19 test sui calcoli/licenze + 14 passaggi end-to-end nel browser |
+| Test | `tests/` | 41 test unitari + 29 passaggi end-to-end nel browser (artigiano e cliente su due "telefoni") |
 
 Scelte che rendono il progetto semplice da gestire da soli:
 
@@ -26,7 +27,25 @@ Scelte che rendono il progetto semplice da gestire da soli:
 - **Pagamenti con un "Merchant of Record"** (Polar o Lemon Squeezy): incassano loro, applicano l'IVA di ogni paese, mandano le ricevute e gestiscono rinnovi e disdette. Tu ricevi il netto.
 - **Nessuna libreria da installare.** È HTML/JavaScript puro: si pubblica così com'è, gratis.
 
-Funzioni dell'app: onboarding in 2 passi con listino per mestiere · preventivi con manodopera/materiali, quantità, unità, sconto per riga e totale · IVA 22/10/5/4/0% anche mista con riepilogo · regime forfettario con dicitura di legge e bollo 2 € · acconto e saldo · numerazione automatica per anno · dettatura vocale ("sostituzione rubinetto 2 pezzi 85 euro" → riga compilata) · PDF multipagina professionale · invio su WhatsApp/email · firma del cliente sul display · stati (bozza/inviato/accettato/rifiutato) e statistiche del mese · rubrica clienti · listino personale · logo e colori (Pro) · backup/ripristino · funziona offline · installabile come app.
+### Funzioni che fanno vincere più lavori
+
+- **Accettazione e firma online senza server.** Il preventivo viaggia compresso nel link, nella parte dopo `#`, che i browser non mandano mai al server. Il cliente lo apre, firma con il dito e rimanda la conferma su WhatsApp; l'artigiano la registra con un tocco. Un'impronta SHA-256 segnala se qualcuno ha modificato prezzi o voci nel link.
+- **Voci facoltative (upsell).** Extra proposti al cliente, esclusi dal totale: il cliente li attiva da solo quando accetta.
+- **Da ricontattare.** I preventivi inviati senza risposta da qualche giorno compaiono in cima alla dashboard, con il messaggio di sollecito su WhatsApp già scritto.
+- **Foto del lavoro** in una pagina del PDF (Pro).
+- **Calcolatore metri quadri** per stanza: pareti, soffitto e pavimento, meno porte e finestre.
+- **Guadagno nascosto.** Il costo d'acquisto dei materiali e il margine si vedono solo nell'app, mai nel PDF o nel link.
+- **Dettatura di più voci in una frase**, abbinate al listino ("sostituzione miscelatore, poi 2 ore di manodopera").
+- **Pagamento dell'acconto.** Il cliente che accetta vede IBAN (da copiare) e il link di pagamento online dell'artigiano (solo https).
+
+Inoltre: onboarding in 2 passi con listino per 27 mestieri · IVA 22/10/5/4/0% anche mista · regime forfettario con dicitura di legge e bollo 2 € · acconto e saldo · numerazione per anno · PDF multipagina con link "Accetta e firma online" · firma sul posto (Pro) · dashboard con valore del mese, tasso di accettazione e grafico di 6 mesi · clienti · listino con costi · logo e colori (Pro) · backup/ripristino · offline · installabile · tema chiaro e scuro.
+
+### Sicurezza
+
+- Content Security Policy su tutte le pagine (nessuno script inline), intestazioni anti-clickjacking in `public/_headers`.
+- Tutti i dati che arrivano da link o da backup vengono validati e mostrati come testo: i test tentano XSS, link `javascript:`, link manomessi, link troncati, "bombe" di compressione e backup costruiti ad arte.
+- I backup vengono controllati **prima** di cancellare i dati attuali; la licenza non finisce mai nel backup.
+- La funzione licenze rifiuta input malformati o troppo grandi e accetta solo codici del proprio negozio.
 
 ---
 
@@ -114,14 +133,18 @@ Poi registra il sito su [Google Search Console](https://search.google.com/search
 ## 5. Test
 
 ```bash
-npm test          # 19 test: calcoli IVA/forfettario/acconti, dettatura, numerazione, verifica licenze
-npm run test:e2e  # 14 passaggi nel browser: onboarding, preventivo, PDF, limite gratuito,
-                  # attivazione Pro, firma, forfettario, PDF multipagina, offline, backup
+npm test          # 41 test: IVA/forfettario/acconti, facoltative, margine, superfici, dettatura,
+                  # link di accettazione (compressione, sanificazione, manomissioni), firma, backup, licenze
+npm run test:e2e  # 29 passaggi nel browser con artigiano e cliente su due "telefoni": onboarding,
+                  # preventivo, PDF, accettazione online completa, attacchi XSS, link manomessi,
+                  # foto, calcolatore, ricontatti, limite gratuito, Pro, forfettario, offline,
+                  # backup, schermi stretti, accessibilità di base e zero violazioni CSP
+npm run lint      # controllo statico (richiede eslint: npm i -g eslint)
 ```
 
 Il test end-to-end richiede Playwright (`npm i -g playwright && npx playwright install chromium`) e `pdftotext`/`pdfimages` (pacchetto `poppler-utils`).
 
-Altri script: `npm run icone` (icone PNG dall'SVG), `node scripts/genera-screenshot.mjs` (immagini della landing).
+Altri script: `npm run icone` (icone PNG dall'SVG), `node scripts/genera-screenshot.mjs` (immagini della landing e immagine di condivisione).
 
 ## 6. Prima di incassare
 
@@ -133,4 +156,5 @@ Altri script: `npm run icone` (icone PNG dall'SVG), `node scripts/genera-screens
 
 - I dati stanno su un solo dispositivo: telefono e computer non si sincronizzano (c'è backup/ripristino). La sincronizzazione cloud è il candidato naturale per un piano "Pro+" più caro.
 - Il blocco del piano gratuito è nel browser: un utente esperto potrebbe aggirarlo. Il pubblico (artigiani) non è quello che lo fa, e la funzione Pro principale (niente scritta, logo, firma) resta comunque legata al codice.
-- Idee per far crescere il valore (e il prezzo): rapportino di intervento firmato, promemoria automatico "il cliente non ha ancora risposto", link di accettazione online, conversione in fattura tramite API di un provider SdI.
+- Il link di accettazione contiene i dati del preventivo: chi lo riceve può leggerli (come un PDF). Va mandato solo al cliente. La conferma torna all'artigiano solo se il cliente tocca "Invia conferma".
+- Idee per far crescere il valore (e il prezzo): rapportino di intervento firmato, sincronizzazione tra dispositivi, piano "Team" per imprese con più operai, conversione in fattura tramite API di un provider SdI.

@@ -2,7 +2,7 @@
 
 ## Prima di tutto, la verità
 
-Il prodotto è pronto e funziona (33 controlli automatici superati: 19 test sui calcoli e 14 passaggi nel browser). **Nessuno però può garantirti 10.000 € al mese**, e chi lo fa ti sta vendendo qualcosa. I soldi non li fa il codice: li fanno i clienti che lo scoprono, lo provano e pagano. Quella parte (distribuzione) dipende da te, e questo piano ti dice esattamente cosa fare.
+Il prodotto è pronto e funziona: 70 controlli automatici superati (41 test unitari e 29 passaggi nel browser, compresi i tentativi di attacco). **Nessuno però può garantirti 10.000 € al mese**, e chi lo fa ti sta vendendo qualcosa. I soldi non li fa il codice: li fanno i clienti che lo scoprono, lo provano e pagano. Quella parte (distribuzione) dipende da te, e questo piano ti dice esattamente cosa fare.
 
 Quello che posso darti è: un'idea con domanda reale e misurabile, costi quasi nulli, un prodotto finito e i numeri per capire in poche settimane se sta funzionando.
 
@@ -13,7 +13,7 @@ Quello che posso darti è: un'idea con domanda reale e misurabile, costi quasi n
 - **Mercato enorme e raggiungibile**: in Italia ci sono circa **1,23 milioni di imprese artigiane** (CNA/Unioncamere, fine 2025), più centinaia di migliaia di freelance che fanno preventivi (fotografi, web designer, imprese di pulizia…). Basta circa lo **0,15%** di loro per arrivare a 10.000 €/mese.
 - **Problema quotidiano legato ai soldi**: il preventivo è il momento in cui l'artigiano vince o perde un lavoro. Chi lo manda prima e fatto bene, lo prende più spesso. Pagare 7-10 € al mese per questo è facile da giustificare: basta un lavoro in più all'anno.
 - **Le alternative attuali sono scomode**: blocchetto di carta, Word/Excel la sera, messaggi WhatsApp confusi, oppure gestionali di fatturazione completi (pesanti da imparare). Esistono app concorrenti (es. PrevAI, Artesan, i moduli preventivi dei software di fatturazione), ma nessuna domina il mercato degli artigiani in Italia: lo spazio c'è, e la differenza la fa chi arriva agli artigiani.
-- **Cosa ci distingue**: zero registrazione, listino già pronto per 27 mestieri, dettatura vocale, firma del cliente sul posto, funziona offline, IVA e forfettario gestiti bene, PDF bello.
+- **Cosa ci distingue**: il cliente **accetta e firma dal suo telefono** con un link su WhatsApp (senza installare nulla), sceglie da solo le **voci facoltative** (più valore per ogni lavoro), l'app ricorda **chi ricontattare** con il messaggio pronto. In più: zero registrazione, listino per 27 mestieri, dettatura di più voci insieme, foto nel PDF, calcolatore dei metri quadri, guadagno visibile solo all'artigiano, funziona offline.
 - **Costi quasi zero**: niente server né database (i dati stanno sul telefono dell'utente), hosting gratuito, pagamenti e IVA gestiti dal Merchant of Record. Il margine è circa il 90% dell'incasso netto IVA.
 
 ---
@@ -121,13 +121,14 @@ L'obiettivo non è vendere: è vedere 20 artigiani usarla e sentire cosa dicono.
 > Ciao a tutti, faccio [il tuo lavoro/sviluppo app] e ho fatto un'app per fare i preventivi dal telefono in un minuto: scegli le voci (ci sono già quelle tipiche da idraulico, elettricista ecc.), il totale con IVA si fa da solo, lo mandi in PDF su WhatsApp e se il cliente accetta lo fa firmare sul telefono.
 > È gratis e non serve registrarsi. Mi servirebbe il parere di chi i preventivi li fa davvero: cosa manca? Cosa non vi piace? Il link è nel primo commento.
 
-### 5 video da 20-40 secondi
+### 6 video da 20-40 secondi
 
 1. **"Preventivo fatto prima di risalire in furgone"**: dal cliente, apri l'app, 4 voci dal listino, invio su WhatsApp. Cronometro in sovrimpressione.
-2. **"Il cliente firma sul telefono"**: inquadratura del cliente che firma con il dito, poi il PDF con la firma.
-3. **"Detto il preventivo con la voce"**: "sostituzione miscelatore 85 euro" → la riga si compila da sola.
-4. **"Blocchetto vs app"**: split screen, a sinistra il preventivo a mano, a destra il PDF. "Quale sceglieresti se fossi il cliente?"
-5. **"Quanto costa rifare un bagno nel 2026?"**: mostra il preventivo di esempio con i prezzi medi. Questo tipo di video lo guardano anche i privati, e lo condividono con il loro artigiano.
+2. **"Il cliente ha firmato mentre tornavo a casa"**: notifica WhatsApp con la conferma, la apri e il preventivo diventa "Accettato" con la firma. È il video più forte: mostra soldi che arrivano.
+3. **"Gli ho proposto il sifone nuovo e l'ha aggiunto da solo"**: le voci facoltative spiegate in 20 secondi.
+4. **"Detto il preventivo con la voce"**: "sostituzione miscelatore, poi due ore di manodopera" → le righe si compilano da sole con i prezzi del listino.
+5. **"Blocchetto vs app"**: split screen, a sinistra il preventivo a mano, a destra il PDF. "Quale sceglieresti se fossi il cliente?"
+6. **"Quanto costa rifare un bagno nel 2026?"**: mostra il preventivo di esempio con i prezzi medi. Questo tipo di video lo guardano anche i privati, e lo condividono con il loro artigiano.
 
 ### Email/telefonata a un grossista
 

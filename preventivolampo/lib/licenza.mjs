@@ -90,7 +90,9 @@ export async function gestisciRichiesta(req, env = {}, fetchImpl = fetch) {
 
   let corpo;
   try {
-    corpo = await req.json();
+    const grezzo = await req.text();
+    if (grezzo.length > 2000) return risposta(413, { valida: false, messaggio: "Richiesta troppo grande" });
+    corpo = JSON.parse(grezzo);
   } catch {
     return risposta(400, { valida: false, messaggio: "Richiesta non valida" });
   }

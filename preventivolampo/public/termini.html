@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io https://cloud.umami.is; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://plausible.io https://cloud.umami.is https://api-gateway.umami.dev; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Termini e condizioni - PreventivoLampo</title>
   <meta name="robots" content="noindex">
   <link rel="icon" href="img/icona.svg" type="image/svg+xml">
@@ -42,13 +43,6 @@
     </div>
   </main>
   <footer><div class="wrap"><span>© PreventivoLampo</span><nav><a href="./">Home</a><a href="privacy.html">Privacy</a><a href="termini.html">Termini</a></nav></div></footer>
-  <script type="module">
-    import { CONFIG } from "./js/config.js";
-    const t = CONFIG.titolare;
-    document.querySelectorAll("[data-t]").forEach((el) => {
-      const v = { nome: t.nome, indirizzo: t.indirizzo, piva: t.piva, email: CONFIG.emailSupporto, sito: CONFIG.sito }[el.dataset.t];
-      if (v) el.textContent = v;
-    });
-  </script>
+  <script type="module" src="js/sito.js"></script>
 </body>
 </html>

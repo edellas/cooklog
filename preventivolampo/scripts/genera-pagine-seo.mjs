@@ -36,6 +36,7 @@ function testa({ titolo, descrizione, canonico, jsonld = [] }) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io https://cloud.umami.is; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://plausible.io https://cloud.umami.is https://api-gateway.umami.dev; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>${esc(titolo)}</title>
   <meta name="description" content="${esc(descrizione)}">
   <link rel="canonical" href="${esc(canonico)}">
@@ -46,6 +47,7 @@ function testa({ titolo, descrizione, canonico, jsonld = [] }) {
   <meta property="og:description" content="${esc(descrizione)}">
   <meta property="og:image" content="${SITO}/img/og.png">
   <meta property="og:locale" content="it_IT">
+  <link rel="preload" href="../fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="../css/sito.css">
 ${jsonld.map((j) => `  <script type="application/ld+json">${JSON.stringify(j)}</script>`).join("\n")}
 </head>
@@ -65,13 +67,14 @@ const piede = `
       <nav><a href="../">Home</a><a href="./">Modelli di preventivo</a><a href="../privacy.html">Privacy</a><a href="../termini.html">Termini</a></nav>
     </div>
   </footer>
+  <script type="module" src="../js/sito.js"></script>
 </body>
 </html>
 `;
 
 function boxCta(m, testo) {
   return `<div class="box-cta">
-        <div><h3>${esc(testo)}</h3><p>Si apre già compilato: cambi i prezzi, aggiungi il cliente e lo invii su WhatsApp in PDF. Gratis, senza registrazione.</p></div>
+        <div><h3>${esc(testo)}</h3><p>Si apre già compilato: cambi i prezzi, aggiungi il cliente e lo invii su WhatsApp. Il cliente lo accetta e firma dal suo telefono. Gratis, senza registrazione.</p></div>
         <a class="btn primary big" href="../app.html?mestiere=${m.id}&amp;modello=1">Apri il modello nell'app</a>
       </div>`;
 }

@@ -11,6 +11,7 @@ const IVA_ORD =
 export const MESTIERI = [
   {
     id: "idraulico",
+    icona: "🔧",
     nome: "Idraulico",
     oggetto: "Sostituzione miscelatore e riparazione scarico bagno",
     iva: IVA_CASA,
@@ -36,6 +37,7 @@ export const MESTIERI = [
   },
   {
     id: "elettricista",
+    icona: "⚡",
     nome: "Elettricista",
     oggetto: "Adeguamento impianto elettrico appartamento",
     iva: IVA_CASA,
@@ -60,6 +62,7 @@ export const MESTIERI = [
   },
   {
     id: "imbianchino",
+    icona: "🎨",
     nome: "Imbianchino",
     oggetto: "Tinteggiatura appartamento 80 mq",
     iva: IVA_CASA,
@@ -82,6 +85,7 @@ export const MESTIERI = [
   },
   {
     id: "muratore",
+    icona: "🧱",
     nome: "Muratore",
     oggetto: "Demolizione tramezzo e realizzazione nuova parete",
     iva: IVA_CASA,
@@ -104,6 +108,7 @@ export const MESTIERI = [
   },
   {
     id: "piastrellista",
+    icona: "🔲",
     nome: "Piastrellista",
     oggetto: "Posa pavimento in gres porcellanato soggiorno",
     iva: IVA_CASA,
@@ -125,6 +130,7 @@ export const MESTIERI = [
   },
   {
     id: "cartongessista",
+    icona: "📐",
     nome: "Cartongessista",
     oggetto: "Controsoffitto in cartongesso con faretti",
     iva: IVA_CASA,
@@ -145,6 +151,7 @@ export const MESTIERI = [
   },
   {
     id: "falegname",
+    icona: "🪚",
     nome: "Falegname",
     oggetto: "Armadio a muro su misura",
     iva: IVA_ORD,
@@ -166,6 +173,7 @@ export const MESTIERI = [
   },
   {
     id: "fabbro",
+    icona: "🔑",
     nome: "Fabbro",
     oggetto: "Sostituzione cilindro porta blindata",
     iva: IVA_CASA,
@@ -188,6 +196,7 @@ export const MESTIERI = [
   },
   {
     id: "serramentista",
+    icona: "🪟",
     nome: "Serramentista",
     oggetto: "Sostituzione finestre in PVC",
     iva: IVA_CASA,
@@ -210,6 +219,7 @@ export const MESTIERI = [
   },
   {
     id: "giardiniere",
+    icona: "🌿",
     nome: "Giardiniere",
     oggetto: "Manutenzione giardino stagione primavera-estate",
     iva: IVA_ORD,
@@ -231,6 +241,7 @@ export const MESTIERI = [
   },
   {
     id: "impresa-pulizie",
+    icona: "🧽",
     nome: "Impresa di pulizie",
     oggetto: "Pulizia ordinaria uffici - 2 interventi a settimana",
     iva: IVA_ORD,
@@ -252,6 +263,7 @@ export const MESTIERI = [
   },
   {
     id: "traslochi",
+    icona: "🚚",
     nome: "Traslochi",
     oggetto: "Trasloco appartamento 3 locali stesso comune",
     iva: IVA_ORD,
@@ -273,6 +285,7 @@ export const MESTIERI = [
   },
   {
     id: "climatizzazione",
+    icona: "❄️",
     nome: "Installatore climatizzatori",
     oggetto: "Fornitura e installazione climatizzatore inverter 12000 BTU",
     iva: IVA_CASA,
@@ -295,6 +308,7 @@ export const MESTIERI = [
   },
   {
     id: "caldaie",
+    icona: "🔥",
     nome: "Tecnico caldaie",
     oggetto: "Sostituzione caldaia con modello a condensazione",
     iva: IVA_CASA,
@@ -317,6 +331,7 @@ export const MESTIERI = [
   },
   {
     id: "ristrutturazione-bagno",
+    icona: "🛁",
     nome: "Ristrutturazione bagno",
     oggetto: "Rifacimento completo bagno 5 mq",
     iva: IVA_CASA,
@@ -340,6 +355,7 @@ export const MESTIERI = [
   },
   {
     id: "parquettista",
+    icona: "🪵",
     nome: "Parquettista",
     oggetto: "Posa parquet rovere prefinito camere",
     iva: IVA_CASA,
@@ -360,6 +376,7 @@ export const MESTIERI = [
   },
   {
     id: "tapparelle",
+    icona: "🏠",
     nome: "Tapparellista",
     oggetto: "Riparazione e motorizzazione tapparelle",
     iva: IVA_CASA,
@@ -380,6 +397,7 @@ export const MESTIERI = [
   },
   {
     id: "antennista",
+    icona: "📡",
     nome: "Antennista",
     oggetto: "Installazione antenna TV e puntamento",
     iva: IVA_ORD,
@@ -400,6 +418,7 @@ export const MESTIERI = [
   },
   {
     id: "tecnico-informatico",
+    icona: "💻",
     nome: "Tecnico informatico",
     oggetto: "Ripristino notebook e sostituzione disco con SSD",
     iva: IVA_ORD,
@@ -421,6 +440,7 @@ export const MESTIERI = [
   },
   {
     id: "fotografo",
+    icona: "📷",
     nome: "Fotografo",
     oggetto: "Servizio fotografico matrimonio",
     iva: IVA_ORD,
@@ -441,6 +461,7 @@ export const MESTIERI = [
   },
   {
     id: "web-designer",
+    icona: "🖥️",
     nome: "Web designer",
     oggetto: "Realizzazione sito vetrina 5 pagine",
     iva: IVA_ORD,
@@ -461,6 +482,7 @@ export const MESTIERI = [
   },
   {
     id: "disinfestazione",
+    icona: "🐜",
     nome: "Disinfestazione",
     oggetto: "Derattizzazione e disinfestazione blatte",
     iva: IVA_ORD,
@@ -481,6 +503,7 @@ export const MESTIERI = [
   },
   {
     id: "tuttofare",
+    icona: "🛠️",
     nome: "Tuttofare / montaggio mobili",
     oggetto: "Montaggio cucina e armadio",
     iva: IVA_ORD,
@@ -501,6 +524,7 @@ export const MESTIERI = [
   },
   {
     id: "spurghi",
+    icona: "🚛",
     nome: "Autospurgo",
     oggetto: "Spurgo fossa biologica e videoispezione",
     iva: IVA_ORD,
@@ -520,6 +544,7 @@ export const MESTIERI = [
   },
   {
     id: "impermeabilizzazione",
+    icona: "☔",
     nome: "Impermeabilizzazioni e lattoneria",
     oggetto: "Impermeabilizzazione terrazzo 40 mq",
     iva: IVA_CASA,
@@ -540,6 +565,7 @@ export const MESTIERI = [
   },
   {
     id: "vetraio",
+    icona: "🪞",
     nome: "Vetraio",
     oggetto: "Sostituzione vetri finestre con vetrocamera",
     iva: IVA_CASA,
@@ -560,6 +586,7 @@ export const MESTIERI = [
   },
   {
     id: "meccanico",
+    icona: "🚗",
     nome: "Meccanico / officina",
     oggetto: "Tagliando e sostituzione pastiglie freni",
     iva: IVA_ORD,

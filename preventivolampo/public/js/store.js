@@ -88,13 +88,16 @@ export const db = {
     };
   },
 
+  // Il file viene controllato e ripulito PRIMA di cancellare qualcosa:
+  // un backup danneggiato o costruito ad arte non deve far perdere i dati attuali.
   async importa(dati) {
-    if (!dati || dati.app !== "preventivolampo") throw new Error("File di backup non valido");
+    const pulito = validaBackup(dati);
     for (const s of ["preventivi", "clienti", "listino"]) {
       await this.svuota(s);
-      for (const o of dati[s] || []) await this.salva(s, o);
+      for (const o of pulito[s]) await this.salva(s, o);
     }
-    for (const r of dati.kv || []) if (r.chiave !== "licenza") await this.salva("kv", r);
+    for (const r of pulito.kv) await this.salva("kv", r);
+    return { preventivi: pulito.preventivi.length, clienti: pulito.clienti.length, listino: pulito.listino.length };
   },
 
   // Chiede al browser di non cancellare i dati quando manca spazio.
@@ -107,3 +110,36 @@ export const db = {
     return false;
   },
 };
+
+const oggetto = (o) => o !== null && typeof o === "object" && !Array.isArray(o);
+// Gli identificativi finiscono negli indirizzi delle pagine (#/p/<id>): solo caratteri sicuri.
+const conId = (o) => oggetto(o) && typeof o.id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(o.id);
+const testo = (v, max = 5000) => (typeof v === "string" ? v.slice(0, max) : typeof v === "number" ? String(v) : "");
+
+export function validaBackup(dati) {
+  if (!oggetto(dati) || dati.app !== "preventivolampo") throw new Error("File di backup non valido");
+  const lista = (x) => (Array.isArray(x) ? x : []);
+  const preventivi = lista(dati.preventivi)
+    .filter(conId)
+    .map((p) => ({
+      ...p,
+      numero: testo(p.numero, 60),
+      data: /^\d{4}-\d{2}-\d{2}$/.test(p.data) ? p.data : new Date().toISOString().slice(0, 10),
+      stato: ["bozza", "inviato", "accettato", "rifiutato"].includes(p.stato) ? p.stato : "bozza",
+      cliente: oggetto(p.cliente) ? p.cliente : {},
+      righe: lista(p.righe).filter(oggetto),
+      acconto: oggetto(p.acconto) ? p.acconto : { tipo: "perc", valore: 0 },
+      foto: lista(p.foto).filter(oggetto),
+      firma: oggetto(p.firma) ? p.firma : null,
+    }));
+  const clienti = lista(dati.clienti).filter(conId);
+  const listino = lista(dati.listino)
+    .filter(conId)
+    .map((v) => ({ ...v, descrizione: testo(v.descrizione, 600) }));
+  // Solo impostazioni e contatore: la licenza non si importa mai.
+  const kv = lista(dati.kv).filter(
+    (r) => oggetto(r) && (r.chiave === "azienda" || r.chiave === "contatore") && oggetto(r.valore),
+  );
+  if (!preventivi.length && !clienti.length && !listino.length && !kv.length) throw new Error("Il backup è vuoto");
+  return { preventivi, clienti, listino, kv };
+}

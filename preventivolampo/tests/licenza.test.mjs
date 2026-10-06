@@ -114,3 +114,8 @@ test("mascheraEmail", () => {
   assert.equal(mascheraEmail(""), "");
   assert.equal(mascheraEmail("senza-chiocciola"), "");
 });
+
+test("handler HTTP: corpo troppo grande rifiutato", async () => {
+  const r = await gestisciRichiesta(req({ chiave: "A".repeat(5000) }), ENV_POLAR, json(200, { status: "granted" }));
+  assert.equal(r.status, 413);
+});

@@ -24,8 +24,8 @@ function righeNonVuote(...valori) {
   return valori.map((v) => (v == null ? "" : String(v).trim())).filter(Boolean);
 }
 
-// opts: { prev, azienda, totali, pro, config }
-export function creaPdf({ prev, azienda, totali, pro, config }) {
+// opts: { prev, azienda, totali, pro, config, linkAccettazione }
+export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione = "" }) {
   const { jsPDF } = globalThis.jspdf;
   const autoTable = globalThis.autoTable;
   const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
@@ -275,6 +275,36 @@ export function creaPdf({ prev, azienda, totali, pro, config }) {
   }
   y += 3;
 
+  // --- Voci facoltative (proposte al cliente, non incluse nel totale) ---
+  if (totali.opzionali && totali.opzionali.length) {
+    spazio(22);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(...accento);
+    doc.text("VOCI FACOLTATIVE - NON INCLUSE NEL TOTALE, SU RICHIESTA", MARGINE, y);
+    y += 2;
+    autoTable(doc, {
+      startY: y,
+      body: totali.opzionali.map((r) => [
+        r.descrizione || "",
+        `${formatQta(r.qta)} ${r.um || ""}`,
+        "+ " + formatEuro(r.importo) + (totali.forfettario ? "" : ` + IVA ${r.iva}%`),
+      ]),
+      theme: "plain",
+      margin: { left: MARGINE, right: MARGINE, bottom: 22 },
+      styles: {
+        font: "helvetica",
+        fontSize: 8.6,
+        cellPadding: { top: 1.8, bottom: 1.8, left: 2, right: 2 },
+        textColor: NERO,
+      },
+      alternateRowStyles: { fillColor: [253, 248, 236] },
+      bodyStyles: { fillColor: [255, 251, 242] },
+      columnStyles: { 1: { halign: "right", cellWidth: 26 }, 2: { halign: "right", cellWidth: 44, fontStyle: "bold" } },
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  }
+
   // --- Sezioni testuali ---
   function sezione(titolo, testo, dimensione = 8.8) {
     if (!testo || !String(testo).trim()) return;
@@ -349,6 +379,20 @@ export function creaPdf({ prev, azienda, totali, pro, config }) {
     y + 4,
   );
   y += 12;
+  if (linkAccettazione && !(prev.firma && prev.firma.img)) {
+    doc.setFillColor(...accento);
+    doc.roundedRect(MARGINE, y - 4, 74, 9, 2, 2, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.textWithLink("Accetta e firma online >", MARGINE + 4, y + 1.6, { url: linkAccettazione });
+    doc.link(MARGINE, y - 4, 74, 9, { url: linkAccettazione });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(...GRIGIO);
+    doc.text("oppure firma qui sotto", MARGINE + 78, y + 1.6);
+    y += 8;
+  }
 
   const xFirma = W - MARGINE - 75;
   if (prev.firma && prev.firma.img) {
@@ -375,7 +419,49 @@ export function creaPdf({ prev, azienda, totali, pro, config }) {
     doc.text(`${prev.firma.luogo ? prev.firma.luogo + ", " : ""}${dataFirma}`, MARGINE, yLinea - 2);
     doc.setFontSize(7);
     doc.setTextColor(...GRIGIO);
-    doc.text(`Firmato da ${prev.firma.nome || c.nome || "il cliente"} su dispositivo`, xFirma, yLinea + 7.5);
+    doc.text(
+      `Firmato da ${prev.firma.nome || c.nome || "il cliente"} ${prev.firma.online ? "online (accettazione via link)" : "su dispositivo"}`,
+      xFirma,
+      yLinea + 7.5,
+    );
+  }
+
+  // --- Documentazione fotografica ---
+  const foto = (prev.foto || []).filter((f) => f && typeof f.img === "string" && f.img.startsWith("data:image/"));
+  if (foto.length) {
+    doc.addPage();
+    y = MARGINE;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(...accento);
+    doc.text("DOCUMENTAZIONE FOTOGRAFICA", MARGINE, y + 4);
+    y += 11;
+    const colW = (larghezza - 6) / 2;
+    const fotoH = 72;
+    foto.forEach((f, k) => {
+      const col = k % 2;
+      if (col === 0 && k > 0) y += fotoH + 14;
+      if (y + fotoH + 10 > fondo) {
+        doc.addPage();
+        y = MARGINE;
+      }
+      const x = MARGINE + col * (colW + 6);
+      try {
+        const p = doc.getImageProperties(f.img);
+        const scala = Math.min(colW / p.width, fotoH / p.height);
+        const w = p.width * scala;
+        const h = p.height * scala;
+        doc.setFillColor(244, 246, 250);
+        doc.rect(x, y, colW, fotoH, "F");
+        doc.addImage(f.img, p.fileType || "JPEG", x + (colW - w) / 2, y + (fotoH - h) / 2, w, h, undefined, "FAST");
+      } catch {
+        /* foto non leggibile */
+      }
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(...GRIGIO);
+      doc.text(doc.splitTextToSize(f.didascalia || `Foto ${k + 1}`, colW)[0], x, y + fotoH + 4.5);
+    });
   }
 
   // --- Piè di pagina su tutte le pagine ---

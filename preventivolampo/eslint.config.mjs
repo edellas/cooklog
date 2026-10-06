@@ -1,0 +1,58 @@
+// Controllo statico del codice: npx eslint .  (nessuna dipendenza da installare nel progetto)
+const browser = [
+  "window",
+  "document",
+  "navigator",
+  "location",
+  "history",
+  "localStorage",
+  "indexedDB",
+  "fetch",
+  "Request",
+  "Response",
+  "URL",
+  "URLSearchParams",
+  "Blob",
+  "File",
+  "Image",
+  "Event",
+  "setTimeout",
+  "clearTimeout",
+  "console",
+  "globalThis",
+  "self",
+  "caches",
+  "matchMedia",
+  "structuredClone",
+  "confirm",
+  "ResizeObserver",
+  "btoa",
+  "atob",
+  "TextEncoder",
+  "TextDecoder",
+  "CompressionStream",
+  "DecompressionStream",
+  "crypto",
+];
+const node = ["process"];
+
+export default [
+  { ignores: ["public/vendor/**", "public/modelli/**"] },
+  {
+    files: ["**/*.js", "**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: "module",
+      globals: Object.fromEntries([...browser, ...node].map((g) => [g, "readonly"])),
+    },
+    rules: {
+      "no-unused-vars": ["error", { args: "none", caughtErrors: "none" }],
+      "no-undef": "error",
+      "no-unreachable": "error",
+      "no-dupe-keys": "error",
+      "no-self-assign": "error",
+      "no-constant-condition": ["error", { checkLoops: false }],
+      eqeqeq: ["error", "smart"],
+    },
+  },
+];

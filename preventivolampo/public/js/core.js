@@ -109,9 +109,13 @@ export function importoRiga(riga) {
 
 // Calcola tutti i totali del preventivo.
 // opzioni: { regime: "ordinario" | "forfettario", addebitaBollo: boolean }
+// Le voci "facoltative" (opzionale: true) non entrano nel totale: il cliente può sceglierle
+// nell'accettazione online. Il costo d'acquisto (costo) serve solo a stimare il guadagno.
 export function calcolaTotali(prev, opzioni = {}) {
   const forfettario = opzioni.regime === "forfettario";
-  const righe = (prev.righe || []).map((r) => ({ ...r, importo: importoRiga(r) }));
+  const tutte = (prev.righe || []).map((r) => ({ ...r, importo: importoRiga(r) }));
+  const righe = tutte.filter((r) => !r.opzionale);
+  const opzionali = tutte.filter((r) => r.opzionale);
 
   const imponibileRighe = round2(righe.reduce((s, r) => s + r.importo, 0));
   const sg = Math.min(Math.max(parseNumero(prev.scontoGlobale), 0), 100);
@@ -152,8 +156,14 @@ export function calcolaTotali(prev, opzioni = {}) {
     acconto = a.tipo === "importo" ? Math.min(round2(va), totale) : round2((totale * Math.min(va, 100)) / 100);
   }
 
+  const costi = round2(righe.reduce((s, r) => s + parseNumero(r.qta) * Math.max(parseNumero(r.costo), 0), 0));
+
   return {
     righe,
+    opzionali,
+    costi,
+    margine: round2(imponibile - costi),
+    marginePerc: imponibile > 0 ? round2(((imponibile - costi) / imponibile) * 100) : 0,
     imponibileRighe,
     scontoPerc: sg,
     scontoImporto,
@@ -315,7 +325,7 @@ export function testoWhatsApp(prev, azienda, totali) {
 export function nomeFilePdf(prev) {
   const cliente = nomeCliente(prev.cliente)
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 30);
@@ -395,5 +405,176 @@ export function rigaVuota(ivaDefault = 22, base = {}) {
     sconto: 0,
     iva: base.iva ?? ivaDefault,
     tipo: base.tipo || "man",
+    costo: base.costo ?? 0,
+    opzionale: Boolean(base.opzionale),
+  };
+}
+
+// ------------------------------------------------------------------
+// Calcolatore superfici (imbianchini, piastrellisti, cartongessisti...)
+// stanza: { lunghezza, larghezza, altezza, pareti, soffitto, pavimento, detrazioni }
+// ------------------------------------------------------------------
+export function calcolaSuperfici(stanze) {
+  const dettaglio = (stanze || []).map((st) => {
+    const l = Math.max(parseNumero(st.lunghezza), 0);
+    const w = Math.max(parseNumero(st.larghezza), 0);
+    const h = Math.max(parseNumero(st.altezza), 0);
+    const pareti = st.pareti ? 2 * (l + w) * h : 0;
+    const soffitto = st.soffitto ? l * w : 0;
+    const pavimento = st.pavimento ? l * w : 0;
+    const lordo = pareti + soffitto + pavimento;
+    const totale = Math.max(lordo - Math.max(parseNumero(st.detrazioni), 0), 0);
+    return {
+      ...st,
+      pareti_mq: round2(pareti),
+      soffitto_mq: round2(soffitto),
+      pavimento_mq: round2(pavimento),
+      totale: round2(totale),
+    };
+  });
+  return { stanze: dettaglio, totale: round2(dettaglio.reduce((s, st) => s + st.totale, 0)) };
+}
+
+// ------------------------------------------------------------------
+// Dettatura di più voci in una frase, abbinate al listino
+// "sostituzione miscelatore, disostruzione scarico e poi 2 ore di manodopera a 38 euro"
+// ------------------------------------------------------------------
+const PAROLE_VUOTE = new Set(
+  "di del della dello dei degli delle e ed a al alla allo ai agli alle per con il lo la i gli le un uno una da dal dalla in nel nella nei su sul sulla x o".split(
+    " ",
+  ),
+);
+
+function radici(testo) {
+  return new Set(
+    String(testo || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9]+/)
+      .filter((p) => p.length > 1 && !PAROLE_VUOTE.has(p) && !/^\d+$/.test(p))
+      .map((p) => p.slice(0, 5)),
+  );
+}
+
+// Coefficiente di Dice tra le radici delle parole: 0 (nulla in comune) - 1 (uguali).
+export function somiglianza(a, b) {
+  const A = radici(a);
+  const B = radici(b);
+  if (!A.size || !B.size) return 0;
+  let comuni = 0;
+  for (const x of A) if (B.has(x)) comuni++;
+  return (2 * comuni) / (A.size + B.size);
+}
+
+export function cercaNelListino(testo, listino, soglia = 0.4) {
+  let migliore = null;
+  let punteggio = 0;
+  for (const v of listino || []) {
+    const p = somiglianza(testo, v.descrizione);
+    if (p > punteggio) {
+      punteggio = p;
+      migliore = v;
+    }
+  }
+  return punteggio >= soglia ? { voce: migliore, punteggio } : null;
+}
+
+export function dividiDettatura(testo) {
+  const s = String(testo || "")
+    .replace(/(\d+)\s+virgola\s+(\d+)/gi, "$1,$2")
+    .replace(/\s+/g, " ");
+  return s
+    .split(/\s*(?:[;.!?\n]|,(?!\d)|\b(?:e poi|poi|più|inoltre|virgola|punto|aggiungi)\b)\s*/i)
+    .flatMap((pezzo) => pezzo.split(/(?<=\beuro)\s+e\s+/i))
+    .map((p) => p.trim())
+    .filter((p) => /[a-zà-ù]/i.test(p));
+}
+
+export function parseDettaturaMultipla(testo, listino = []) {
+  return dividiDettatura(testo)
+    .map((pezzo) => {
+      const r = parseDettatura(pezzo);
+      if (!r.descrizione) return null;
+      const trovata = cercaNelListino(r.descrizione, listino);
+      if (!trovata) return { ...r, tipo: "man", dalListino: false };
+      const v = trovata.voce;
+      const umDettata = r.um !== "cad" || /\b(pezz|pz|cad)/i.test(pezzo);
+      return {
+        descrizione: v.descrizione,
+        qta: r.qta,
+        um: umDettata ? r.um : v.um,
+        prezzo: r.prezzo || parseNumero(v.prezzo),
+        tipo: v.tipo || "man",
+        costo: v.costo || 0,
+        dalListino: true,
+      };
+    })
+    .filter(Boolean);
+}
+
+// ------------------------------------------------------------------
+// Preventivi da ricontattare e in scadenza
+// ------------------------------------------------------------------
+const GIORNO_MS = 24 * 60 * 60 * 1000;
+
+export function scadenzaDi(prev) {
+  return Number(prev.validitaGiorni) > 0 ? aggiungiGiorni(prev.data, prev.validitaGiorni) : null;
+}
+
+export function daRicontattare(preventivi, ora = Date.now(), dopoGiorni = 3) {
+  const oggi = oggiISO(new Date(ora));
+  return (preventivi || [])
+    .filter((p) => p.stato === "inviato")
+    .map((p) => {
+      const inviato = p.inviatoIl || p.updatedAt || p.createdAt || ora;
+      const ultimoContatto = Math.max(inviato, p.ricontattatoIl || 0);
+      const scadenza = scadenzaDi(p);
+      return {
+        prev: p,
+        giorniDaInvio: Math.floor((ora - inviato) / GIORNO_MS),
+        giorniDaContatto: Math.floor((ora - ultimoContatto) / GIORNO_MS),
+        scadenza,
+        scaduto: Boolean(scadenza && scadenza < oggi),
+      };
+    })
+    .filter((x) => x.giorniDaContatto >= dopoGiorni && !x.scaduto)
+    .sort((a, b) => b.giorniDaContatto - a.giorniDaContatto);
+}
+
+export function messaggioRicontatto(prev, azienda) {
+  const saluto = prev.cliente && prev.cliente.nome ? `Buongiorno ${prev.cliente.nome},` : "Buongiorno,";
+  const oggetto = prev.oggetto ? ` per "${prev.oggetto}"` : "";
+  const scadenza = scadenzaDi(prev);
+  return (
+    `${saluto} le scrivo per il preventivo n. ${prev.numero}${oggetto}.\n` +
+    `Ha avuto modo di vederlo? Se vuole possiamo sentirci per eventuali modifiche` +
+    (scadenza ? `; i prezzi sono garantiti fino al ${formatData(scadenza)}.` : ".") +
+    (azienda && azienda.ragioneSociale ? `\n${azienda.ragioneSociale}` : "")
+  );
+}
+
+// ------------------------------------------------------------------
+// Statistiche per la dashboard
+// ------------------------------------------------------------------
+export function statistiche(preventivi, totaleDi, ora = new Date()) {
+  const lista = preventivi || [];
+  const decisi = lista.filter((p) => p.stato === "accettato" || p.stato === "rifiutato" || p.stato === "inviato");
+  const accettati = lista.filter((p) => p.stato === "accettato");
+  const mesi = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(ora.getFullYear(), ora.getMonth() - i, 1);
+    const chiave = oggiISO(d).slice(0, 7);
+    const delMese = lista.filter((p) => (p.data || "").startsWith(chiave));
+    mesi.push({
+      mese: chiave,
+      preventivato: round2(delMese.reduce((s, p) => s + totaleDi(p), 0)),
+      accettato: round2(delMese.filter((p) => p.stato === "accettato").reduce((s, p) => s + totaleDi(p), 0)),
+      numero: delMese.length,
+    });
+  }
+  return {
+    tassoAccettazione: decisi.length ? Math.round((accettati.length / decisi.length) * 100) : null,
+    mesi,
   };
 }
