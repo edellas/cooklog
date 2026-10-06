@@ -820,7 +820,7 @@ function htmlIncassi(prev) {
     ${s.fase === "attesa-acconto" ? `<div class="banner warn"><span class="ico">🛡️</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
     <div class="grid2">
       <button class="btn primary" data-action="registra-pagamento">${ICONE.piu} Pagamento</button>
-      <button class="btn" data-action="mostra-qr">${ICONE.euro} QR per pagare</button>
+      <button class="btn" data-action="mostra-qr" aria-label="Mostra il QR per pagare">${ICONE.euro} Mostra QR</button>
     </div>
     ${
       s.pagamenti.length
@@ -852,6 +852,7 @@ function htmlIncassi(prev) {
         <button class="btn small" data-action="pdf-diffida">${ICONE.documento} Messa in mora${pro}</button>
         <button class="btn small" data-action="pdf-fascicolo">${ICONE.documento} Fascicolo${pro}</button>
       </div>
+      <div class="muted xsmall">${esc(AVVISO_LEGALE)}</div>
     </div>`
         : ""
     }
@@ -2366,6 +2367,7 @@ function viewImpostazioni() {
         <p class="muted xsmall" style="margin:0">Serve alla lettera di messa in mora per calcolare gli interessi maturati. I tassi di legge cambiano periodicamente: inserisci quello in vigore.</p>
         ${campo("linkRecensioni", "Link per lasciarti una recensione (Google)", "https://g.page/r/...", "url")}
         <button class="btn soft block" data-action="clausola-pagamenti">${ICONE.condizioni} Aggiungi alle condizioni la clausola sui ritardi</button>
+        <p class="muted xsmall" style="margin:0">${esc(AVVISO_LEGALE)}</p>
       </section>
 
       <div class="etichetta-sez">Logo e colore ${proBadge}</div>
@@ -2466,6 +2468,9 @@ function viewImpostazioni() {
     }
   });
 }
+
+const AVVISO_LEGALE =
+  "Caparra, solleciti e lettera di messa in mora sono modelli generici, non consulenza legale: per crediti importanti rivolgiti a un avvocato o alla tua associazione di categoria.";
 
 const CLAUSOLA_PAGAMENTI =
   "I lavori iniziano dopo il versamento dell'anticipo pattuito. In caso di ritardato pagamento sono dovuti gli interessi di mora nella misura di legge e le spese di recupero del credito.";

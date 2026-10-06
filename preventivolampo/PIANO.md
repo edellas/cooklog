@@ -13,7 +13,7 @@ Quello che posso darti è: un'idea con domanda reale e misurabile, costi quasi n
 - **Mercato enorme e raggiungibile**: in Italia ci sono circa **1,23 milioni di imprese artigiane** (CNA/Unioncamere, fine 2025), più centinaia di migliaia di freelance che fanno preventivi (fotografi, web designer, imprese di pulizia…). Basta circa lo **0,15%** di loro per arrivare a 10.000 €/mese.
 - **Problema quotidiano legato ai soldi**: il preventivo è il momento in cui l'artigiano vince o perde un lavoro. Chi lo manda prima e fatto bene, lo prende più spesso. Pagare 7-10 € al mese per questo è facile da giustificare: basta un lavoro in più all'anno.
 - **Le alternative attuali sono scomode**: blocchetto di carta, Word/Excel la sera, messaggi WhatsApp confusi, oppure gestionali di fatturazione completi (pesanti da imparare). Esistono app concorrenti (es. PrevAI, Artesan, i moduli preventivi dei software di fatturazione), ma nessuna domina il mercato degli artigiani in Italia: lo spazio c'è, e la differenza la fa chi arriva agli artigiani.
-- **Cosa ci distingue**: il cliente **accetta e firma dal suo telefono** con un link su WhatsApp (senza installare nulla), sceglie da solo le **voci facoltative** (più valore per ogni lavoro), l'app ricorda **chi ricontattare** con il messaggio pronto. In più: zero registrazione, listino per 27 mestieri, dettatura di più voci insieme, foto nel PDF, calcolatore dei metri quadri, guadagno visibile solo all'artigiano, funziona offline.
+- **Cosa ci distingue**: il cliente **accetta e firma dal suo telefono** con un link su WhatsApp (senza installare nulla), sceglie da solo le **voci facoltative** (più valore per ogni lavoro), l'app ricorda **chi ricontattare** con il messaggio pronto. E soprattutto **protegge gli incassi**: caparra confirmatoria, QR del bonifico, pulsante "Ho pagato" per il cliente, dashboard "Da incassare" con gli scaduti, solleciti in tre toni, lettera di messa in mora e fascicolo del credito pronti in PDF. "Il cliente firma ma non paga" è la paura numero uno degli artigiani: è anche il motivo più forte per passare a Pro. In più: zero registrazione, listino per 27 mestieri, dettatura di più voci insieme, foto nel PDF, calcolatore dei metri quadri, guadagno visibile solo all'artigiano, funziona offline.
 - **Costi quasi zero**: niente server né database (i dati stanno sul telefono dell'utente), hosting gratuito, pagamenti e IVA gestiti dal Merchant of Record. Il margine è circa il 90% dell'incasso netto IVA.
 
 ---
@@ -128,7 +128,9 @@ L'obiettivo non è vendere: è vedere 20 artigiani usarla e sentire cosa dicono.
 3. **"Gli ho proposto il sifone nuovo e l'ha aggiunto da solo"**: le voci facoltative spiegate in 20 secondi.
 4. **"Detto il preventivo con la voce"**: "sostituzione miscelatore, poi due ore di manodopera" → le righe si compilano da sole con i prezzi del listino.
 5. **"Blocchetto vs app"**: split screen, a sinistra il preventivo a mano, a destra il PDF. "Quale sceglieresti se fossi il cliente?"
-6. **"Quanto costa rifare un bagno nel 2026?"**: mostra il preventivo di esempio con i prezzi medi. Questo tipo di video lo guardano anche i privati, e lo condividono con il loro artigiano.
+6. **"Aveva firmato ma non pagava"**: dashboard con "€ 650 scaduti", un tocco su "Sollecita", poi la notifica "Ho pagato" del cliente che diventa "Pagato". Chiudi con la lettera di messa in mora pronta in PDF: "e se non paga neanche così, hai già tutto per l'avvocato".
+7. **"Scansiona e paga"**: il cliente inquadra il QR sul preventivo con l'app della banca e il bonifico si compila da solo.
+8. **"Quanto costa rifare un bagno nel 2026?"**: mostra il preventivo di esempio con i prezzi medi. Questo tipo di video lo guardano anche i privati, e lo condividono con il loro artigiano.
 
 ### Email/telefonata a un grossista
 

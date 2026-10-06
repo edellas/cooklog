@@ -76,6 +76,7 @@ stile.textContent = `
 .pl-visore .messaggio { max-width: 560px; width: 100%; white-space: pre-line; overflow-wrap: anywhere; }
 .pl-visore .btn { max-width: 560px; width: 100%; justify-content: center; text-align: center; }
 .pl-entra { margin-bottom: 6px; }
+.pl-qr-avviso { margin-top: 6px; font-size: 12px; font-weight: 650; color: var(--warn); text-align: center; }
 `;
 document.head.appendChild(stile);
 
@@ -99,6 +100,10 @@ const AZIENDA_ESEMPIO = {
   ivaDefault: 10,
   giorniRicontatto: 3,
   validitaGiorni: 30,
+  tipoAnticipo: "acconto",
+  giorniSaldo: 15,
+  tassoMora: "",
+  linkRecensioni: "https://example.com/recensioni",
   pagamento: "Acconto del 30% all'accettazione, saldo a fine lavori tramite bonifico bancario.",
   condizioni:
     "Il preventivo comprende esclusivamente le voci indicate. Eventuali lavori aggiuntivi o imprevisti saranno concordati e preventivati a parte.",
@@ -170,6 +175,17 @@ function creaEsempio() {
     return p;
   }
 
+  const isoTra = (giorni) => core.oggiISO(new Date(ora + giorni * giorno));
+  const totaleDi = (p) => core.calcolaTotali(p, { regime: "ordinario" });
+  // Pagamenti di esempio: quota del totale (0,3 = acconto) e quanti giorni fa.
+  const pagamento = (p, quota, giorniFa, metodo = "bonifico", nota = "") => ({
+    id: core.uid(),
+    data: isoTra(-giorniFa),
+    importo: core.round2(quota === "resto" ? totaleDi(p).totale - totaleDi(p).acconto : totaleDi(p).totale * quota),
+    metodo,
+    nota,
+  });
+
   const firma = (nome, giorniFa, seme, online = false) => ({
     img: trattiInPng(trattiFirma(seme)),
     nome,
@@ -189,6 +205,10 @@ function creaEsempio() {
     ],
     { stato: "accettato", inviatoIl: ora - 149 * giorno, firma: firma("Amministratore", 147, 2) },
   );
+  {
+    const p = preventivi.at(-1);
+    p.incasso = { pagamenti: [pagamento(p, 0.3, 147), pagamento(p, "resto", 125)], fineLavori: isoTra(-140) };
+  }
   aggiungi(
     110,
     { nome: "Paolo Conti", citta: "Seriate (BG)", telefono: "347 1110001" },
@@ -210,6 +230,11 @@ function creaEsempio() {
     ],
     { stato: "accettato", inviatoIl: ora - 69 * giorno, firma: firma("Anna Ferri", 68, 5) },
   );
+  {
+    // Pagata da poco: compare tra le recensioni da chiedere.
+    const p = preventivi.at(-1);
+    p.incasso = { pagamenti: [pagamento(p, 0.3, 68), pagamento(p, "resto", 12, "carta")], fineLavori: isoTra(-60) };
+  }
   aggiungi(
     35,
     { nome: "Marco Galli", citta: "Dalmine (BG)", telefono: "347 1110003" },
@@ -220,6 +245,15 @@ function creaEsempio() {
     ],
     { stato: "accettato", inviatoIl: ora - 34 * giorno, firma: firma("Marco Galli", 33, 7) },
   );
+  {
+    // Ha firmato, ha versato l'acconto, ma il saldo è scaduto: già mandato un promemoria.
+    const p = preventivi.at(-1);
+    p.incasso = {
+      pagamenti: [pagamento(p, 0.3, 32)],
+      fineLavori: isoTra(-25),
+      solleciti: [{ il: ora - 9 * giorno, livello: 1, canale: "whatsapp" }],
+    };
+  }
   aggiungi(
     6,
     { nome: "Luca Verdi", citta: "Bergamo", telefono: "320 1112222" },
@@ -240,7 +274,7 @@ function creaEsempio() {
       ["Sostituzione cassetta di scarico WC esterna", 1],
       ["Materiale di consumo (raccordi, guarnizioni, teflon)", 1],
     ],
-    { stato: "inviato", inviatoIl: ora - 1 * giorno },
+    { stato: "inviato", inviatoIl: ora - 1 * giorno, disponibilita: [{ data: isoTra(3), fascia: "giornata" }] },
   );
   aggiungi(
     1,
@@ -257,8 +291,31 @@ function creaEsempio() {
       inviatoIl: ora - 1 * giorno,
       firma: firma("Giulia Bianchi", 0, 3, true),
       accettazioneOnline: { il: ora - 3600e3, hash: "esempio", facoltativeAggiunte: ["Sostituzione sifone lavabo"] },
+      disponibilita: [
+        { data: isoTra(4), fascia: "mattina" },
+        { data: isoTra(6), fascia: "pomeriggio" },
+      ],
+      appuntamento: { data: isoTra(4), fascia: "mattina", da: "cliente", il: ora - 3600e3 },
     },
   );
+  {
+    // Dice di aver pagato l'acconto: l'avviso aspetta di essere controllato sul conto.
+    const p = preventivi.at(-1);
+    const acconto = totaleDi(p).acconto;
+    p.incasso = {
+      segnalazioni: [
+        {
+          il: ora - 1800e3,
+          data: isoTra(0),
+          importo: acconto,
+          metodo: "bonifico",
+          nota: "CRO 2938 4471",
+          rif: "e5e5e5",
+          stato: "attesa",
+        },
+      ],
+    };
+  }
   aggiungi(
     0,
     { nome: "Davide Russo", citta: "Bergamo", telefono: "347 1114444" },
@@ -269,6 +326,12 @@ function creaEsempio() {
       ["Scaldabagno elettrico 80 L", 1],
       ["Ricerca perdita con rilevatore", 1, true],
     ],
+    {
+      disponibilita: [
+        { data: isoTra(5), fascia: "mattina" },
+        { data: isoTra(7), fascia: "pomeriggio" },
+      ],
+    },
   );
   return { listino, clienti, preventivi };
 }
@@ -457,9 +520,15 @@ window.open = function (url, ...resto) {
 // ------------------------------------------------------------------
 // Giro completo nella stessa finestra: artigiano -> cliente -> artigiano
 // ------------------------------------------------------------------
+// Senza localStorage il codice viaggia nell'indirizzo (funziona fuori dalla cornice di claude.ai).
+const PERCORSI = {
+  "pl-anteprima-apri": "",
+  "pl-anteprima-conferma": "/accettazione?d=",
+  "pl-anteprima-avviso": "/pagamento?d=",
+};
 function vaiA(pagina, chiave, codice) {
   if (memoria.set(chiave, codice)) location.href = pagina;
-  else location.href = `${pagina}#${chiave === "pl-anteprima-apri" ? codice : "/accettazione?d=" + codice}`;
+  else location.href = `${pagina}#${PERCORSI[chiave]}${codice}`;
 }
 
 function aggiungiPulsantiDemo() {
@@ -501,7 +570,49 @@ function aggiungiPulsantiDemo() {
   }
 }
 
-new MutationObserver(aggiungiPulsantiDemo).observe(document.body, { childList: true, subtree: true });
+function aggiungiPulsantiIncassi() {
+  // Cliente: "Invia l'avviso" -> l'artigiano lo riceve e lo registra
+  const btnAvviso = document.getElementById("cp-avviso-wa");
+  if (btnAvviso && !document.getElementById("pl-avviso-app")) {
+    const b = document.createElement("button");
+    b.id = "pl-avviso-app";
+    b.className = "btn primary block";
+    b.textContent = "Ricevi l'avviso come artigiano (anteprima)";
+    btnAvviso.insertAdjacentElement("afterend", b);
+    b.addEventListener("click", () => {
+      const testo = new URL(btnAvviso.href).searchParams.get("text") || "";
+      const codice = ((testo.match(/https?:\/\/\S+/) || [""])[0].split("?d=")[1] || "").trim();
+      if (codice) vaiA("app.html", "pl-anteprima-avviso", codice);
+    });
+  }
+  // Artigiano: dal sollecito si apre il link di pagamento come lo vede il cliente
+  const area = document.getElementById("sol-testo");
+  if (area && !document.getElementById("pl-sol-cliente")) {
+    const b = document.createElement("button");
+    b.id = "pl-sol-cliente";
+    b.className = "btn primary block";
+    b.textContent = "Apri il link di pagamento come il cliente (anteprima)";
+    area.insertAdjacentElement("afterend", b);
+    b.addEventListener("click", () => {
+      const codice = (area.value.match(/accetta\.html#(\S+)/) || [])[1];
+      if (codice) vaiA("accetta.html", "pl-anteprima-apri", codice);
+      else avviso("Link non disponibile", "In questo messaggio non c'è il link di pagamento.");
+    });
+  }
+  // I QR usano l'IBAN di esempio: va detto chiaramente.
+  for (const qr of document.querySelectorAll(".qr-box, .qr-grande")) {
+    if (qr.nextElementSibling?.classList.contains("pl-qr-avviso")) continue;
+    const n = document.createElement("div");
+    n.className = "pl-qr-avviso";
+    n.textContent = "Anteprima: IBAN di esempio, non effettuare pagamenti.";
+    qr.insertAdjacentElement("afterend", n);
+  }
+}
+
+new MutationObserver(() => {
+  aggiungiPulsantiDemo();
+  aggiungiPulsantiIncassi();
+}).observe(document.body, { childList: true, subtree: true });
 
 // ------------------------------------------------------------------
 // Barra dell'anteprima
@@ -576,6 +687,11 @@ async function avvio() {
     await barra();
     await import("./accetta.js");
     return;
+  }
+  const codiceAvviso = memoria.get("pl-anteprima-avviso");
+  if (codiceAvviso) {
+    memoria.del("pl-anteprima-avviso");
+    history.replaceState(null, "", "#/pagamento?d=" + codiceAvviso);
   }
   const conferma = memoria.get("pl-anteprima-conferma");
   if (conferma) {

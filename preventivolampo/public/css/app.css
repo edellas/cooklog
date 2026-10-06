@@ -628,6 +628,7 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 .inc-riga .corpo { flex: 1; min-width: 0; }
 .inc-recupero { padding-top: 4px; border-top: 1px dashed var(--line-2); }
 .inc-recupero .badge.pro { padding: 2px 6px; font-size: 10px; }
+.inc-recupero .grid2 .btn { font-size: 13.5px; padding-inline: 8px; gap: 6px; }
 .data-tile { flex: none; width: 44px; height: 46px; border-radius: 12px; background: var(--brand-soft); color: var(--brand-ink); display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
 .data-tile b { font-size: 18px; }
 .data-tile small { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }

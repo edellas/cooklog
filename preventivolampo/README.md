@@ -36,7 +36,30 @@ Scelte che rendono il progetto semplice da gestire da soli:
 - **Calcolatore metri quadri** per stanza: pareti, soffitto e pavimento, meno porte e finestre.
 - **Guadagno nascosto.** Il costo d'acquisto dei materiali e il margine si vedono solo nell'app, mai nel PDF o nel link.
 - **Dettatura di più voci in una frase**, abbinate al listino ("sostituzione miscelatore, poi 2 ore di manodopera").
-- **Pagamento dell'acconto.** Il cliente che accetta vede IBAN (da copiare) e il link di pagamento online dell'artigiano (solo https).
+- **Pagamento dell'acconto.** Il cliente che accetta vede il QR del bonifico, l'IBAN (da copiare) e il link di pagamento online dell'artigiano (solo https).
+- **Data di inizio scelta dal cliente.** L'artigiano propone fino a 3 date; il cliente ne sceglie una mentre firma. La data finisce in agenda ("Prossimi lavori"), nel PDF e nel calendario del telefono (file .ics). Nel link di conferma viaggia solo il numero della data scelta, quindi il cliente non può inventarne un'altra.
+
+### "E se il cliente firma ma non paga?" — Incassi protetti
+
+Tre livelli, tutti senza server:
+
+1. **Prevenire**
+   - **Caparra confirmatoria (art. 1385 c.c.)** al posto del semplice acconto, con la dicitura su PDF e pagina del cliente. Se il cliente non rispetta l'accordo, l'artigiano può recedere e trattenerla.
+   - **QR del bonifico SEPA** (standard EPC, "QR bonifico") su PDF, pagina del cliente e telefono dell'artigiano: si inquadra con l'app della banca e importo, IBAN e causale si compilano da soli. L'IBAN viene controllato (mod 97) nelle impostazioni: un errore nelle cifre manderebbe i soldi altrove.
+   - Un avviso "inizia i lavori solo dopo l'acconto" finché l'acconto non è arrivato.
+2. **Seguire**
+   - **Registro incassi** per preventivo: pagamenti con metodo e nota, data di fine lavori, scadenza del saldo (0-90 giorni). L'importo scaduto si calcola da solo.
+   - **Dashboard "Da incassare"**: totale da incassare, quanto è scaduto e lavori in ordine di urgenza.
+   - **Pulsante "Ho pagato" per il cliente**: manda all'artigiano un avviso su WhatsApp. L'artigiano lo apre, controlla sul conto e lo registra con un tocco. Un'impronta impedisce di registrare due volte lo stesso avviso, e l'avviso non conta come incasso finché non viene confermato.
+3. **Recuperare**
+   - **Solleciti in tre toni** (cortese, sollecito, ultimo avviso) con importo, scadenza e IBAN già scritti, modificabili prima dell'invio. Il registro dei solleciti tiene date e canali, e suggerisce di aspettare una settimana tra un messaggio e l'altro.
+   - **Link di pagamento** per il cliente: importo, già pagato, QR, IBAN e causale da copiare, pulsante "Ho pagato".
+   - **Lettera di sollecito e costituzione in mora** (art. 1219 c.c., termine di 15 giorni, interessi se l'artigiano inserisce il tasso), pronta da firmare e inviare con PEC o raccomandata (Pro).
+   - **Fascicolo del credito** (Pro): il preventivo firmato più un riepilogo con prova dell'accettazione (data, ora, nome, impronta del documento accettato online), pagamenti, solleciti e importo scaduto. È quello che serve a un avvocato per un decreto ingiuntivo.
+
+A lavoro pagato, la dashboard suggerisce di **chiedere una recensione** su WhatsApp con il link Google dell'artigiano.
+
+I testi legali sono modelli generici, non consulenza: per crediti importanti l'artigiano deve rivolgersi a un professionista. L'app lo scrive chiaramente nelle impostazioni.
 
 Inoltre: onboarding in 2 passi con listino per 27 mestieri · IVA 22/10/5/4/0% anche mista · regime forfettario con dicitura di legge e bollo 2 € · acconto e saldo · numerazione per anno · PDF multipagina con link "Accetta e firma online" · firma sul posto (Pro) · dashboard con valore del mese, tasso di accettazione e grafico di 6 mesi · clienti · listino con costi · logo e colori (Pro) · backup/ripristino · offline · installabile · tema chiaro e scuro.
 
