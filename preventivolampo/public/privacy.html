@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy - PreventivoLampo</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="img/icona.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/sito.css">
+</head>
+<body>
+  <header class="header"><div class="wrap"><a class="logo" href="./"><img src="img/icona.svg" alt="" width="32" height="32">PreventivoLampo</a><nav><a class="btn small primary" href="app.html">Apri l'app</a></nav></div></header>
+  <main class="articolo testo-legale">
+    <div class="wrap stretto">
+      <h1>Informativa privacy</h1>
+      <p>Ultimo aggiornamento: ottobre 2026. Questa informativa spiega quali dati personali tratta PreventivoLampo (il "Servizio"), ai sensi del Regolamento UE 2016/679 (GDPR).</p>
+
+      <h2>1. Titolare del trattamento</h2>
+      <p><span data-t="nome">[Nome e Cognome / Ragione sociale]</span>, <span data-t="indirizzo">[Indirizzo]</span>, P.IVA <span data-t="piva">[Partita IVA]</span>. Contatto: <span data-t="email">supporto@preventivolampo.it</span>.</p>
+
+      <h2>2. I dati che inserisci nell'app restano sul tuo dispositivo</h2>
+      <p>I dati della tua impresa, dei tuoi clienti, i preventivi, il listino e le firme vengono salvati <b>solo nella memoria del tuo browser</b> (IndexedDB) e non vengono inviati ai nostri server. Non abbiamo accesso a questi dati e non possiamo leggerli, modificarli o recuperarli. Rispetto ai dati dei tuoi clienti sei tu il titolare del trattamento: usali solo per gestire i rapporti con loro.</p>
+      <p>Poiché i dati restano sul dispositivo, ti consigliamo di esportare periodicamente un backup dalle Impostazioni dell'app.</p>
+
+      <h2>3. Acquisti e pagamenti</h2>
+      <p>Gli abbonamenti Pro sono venduti tramite un rivenditore autorizzato che agisce come "Merchant of Record" (Polar Software Inc. o Lemon Squeezy LLC), che gestisce il pagamento, l'IVA e l'invio delle ricevute. Per l'acquisto il rivenditore tratta i dati necessari (nome, email, dati di pagamento, paese, eventuale partita IVA) secondo la propria informativa. Noi riceviamo dal rivenditore le informazioni sull'ordine (nome, email, prodotto acquistato, stato dell'abbonamento) per fornirti il Servizio e l'assistenza.</p>
+
+      <h2>4. Verifica della licenza</h2>
+      <p>Quando attivi Pro, il codice licenza viene inviato al nostro server e da questo al rivenditore per verificarne la validità; la verifica si ripete periodicamente. Non vengono trasmessi altri dati dell'app.</p>
+
+      <h2>5. Dati tecnici e cookie</h2>
+      <p>Il fornitore di hosting (Netlify Inc. o Cloudflare Inc.) registra dati tecnici delle richieste (indirizzo IP, tipo di browser, data e ora) per sicurezza e funzionamento, conservati per il tempo strettamente necessario. Il Servizio non usa cookie di profilazione né pubblicità. Possiamo usare un servizio di statistiche anonime e senza cookie (Plausible o Umami) che conta visite ed eventi d'uso aggregati (es. "PDF creato") senza identificarti e senza registrare i contenuti dei preventivi. Usa solo strumenti tecnici di memorizzazione locale (IndexedDB, localStorage, cache dell'app) necessari al funzionamento, per i quali non è richiesto il consenso.</p>
+
+      <h2>6. Basi giuridiche e conservazione</h2>
+      <p>Trattiamo i dati per eseguire il contratto (fornitura del Servizio e assistenza), per obblighi di legge (es. fiscali, conservazione per 10 anni dei dati contabili) e per il legittimo interesse alla sicurezza del Servizio. Le email di assistenza sono conservate per il tempo necessario a gestire la richiesta.</p>
+
+      <h2>7. I tuoi diritti</h2>
+      <p>Puoi chiedere accesso, rettifica, cancellazione, limitazione, portabilità dei dati e opporti al trattamento scrivendo a <span data-t="email">supporto@preventivolampo.it</span>. Hai diritto di proporre reclamo al Garante per la protezione dei dati personali (www.garanteprivacy.it).</p>
+      <div style="height:40px"></div>
+    </div>
+  </main>
+  <footer><div class="wrap"><span>© PreventivoLampo</span><nav><a href="./">Home</a><a href="privacy.html">Privacy</a><a href="termini.html">Termini</a></nav></div></footer>
+  <script type="module">
+    import { CONFIG } from "./js/config.js";
+    const t = CONFIG.titolare;
+    document.querySelectorAll("[data-t]").forEach((el) => {
+      const v = { nome: t.nome, indirizzo: t.indirizzo, piva: t.piva, email: CONFIG.emailSupporto, sito: CONFIG.sito }[el.dataset.t];
+      if (v) el.textContent = v;
+    });
+  </script>
+</body>
+</html>

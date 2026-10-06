@@ -1,3 +1,5 @@
+> **PreventivoLampo** - app web per preventivi da artigiani (prodotto separato da questa app Expo): vedi [`preventivolampo/README.md`](preventivolampo/README.md) e il piano di business in [`preventivolampo/PIANO.md`](preventivolampo/PIANO.md).
+
 # Welcome to your Expo app 👋
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).

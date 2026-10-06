@@ -1,0 +1,5 @@
+# Configurazione Netlify. Nelle impostazioni del sito imposta "Base directory" = preventivolampo.
+# Le intestazioni HTTP di sicurezza sono in public/_headers (valgono sia per Netlify sia per Cloudflare).
+[build]
+  publish = "public"
+  functions = "netlify/functions"

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Termini e condizioni - PreventivoLampo</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="img/icona.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/sito.css">
+</head>
+<body>
+  <header class="header"><div class="wrap"><a class="logo" href="./"><img src="img/icona.svg" alt="" width="32" height="32">PreventivoLampo</a><nav><a class="btn small primary" href="app.html">Apri l'app</a></nav></div></header>
+  <main class="articolo testo-legale">
+    <div class="wrap stretto">
+      <h1>Termini e condizioni</h1>
+      <p>Ultimo aggiornamento: ottobre 2026. Usando PreventivoLampo (il "Servizio") accetti questi termini. Il Servizio è fornito da <span data-t="nome">[Nome e Cognome / Ragione sociale]</span>, <span data-t="indirizzo">[Indirizzo]</span>, P.IVA <span data-t="piva">[Partita IVA]</span>.</p>
+
+      <h2>1. Il Servizio</h2>
+      <p>PreventivoLampo è un'applicazione web per creare preventivi in PDF, inviarli e raccogliere la firma di accettazione del cliente. Il preventivo non è un documento fiscale: il Servizio non emette fatture e non trasmette documenti al Sistema di Interscambio.</p>
+
+      <h2>2. Piani</h2>
+      <p>Il piano Gratuito consente un numero limitato di preventivi PDF al mese e include la dicitura "Creato con PreventivoLampo". Il piano Pro, a pagamento, rimuove i limiti e abilita funzioni aggiuntive (logo, colori, firma del cliente). Le caratteristiche dei piani sono descritte nella pagina prezzi e possono evolvere nel tempo; eventuali modifiche sostanziali a tuo sfavore ti saranno comunicate in anticipo.</p>
+
+      <h2>3. Pagamenti, rinnovo e disdetta</h2>
+      <p>Gli abbonamenti sono venduti da un rivenditore autorizzato (Merchant of Record) che incassa il pagamento ed emette la ricevuta. L'abbonamento si rinnova automaticamente alla scadenza (mensile o annuale) finché non lo disdici. Puoi disdire in qualsiasi momento dal link ricevuto via email: Pro resta attivo fino alla fine del periodo già pagato.</p>
+
+      <h2>4. Soddisfatti o rimborsati</h2>
+      <p>Se Pro non fa per te, scrivici entro 14 giorni dal primo pagamento a <span data-t="email">supporto@preventivolampo.it</span> e ti rimborsiamo per intero. Restano salvi i diritti riconosciuti ai consumatori dal Codice del Consumo.</p>
+
+      <h2>5. Responsabilità dell'utente</h2>
+      <p>Sei responsabile del contenuto dei tuoi preventivi: prezzi, descrizioni, aliquote IVA, diciture fiscali e condizioni. I prezzi e i testi di esempio forniti dal Servizio sono indicativi e non costituiscono consulenza fiscale o legale. I dati sono salvati sul tuo dispositivo: sei responsabile di eseguire i backup.</p>
+
+      <h2>6. Limitazione di responsabilità</h2>
+      <p>Il Servizio è fornito "così com'è". Nei limiti consentiti dalla legge, il fornitore non risponde di danni indiretti, perdita di dati o mancati guadagni derivanti dall'uso o dall'impossibilità di usare il Servizio. La responsabilità complessiva è limitata all'importo pagato negli ultimi 12 mesi. Restano ferme le responsabilità per dolo o colpa grave.</p>
+
+      <h2>7. Legge applicabile</h2>
+      <p>Questi termini sono regolati dalla legge italiana. Per i consumatori è competente il foro di residenza del consumatore.</p>
+
+      <h2>8. Contatti</h2>
+      <p>Per qualsiasi domanda: <span data-t="email">supporto@preventivolampo.it</span>.</p>
+      <div style="height:40px"></div>
+    </div>
+  </main>
+  <footer><div class="wrap"><span>© PreventivoLampo</span><nav><a href="./">Home</a><a href="privacy.html">Privacy</a><a href="termini.html">Termini</a></nav></div></footer>
+  <script type="module">
+    import { CONFIG } from "./js/config.js";
+    const t = CONFIG.titolare;
+    document.querySelectorAll("[data-t]").forEach((el) => {
+      const v = { nome: t.nome, indirizzo: t.indirizzo, piva: t.piva, email: CONFIG.emailSupporto, sito: CONFIG.sito }[el.dataset.t];
+      if (v) el.textContent = v;
+    });
+  </script>
+</body>
+</html>
