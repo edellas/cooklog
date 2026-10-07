@@ -44,6 +44,34 @@ await device.shell(`am start -W -n ${PACCHETTO}/.MainActivity`);
 let page = await webview();
 const errori = [];
 page.on("pageerror", (e) => errori.push("JS: " + e.message));
+page.on("crash", () => errori.push("La WebView si è chiusa da sola (crash)"));
+page.on("close", () => console.log("(la pagina della WebView si è chiusa)"));
+
+// Dopo aver scritto in un campo la tastiera resta aperta e Android sposta la parte visibile della pagina:
+// come farebbe l'artigiano, la si chiude prima di toccare i pulsanti in basso.
+async function chiudiTastiera() {
+  const prima = await page.evaluate(() => {
+    const v = globalThis.visualViewport;
+    const b = document.querySelector(".barra-totale")?.getBoundingClientRect();
+    return {
+      attivo: document.activeElement?.tagName,
+      finestra: globalThis.innerHeight,
+      visibile: v && { alto: v.offsetTop, altezza: v.height, scala: v.scale },
+      barra: b && { top: b.top, bottom: b.bottom },
+    };
+  });
+  console.log("  tastiera:", JSON.stringify(prima));
+  await page.evaluate(() => document.activeElement?.blur?.());
+  await page.waitForFunction(
+    () => {
+      const v = globalThis.visualViewport;
+      return !v || (v.offsetTop === 0 && Math.abs(v.height - globalThis.innerHeight) < 2 && v.scale === 1);
+    },
+    null,
+    { timeout: 10000 },
+  );
+  await page.waitForTimeout(400);
+}
 
 // I plugin veri, chiamati come li chiama l'app.
 const plugin = (nome, metodo, opzioni) =>
@@ -87,6 +115,7 @@ try {
     await page.fill('[data-campo="cliente.telefono"]', "347 7654321");
     await page.waitForTimeout(800);
     await foto("02-editor");
+    await chiudiTastiera();
     await page.click('[data-action="invia"]');
     await page.waitForSelector("#invio-wa");
     const href = await page.getAttribute("#invio-wa", "href");
@@ -151,6 +180,16 @@ try {
 } catch (err) {
   await foto("errore").catch(() => {});
   console.error("FALLITO:", err.message, "\n" + errori.join("\n"));
+  // Gli ultimi messaggi di Android sull'app (WebView, Capacitor, errori), per capire cosa è successo.
+  const log = await device.shell("logcat -d -t 600").catch(() => "");
+  console.error(
+    log
+      .toString()
+      .split("\n")
+      .filter((r) => /Capacitor|chromium|cr_|AndroidRuntime|preventivolampo|WebView|FATAL/i.test(r))
+      .slice(-120)
+      .join("\n"),
+  );
   process.exitCode = 1;
 } finally {
   await device.close();

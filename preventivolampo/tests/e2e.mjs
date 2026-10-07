@@ -910,6 +910,8 @@ try {
     await page.waitForFunction(() => document.querySelector("#calc-totale").textContent === "69,4 mq");
     await page.click('[data-action="calc-usa"]');
     assert.equal(await page.inputValue('.riga >> nth=0 >> [data-r="qta"]'), "69,4");
+    // il foglio chiuso toglie la sua voce dalla cronologia: aspettarla, se no il goto seguente torna qui
+    await page.waitForFunction(() => !history.state?.foglio);
   });
 
   await passo("regime forfettario: niente IVA, dicitura di legge e bollo", async () => {

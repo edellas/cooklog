@@ -494,3 +494,24 @@ test("lavori extra (variante): il link porta numero e data del preventivo origin
   assert.equal(ostile.variante.data, "");
   assert.equal(preventivoDaDati({ ...d, va: "2026-004" }).variante, null);
 });
+
+test("impronta: SHA-256 di riserva identico a quello del browser (WebView senza crypto.subtle)", async () => {
+  const { sha256, impronta } = await import("../public/js/link.js");
+  const { createHash } = await import("node:crypto");
+  const casi = ["", "abc", "a".repeat(55), "a".repeat(56), "a".repeat(64), "è€ preventivo 🔧", "z".repeat(5000)];
+  for (const t of casi) {
+    const atteso = createHash("sha256").update(t, "utf8").digest("hex");
+    const ottenuto = [...sha256(new TextEncoder().encode(t))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    assert.equal(ottenuto, atteso, `testo lungo ${t.length}`);
+  }
+  const prima = await impronta("zABCDEF-codice");
+  const subtle = Object.getOwnPropertyDescriptor(globalThis.crypto, "subtle");
+  Object.defineProperty(globalThis.crypto, "subtle", { value: undefined, configurable: true });
+  try {
+    assert.equal(await impronta("zABCDEF-codice"), prima);
+  } finally {
+    if (subtle) Object.defineProperty(globalThis.crypto, "subtle", subtle);
+    else delete globalThis.crypto.subtle;
+  }
+  assert.ok(globalThis.crypto.subtle, "crypto.subtle ripristinato");
+});
