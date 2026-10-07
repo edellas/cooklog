@@ -133,7 +133,8 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: 1
         run: |
           brew tap facebook/fb
-          brew install idb-companion
+          brew trust --formula facebook/fb/idb-companion || true
+          brew install facebook/fb/idb-companion
           python -m pip install fb-idb
       - name: Prova nel simulatore
         timeout-minutes: 25
