@@ -178,3 +178,27 @@ test("statistiche: tasso di accettazione e ultimi 6 mesi", () => {
   assert.equal(s.mesi[4].numero, 2);
   assert.equal(statistiche([], () => 0).tassoAccettazione, null);
 });
+
+test("da ricontattare: non si sollecita chi ha già pagato o dice di averlo fatto", () => {
+  const ora = new Date(2026, 9, 10, 12).getTime();
+  const fa = (n) => ora - n * 864e5;
+  const base = { stato: "inviato", data: "2026-10-01", validitaGiorni: 30, inviatoIl: fa(6) };
+  const lista = [
+    { ...base, id: "a" },
+    { ...base, id: "b", incasso: { pagamenti: [{ importo: 100 }] } },
+    { ...base, id: "c", incasso: { segnalazioni: [{ importo: 100, stato: "attesa" }] } },
+    { ...base, id: "d", incasso: { segnalazioni: [{ importo: 100, stato: "respinta" }] } },
+  ];
+  assert.deepEqual(
+    daRicontattare(lista, ora).map((x) => x.prev.id),
+    ["a", "d"],
+  );
+});
+
+test("PDF: caratteri fuori dal font standard resi leggibili, non storpiati", async () => {
+  const { testoPdf } = await import("../public/js/pdf.js");
+  assert.equal(testoPdf("Ștefan Țurcanu, Via Mățău 3"), "Stefan Turcanu, Via Matau 3");
+  assert.equal(testoPdf("Łódź ✓ ≥ 10 😀"), "Lódz v >= 10 ");
+  assert.equal(testoPdf("Città più € “ok” — àèìòù ñ"), "Città più € “ok” — àèìòù ñ", "l'italiano resta com'è");
+  assert.equal(testoPdf("riga1\nriga2"), "riga1\nriga2");
+});

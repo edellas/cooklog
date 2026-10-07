@@ -227,7 +227,8 @@ body.no-tabbar .tabbar { transform: translate(-50%, 140%); opacity: 0; pointer-e
 .row { display: flex; gap: 10px; align-items: center; }
 .row.wrap { flex-wrap: wrap; }
 .spazia { justify-content: space-between; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+[hidden] { display: none !important; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 @media (max-width: 420px) { .grid2.stack-mobile { grid-template-columns: 1fr; } }
 hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; }
@@ -437,7 +438,7 @@ a.ricontatto:hover { background: var(--surface-3); }
 .foto-griglia .aggiungi svg { width: 26px; height: 26px; }
 
 .riepilogo .r { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 3px 0; font-variant-numeric: tabular-nums; }
-.riepilogo .r b { font-weight: 700; }
+.riepilogo .r b { font-weight: 700; white-space: nowrap; }
 .riepilogo .r.tot { padding-top: 10px; margin-top: 6px; border-top: 1px solid var(--line); }
 
 .barra-totale {
@@ -454,7 +455,8 @@ a.ricontatto:hover { background: var(--surface-3); }
 .barra-totale .btn { padding: 0 14px; border-radius: 16px; }
 /* Su telefono "Anteprima" resta solo icona: il totale deve sempre leggersi per intero. */
 @media (max-width: 440px) { .barra-totale .btn:not(.primary) span { display: none; } .barra-totale .btn:not(.primary) { padding: 0 14px; } }
-@media (max-width: 360px) { .barra-totale .btn span { display: none; } .barra-totale .tot .big { font-size: 19px; } }
+@media (max-width: 360px) { .barra-totale .btn:not(.primary) span { display: none; } .barra-totale .tot .big { font-size: 19px; } }
+@media (max-width: 340px) { .barra-totale .btn.primary span { display: none; } }
 
 .firma-box { border: 1px dashed var(--line-2); border-radius: 16px; padding: 10px; background: #fff; }
 .firma-box img { width: 100%; max-height: 120px; object-fit: contain; }
@@ -473,7 +475,7 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 /* ---------- Fogli (bottom sheet) ---------- */
 .overlay { position: fixed; inset: 0; z-index: 100; background: rgba(6, 10, 20, 0.45); display: flex; align-items: flex-end; justify-content: center; animation: fade 0.2s var(--ease); backdrop-filter: blur(2px); }
 .overlay.esce { animation: fadeout 0.18s var(--ease) forwards; }
-.overlay.esce .foglio { animation: giu 0.18s var(--ease) forwards; }
+.overlay.esce .foglio { animation: giu 0.18s var(--ease) forwards; pointer-events: none; }
 .foglio {
   background: var(--surface); width: 100%; max-width: 640px; max-height: 92vh; max-height: 92dvh; overflow-y: auto; overscroll-behavior: contain;
   border-radius: var(--r-xl) var(--r-xl) 0 0; padding: 8px 18px calc(20px + var(--safe-b));
@@ -594,7 +596,8 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 @keyframes pop { 0% { transform: scale(0.4); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
 .cp-passo h2 { margin: 0; font-size: 19px; letter-spacing: -0.02em; }
 .cp-iban { display: flex; gap: 10px; align-items: center; padding: 12px; border-radius: 14px; background: var(--surface-2); }
-.cp-iban > div { flex: 1; min-width: 0; word-break: break-all; }
+.cp-iban > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cp-iban b.tnum { word-break: break-all; }
 .pagina-cliente #app { padding-bottom: calc(110px + var(--safe-b)); }
 
 /* ---------- Toast ---------- */
@@ -635,6 +638,14 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 .appuntamento { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); }
 .appuntamento .corpo { flex: 1; min-width: 0; }
 .riga-data { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.riga-data.passata input { border-color: var(--bad); color: var(--bad); }
+@media (max-width: 420px) {
+  .riga-data { grid-template-columns: minmax(0, 1fr) auto; }
+  .riga-data select { grid-column: 1; grid-row: 2; }
+  .riga-data .icon-btn { grid-column: 2; grid-row: 1 / span 2; }
+  .ricontatto .badge { white-space: normal; max-width: 96px; text-align: center; line-height: 1.2; }
+  .ricontatto .badge.solo-largo { display: none; }
+}
 .seg.seg-pieno { display: flex; width: 100%; }
 .seg.seg-pieno button { flex: 1; min-width: 0; padding: 8px 4px; font-size: 12.5px; }
 .qr-grande { width: min(100%, 300px); margin: 6px auto 0; padding: 12px; border-radius: 20px; background: #fff; border: 1px solid var(--line); }

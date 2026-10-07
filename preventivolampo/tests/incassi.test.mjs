@@ -19,6 +19,9 @@ import {
   giorniTra,
   dataValida,
   PAUSA_SOLLECITI,
+  interessiQuote,
+  daChiedere,
+  clienteImpresa,
 } from "../public/js/incassi.js";
 import { matriceQr, rettangoliQr, svgQr } from "../public/js/qr.js";
 
@@ -394,4 +397,106 @@ test("agenda: lavori accettati con data nei prossimi giorni, in ordine", () => {
     prossimiLavori(lista, { oggi: "2026-10-10" }).map((x) => x.prev.id),
     ["a", "b"],
   );
+});
+
+test("quote scadute: acconto e saldo con la loro data, interessi quota per quota", () => {
+  // Acconto 300 dovuto entro il 05/09 (non pagato), saldo 700 dovuto dal 01/10 (fine lavori 01/10, 0 giorni)
+  const p = prev({ incasso: { fineLavori: "2026-10-01", giorniSaldo: 0 } });
+  const s = statoIncasso(p, TOT, { oggi: "2026-10-11" });
+  assert.deepEqual(s.quote, [
+    { tipo: "acconto", importo: 300, dal: "2026-09-05" },
+    { tipo: "saldo", importo: 700, dal: "2026-10-01" },
+  ]);
+  assert.equal(s.importoScaduto, 1000);
+  assert.equal(s.scadutoDal, "2026-09-05");
+  // 300 per 36 giorni + 700 per 10 giorni al 10%: 2,96 + 1,92 (non 1000 per 36 giorni = 9,86)
+  assert.equal(interessiQuote(s.quote, "10", "2026-10-11"), 4.88);
+  assert.equal(interessiQuote(s.quote, "10%", "2026-10-11"), 4.88, "il simbolo % non azzera il tasso");
+  const m = messaggioSollecito(p, AZIENDA, s, 1);
+  assert.match(m, /scaduto in parte dal 05\/09\/2026 e in parte dal 01\/10\/2026/);
+  assert.match(m, /causale "Pagamento preventivo n\. 2026-010"/, "acconto + saldo insieme: niente causale 'Acconto'");
+  assert.deepEqual(daChiedere(p, s), {
+    importo: 1000,
+    tipo: "residuo",
+    causale: "Pagamento preventivo n. 2026-010",
+    scaduto: true,
+  });
+  // solo l'acconto scaduto
+  const solo = statoIncasso(prev(), TOT, { oggi: "2026-09-10" });
+  assert.deepEqual(daChiedere(prev(), solo).tipo, "acconto");
+  // nulla di scaduto: si chiede la prossima scadenza senza toni duri
+  const corso = prev({ incasso: { pagamenti: [{ importo: 300, data: "2026-09-03" }] } });
+  const sc = statoIncasso(corso, TOT, { oggi: "2026-09-20" });
+  assert.equal(sc.importoScaduto, 0);
+  const duro = messaggioSollecito(corso, AZIENDA, sc, 3);
+  assert.ok(!/messa in mora|entro 7 giorni/.test(duro), "senza importi scaduti niente minacce");
+  assert.match(duro, /del saldo di € 700,00/);
+});
+
+test("tono dei solleciti: conta solo i solleciti mandati per il ritardo di adesso", () => {
+  const giorno = 864e5;
+  // acconto pagato in ritardo dopo due solleciti ad agosto; ora è scaduto il saldo
+  const p = prev({
+    data: "2026-07-01",
+    firma: { img: "x", data: "2026-07-02T10:00:00Z" },
+    incasso: {
+      pagamenti: [{ importo: 300, data: "2026-08-20" }],
+      fineLavori: "2026-09-10",
+      giorniSaldo: 0,
+      solleciti: [
+        { il: Date.UTC(2026, 7, 1), livello: 1 },
+        { il: Date.UTC(2026, 7, 10), livello: 2 },
+      ],
+    },
+  });
+  const s = statoIncasso(p, TOT, { oggi: "2026-10-01" });
+  assert.equal(s.scadutoDal, "2026-09-10");
+  assert.equal(sollecitoSuggerito(s, Date.UTC(2026, 9, 1)).livello, 1, "il primo sollecito per il saldo è gentile");
+  p.incasso.solleciti.push({ il: Date.UTC(2026, 8, 15), livello: 1 });
+  assert.equal(sollecitoSuggerito(statoIncasso(p, TOT, { oggi: "2026-10-01" }), Date.UTC(2026, 9, 1)).livello, 2);
+  // nulla di scaduto: si resta al primo livello anche dopo un promemoria
+  const corso = prev({
+    incasso: { pagamenti: [{ importo: 300 }], solleciti: [{ il: Date.now() - 20 * giorno, livello: 1 }] },
+  });
+  assert.equal(sollecitoSuggerito(statoIncasso(corso, TOT, { oggi: "2026-09-20" })).livello, 1);
+});
+
+test("preventivi accettati prima del registro incassi: nessun falso scaduto finché non si aggiornano", () => {
+  const vecchio = prev({ firma: null, data: "2026-01-10", incasso: { storico: true } });
+  const s = statoIncasso(vecchio, TOT, { oggi: "2026-10-01" });
+  assert.equal(s.fase, "storico");
+  assert.equal(s.importoScaduto, 0);
+  assert.equal(s.scadenzaAcconto, null);
+  assert.equal(daIncassare([vecchio], totaliDi, { oggi: "2026-10-01" }).voci.length, 0);
+  // registrando un pagamento o la fine dei lavori torna normale
+  vecchio.incasso.fineLavori = "2026-09-01";
+  assert.notEqual(statoIncasso(vecchio, TOT, { oggi: "2026-10-01" }).fase, "storico");
+});
+
+test("acconto pattuito all'accettazione: aggiungere voci dopo non crea un falso ritardo", () => {
+  const p = prev({ incasso: { pagamenti: [{ importo: 300, data: "2026-09-03" }], accontoPattuito: 300 } });
+  // il preventivo è stato ampliato: il 30% del nuovo totale sarebbe 360
+  const s = statoIncasso(p, { totale: 1200, acconto: 360 }, { oggi: "2026-10-01" });
+  assert.equal(s.acconto, 300);
+  assert.equal(s.accontoPagato, true);
+  assert.equal(s.fase, "in-corso");
+  assert.equal(s.residuo, 900);
+});
+
+test("da incassare: un 'Ho pagato' arrivato prima dell'accettazione non sparisce", () => {
+  const p = prev({
+    stato: "inviato",
+    incasso: { segnalazioni: [{ il: 1, importo: 300, stato: "attesa", rif: "ab" }] },
+  });
+  const r = daIncassare([p, prev({ id: "altro" })], totaliDi, { oggi: "2026-09-04" });
+  assert.equal(r.voci[0].prev.id, "p1", "gli avvisi da verificare vanno in cima");
+  assert.equal(r.daVerificare, 300);
+  assert.equal(r.totale, 1000, "il preventivo non accettato non entra nei totali");
+});
+
+test("cliente impresa (partita IVA) o privato", () => {
+  assert.equal(clienteImpresa({ cfpiva: "01234567890" }), true);
+  assert.equal(clienteImpresa({ cfpiva: "IT 01234567890" }), true);
+  assert.equal(clienteImpresa({ cfpiva: "RSSMRA80A01H501U" }), false);
+  assert.equal(clienteImpresa({}), false);
 });

@@ -363,6 +363,8 @@ export function telefonoWhatsApp(tel) {
   if (d.startsWith("+")) d = d.slice(1);
   else if (d.startsWith("00")) d = d.slice(2);
   else if (d.length <= 10 && /^3\d{8,9}$/.test(d)) d = "39" + d;
+  // Fissi italiani (usati con WhatsApp Business): dopo +39 si tiene lo 0 iniziale.
+  else if (/^0\d{5,10}$/.test(d)) d = "39" + d;
   return d.replace(/\D/g, "");
 }
 
@@ -529,8 +531,16 @@ export function scadenzaDi(prev) {
 
 export function daRicontattare(preventivi, ora = Date.now(), dopoGiorni = 3) {
   const oggi = oggiISO(new Date(ora));
+  // Chi ha già pagato qualcosa (o dice di averlo fatto) non va "ricontattato" per convincerlo.
+  const haPagato = (p) => {
+    const i = p.incasso;
+    if (!i || typeof i !== "object") return false;
+    const pag = Array.isArray(i.pagamenti) && i.pagamenti.length > 0;
+    const seg = Array.isArray(i.segnalazioni) && i.segnalazioni.some((x) => x && x.stato === "attesa");
+    return pag || seg;
+  };
   return (preventivi || [])
-    .filter((p) => p.stato === "inviato")
+    .filter((p) => p.stato === "inviato" && !haPagato(p))
     .map((p) => {
       const inviato = p.inviatoIl || p.updatedAt || p.createdAt || ora;
       const ultimoContatto = Math.max(inviato, p.ricontattatoIl || 0);

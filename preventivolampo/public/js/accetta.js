@@ -5,7 +5,15 @@
 // Nessun dato lascia il telefono del cliente se non nei messaggi che il cliente stesso decide di inviare.
 import { leggiLinkCliente, creaLinkConferma, creaLinkAvviso } from "./link.js";
 import { calcolaTotali, formatEuro, formatQta, formatData, oggiISO, scadenzaDi, telefonoWhatsApp } from "./core.js";
-import { payloadEpc, causale, ibanValido, testoAppuntamento, creaIcs, METODI } from "./incassi.js";
+import {
+  payloadEpc,
+  causale,
+  ibanValido,
+  testoAppuntamento,
+  creaIcs,
+  METODI,
+  normalizzaDisponibilita,
+} from "./incassi.js";
 import { svgQr } from "./qr.js";
 import { creaPadFirma, decodificaTratti, trattiInPng } from "./firma.js";
 import { $, $$, esc, toast, apriFoglio, chiudiFoglio, titoloFoglio, copiaTesto, vibra, avatar } from "./ui.js";
@@ -70,6 +78,19 @@ function errore(messaggio) {
     </div></main>`;
 }
 
+// "S.r.l." seguito dal punto della frase diventerebbe "S.r.l..".
+const nomeSenzaPunto = (n) => String(n || "").replace(/\.+$/, "");
+
+function sezioneContatti(a, testoWa) {
+  const c = contatti(a, testoWa);
+  return c
+    ? `<section class="card stack">
+        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.telefono}</span><h2>Domande? Contatta l'impresa</h2></div>
+        ${c}
+      </section>`
+    : "";
+}
+
 function contatti(a, testoWa) {
   const tel = telefonoWhatsApp(a.telefono);
   const voci = [];
@@ -101,7 +122,12 @@ function htmlRiepilogo(t) {
   if (t.acconto > 0)
     h +=
       r(`${nomeAnticipo(stato.prev)} all'accettazione`, esc(formatEuro(t.acconto))) +
-      r("Saldo a fine lavori", esc(formatEuro(t.saldo)));
+      r(
+        stato.prev.giorniSaldo > 0
+          ? `Saldo entro ${stato.prev.giorniSaldo} giorni dalla fine lavori`
+          : "Saldo a fine lavori",
+        esc(formatEuro(t.saldo)),
+      );
   return h;
 }
 
@@ -133,7 +159,8 @@ function htmlPaga(a, importo, causaleTesto) {
 function htmlSegnalato(seg) {
   return `<div class="banner ok"><span class="ico">✅</span><div>Hai segnalato il pagamento di <b>${esc(formatEuro(seg.importo))}</b> il ${esc(formatData(oggiISO(new Date(seg.il))))}. Se non l'hai ancora fatto, invia l'avviso all'impresa.</div></div>
     <a class="btn wa block" id="cp-avviso-wa" href="${esc(linkWa(azienda(), testoAvviso(seg)))}" target="_blank" rel="noopener noreferrer">${ICONE.whatsapp} Invia l'avviso su WhatsApp</a>
-    <button class="btn ghost block" data-azione="copia-avviso">${ICONE.copia} Copia l'avviso</button>`;
+    <button class="btn ghost block" data-azione="copia-avviso">${ICONE.copia} Copia l'avviso</button>
+    <button class="btn ghost block" data-azione="ho-pagato">Segnala un altro pagamento</button>`;
 }
 
 function linkWa(a, testo) {
@@ -177,7 +204,18 @@ function foglioHoPagato() {
   );
 }
 
+let preparoAvviso = false;
 async function confermaHoPagato() {
+  if (preparoAvviso) return; // doppio tocco
+  preparoAvviso = true;
+  try {
+    await preparaAvviso();
+  } finally {
+    preparoAvviso = false;
+  }
+}
+
+async function preparaAvviso() {
   const pg = pagamentoCorrente();
   const metodo = $('input[name="hp-metodo"]:checked')?.value || "altro";
   const nota = $("#hp-nota").value.trim().slice(0, 200);
@@ -250,15 +288,17 @@ function pagina() {
       }
       <section class="card riepilogo" id="cp-riepilogo">${htmlRiepilogo(t)}</section>
       ${
-        p.disponibilita.length && !scad
+        dateValide().length && !scad
           ? `<section class="card stack">
         <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.orologio}</span><div><h2>Quando iniziamo?</h2><div class="muted xsmall">Scegli una data quando accetti</div></div></div>
-        <div class="row wrap">${p.disponibilita.map((d) => `<span class="chip">${esc(testoAppuntamento(d))}</span>`).join("")}</div>
+        <div class="row wrap">${dateValide()
+          .map((d) => `<span class="chip">${esc(testoAppuntamento(d))}</span>`)
+          .join("")}</div>
       </section>`
           : ""
       }
       ${
-        p.tempi || p.pagamento || p.note || a.iban || (p.caparra && t.acconto > 0)
+        p.tempi || p.pagamento || p.note || (p.caparra && t.acconto > 0)
           ? `<section class="card stack">
         <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.condizioni}</span><h2>Condizioni</h2></div>
         ${p.tempi ? `<div><div class="muted xsmall">TEMPI</div><div>${esc(p.tempi)}</div></div>` : ""}
@@ -269,16 +309,13 @@ function pagina() {
       </section>`
           : ""
       }
-      <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.telefono}</span><h2>Domande? Contatta l'impresa</h2></div>
-        ${contatti(a, `Buongiorno, ho una domanda sul preventivo n. ${p.numero}.`)}
-      </section>
-      <p class="muted xsmall cp-avviso">Documento inviato da ${esc(a.ragioneSociale || "un'impresa")}${a.citta ? `, ${esc(a.citta)}` : ""}. ${esc(CONFIG.nomeProdotto)} non verifica l'identità di chi invia il preventivo né gli importi: accetta ed effettua pagamenti solo se conosci chi te l'ha mandato.</p>
+      ${sezioneContatti(a, `Buongiorno, ho una domanda sul preventivo n. ${p.numero}.`)}
+      <p class="muted xsmall cp-avviso">Documento inviato da ${esc(nomeSenzaPunto(a.ragioneSociale) || "un'impresa")}${a.citta ? `, ${esc(a.citta)}` : ""}. ${esc(CONFIG.nomeProdotto)} non verifica l'identità di chi invia il preventivo né gli importi: accetta ed effettua pagamenti solo se conosci chi te l'ha mandato.</p>
       ${p.conMarchio ? `<p class="xsmall cp-marchio">Creato con <a href="${esc(CONFIG.sito)}" target="_blank" rel="noopener">${esc(CONFIG.nomeProdotto)}</a> · preventivi dal telefono in 60 secondi</p>` : ""}
     </main>
     <footer class="barra-totale">
       <div class="tot"><div class="muted xsmall">${p.regime === "forfettario" ? "Totale" : "Totale IVA inclusa"}</div><div class="big" id="cp-totale">${esc(formatEuro(t.totale))}</div></div>
-      <button class="btn primary big" data-azione="accetta" ${scad ? "disabled" : ""}>${ICONE.firma}<span>Accetta e firma</span></button>
+      <button class="btn primary big" data-azione="accetta" aria-label="Accetta e firma" ${scad ? "disabled" : ""}>${ICONE.firma}<span>Accetta e firma</span></button>
     </footer>`;
   $$("[data-opz]").forEach((el) =>
     el.addEventListener("change", () => {
@@ -294,11 +331,14 @@ function pagina() {
 const FRASE_CAPARRA_BREVE =
   "L'anticipo è versato come caparra confirmatoria (art. 1385 c.c.): se il cliente non rispetta l'accordo l'impresa può trattenerla; se non lo rispetta l'impresa, il cliente può chiederne il doppio.";
 
+// Date proposte ancora valide: quelle già passate non si possono scegliere.
+const dateValide = () => stato.prev.disponibilita.filter((d) => d.data >= oggiISO());
+
 function foglioFirma() {
   if (scaduto()) return;
   const p = stato.prev;
   const t = totali();
-  const date = p.disponibilita;
+  const date = dateValide();
   const f = apriFoglio(
     `${titoloFoglio("Accetta e firma", `Totale ${esc(formatEuro(t.totale))}${stato.scelte.size ? ` · ${stato.scelte.size} voci facoltative aggiunte` : ""}`)}
     <div class="stack">
@@ -331,7 +371,7 @@ async function conferma() {
   const scelte = [...stato.scelte].sort((x, y) => x - y);
   const firma = stato.pad.codificata();
   const ap = Number($('input[name="acc-data"]:checked')?.value ?? -1);
-  const appuntamento = Number.isInteger(ap) && ap >= 0 && ap < p.disponibilita.length ? ap : -1;
+  const appuntamento = Number.isInteger(ap) && ap >= 0 ? dateValide()[ap] || null : null;
   const link = await creaLinkConferma(BASE, {
     id: p.id,
     numero: p.numero,
@@ -350,8 +390,8 @@ async function conferma() {
 }
 
 function dataScelta() {
-  const i = stato.accettazione?.appuntamento;
-  return Number.isInteger(i) && i >= 0 ? stato.prev.disponibilita[i] || null : null;
+  const d = stato.accettazione?.appuntamento;
+  return d ? normalizzaDisponibilita([d])[0] || null : null;
 }
 
 function testoConferma() {
@@ -436,7 +476,12 @@ function paginaPagamento() {
           ? `<section class="card riepilogo">
         <div class="r"><span>Totale del preventivo</span><b class="tnum">${esc(formatEuro(r.totale))}</b></div>
         ${r.incassato > 0 ? `<div class="r"><span>Già pagato</span><b class="tnum">- ${esc(formatEuro(r.incassato))}</b></div>` : ""}
-        <div class="r tot"><span><b>Da pagare ora</b></span><b><span class="big tnum">${esc(formatEuro(r.importo))}</span></b></div>
+        ${
+          r.importo < r.totale - r.incassato - 0.005
+            ? `<div class="r"><span>Resta da pagare in tutto</span><b class="tnum">${esc(formatEuro(r.totale - r.incassato))}</b></div>`
+            : ""
+        }
+        <div class="r tot"><span><b>Da pagare ora${r.importo < r.totale - r.incassato - 0.005 ? ` (${esc(titolo.toLowerCase())})` : ""}</b></span><b><span class="big tnum">${esc(formatEuro(r.importo))}</span></b></div>
       </section>`
           : ""
       }
@@ -448,11 +493,8 @@ function paginaPagamento() {
         <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.check}</span><div><h2>Hai già pagato?</h2><div class="muted xsmall">Avvisa l'impresa con un tocco</div></div></div>
         <div id="cp-pagato" class="stack">${stato.pagamento ? htmlSegnalato(stato.pagamento) : `<button class="btn primary block" data-azione="ho-pagato">${ICONE.check} Ho pagato</button>`}</div>
       </section>
-      <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.telefono}</span><h2>Domande? Contatta l'impresa</h2></div>
-        ${contatti(a, `Buongiorno, la contatto per il pagamento del preventivo n. ${r.numero}.`)}
-      </section>
-      <p class="muted xsmall cp-avviso">Richiesta inviata da ${esc(a.ragioneSociale || "un'impresa")}. ${esc(CONFIG.nomeProdotto)} non verifica chi invia il link né l'IBAN indicato: paga solo se conosci l'impresa e l'IBAN è quello che ti ha comunicato.</p>
+      ${sezioneContatti(a, `Buongiorno, la contatto per il pagamento del preventivo n. ${r.numero}.`)}
+      <p class="muted xsmall cp-avviso">Richiesta inviata da ${esc(nomeSenzaPunto(a.ragioneSociale) || "un'impresa")}. ${esc(CONFIG.nomeProdotto)} non verifica chi invia il link né l'IBAN indicato: paga solo se conosci l'impresa e l'IBAN è quello che ti ha comunicato.</p>
       ${r.conMarchio ? `<p class="xsmall cp-marchio">Creato con <a href="${esc(CONFIG.sito)}" target="_blank" rel="noopener">${esc(CONFIG.nomeProdotto)}</a></p>` : ""}
     </main>`;
 }
@@ -589,7 +631,7 @@ async function avvio() {
   if (salvata && typeof salvata.link === "string" && salvata.link.startsWith(BASE) && Array.isArray(salvata.scelte)) {
     stato.accettazione = {
       ...salvata,
-      appuntamento: Number.isInteger(salvata.appuntamento) ? salvata.appuntamento : -1,
+      appuntamento: normalizzaDisponibilita([salvata.appuntamento])[0] || null,
       pagamento: segnalazioneSalvata(salvata.pagamento),
     };
     successo();

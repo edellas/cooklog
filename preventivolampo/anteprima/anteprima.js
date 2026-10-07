@@ -102,7 +102,8 @@ const AZIENDA_ESEMPIO = {
   validitaGiorni: 30,
   tipoAnticipo: "acconto",
   giorniSaldo: 15,
-  tassoMora: "",
+  tassoMoraPrivati: "",
+  tassoMoraImprese: "",
   linkRecensioni: "https://example.com/recensioni",
   pagamento: "Acconto del 30% all'accettazione, saldo a fine lavori tramite bonifico bancario.",
   condizioni:

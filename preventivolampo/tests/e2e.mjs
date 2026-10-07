@@ -438,7 +438,7 @@ try {
     await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
     await page.waitForSelector('[data-inc="fineLavori"]');
     await page.fill('[data-inc="fineLavori"]', isoTra(-45));
-    await page.locator('[data-inc="fineLavori"]').dispatchEvent("change");
+    await page.locator('[data-inc="fineLavori"]').blur();
     await page.waitForSelector("#sezione-incassi .badge.scaduto");
     assert.match(await page.textContent("#sezione-incassi"), /€ 204,05 scaduti/);
     await controllaAccessibilita(page, "incassi");
@@ -446,7 +446,8 @@ try {
     await page.waitForSelector("#sol-testo");
     const msg = await page.inputValue("#sol-testo");
     assert.match(msg, /di € 204,05 per il preventivo/);
-    assert.match(msg, /scaduto il \d{2}\/\d{2}\/\d{4} \(da 15 giorni\)/);
+    assert.match(msg, /del saldo di € 204,05/);
+    assert.match(msg, /scaduto il \d{2}\/\d{2}\/\d{4} \(da 45 giorni\)/);
     assert.match(msg, /IBAN IT60 X054 2811 1010 0000 0123 456/);
     linkPagamento = msg.match(/https?:\/\/\S+accetta\.html#\S+/)[0];
     assert.match(await page.getAttribute("#sol-wa", "href"), /^https:\/\/wa\.me\/393477654321\?text=/);
@@ -698,12 +699,16 @@ try {
 
   await passo("Pro: lettera di messa in mora e fascicolo del credito in PDF", async () => {
     await page.goto(`${BASE}/app.html#/impostazioni`);
-    await page.fill('[data-az="tassoMora"]', "10,15");
-    await page.locator('[data-az="tassoMora"]').blur();
+    await page.fill('[data-az="tassoMoraPrivati"]', "10,15%");
+    await page.locator('[data-az="tassoMoraPrivati"]').blur();
     await page.waitForTimeout(400);
     await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
     await page.waitForSelector('[data-action="pdf-diffida"]');
     const t1 = testoPdf(await scarica(page, '[data-action="pdf-diffida"]', "messa-in-mora.pdf"));
+    // generarla non vuol dire averla spedita: si registra solo confermando
+    await page.waitForSelector("text=Lettera pronta");
+    await attendiAnimazioni(page);
+    await page.click('[data-esito="si"]');
     for (const atteso of [
       "costituzione in mora",
       "art. 1219",
@@ -712,6 +717,7 @@ try {
       "15 (quindici) giorni",
       "IT60 X054 2811 1010 0000 0123 456",
       "10,15%",
+      "1284 c.c.",
       "Idraulica Rossi di Mario Rossi",
       "online, con firma",
     ]) {
@@ -934,6 +940,66 @@ try {
     await page.goto(`${BASE}/app.html#/`);
     await page.waitForSelector("text=Prossimi lavori");
     assert.match(await page.textContent("main"), /Paolo Conti/);
+  });
+
+  await passo("doppio tocco e due finestre: nessun pagamento doppio, nessun pagamento perso", async () => {
+    await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await page.waitForSelector('[data-action="registra-pagamento"]');
+    const incassato = async () =>
+      (await page.textContent("#sezione-incassi .inc-totali")).match(/Incassato\s*(€ [\d.,]+)/)[1];
+    const prima = await incassato();
+    await page.click('[data-action="registra-pagamento"]');
+    await page.waitForSelector("#pag-importo");
+    await attendiAnimazioni(page);
+    await page.fill("#pag-importo", "1");
+    await page.dblclick('[data-action="pag-salva"]');
+    await page.waitForFunction(
+      (v) => !document.querySelector("#sezione-incassi .inc-totali").textContent.includes(v),
+      prima,
+    );
+    await page.waitForTimeout(400);
+    const conta = await page.evaluate(
+      () =>
+        new Promise((ok) => {
+          const r = indexedDB.open("preventivolampo");
+          r.onsuccess = () => {
+            const q = r.result.transaction("preventivi").objectStore("preventivi").getAll();
+            q.onsuccess = () =>
+              ok(q.result.flatMap((p) => (p.incasso?.pagamenti || []).filter((x) => x.importo === 1)).length);
+          };
+        }),
+    );
+    assert.equal(conta, 1, "il doppio tocco ha registrato due pagamenti");
+    // Seconda finestra (link "Ho pagato" aperto nel browser) mentre l'app ha il preventivo aperto
+    const altra = await context.newPage();
+    altra.on("pageerror", (e) => errori.push("JS (altra finestra): " + e.message));
+    const avviso = {
+      v: 1,
+      k: "av",
+      id: idP1,
+      n: num(1),
+      im: 10,
+      me: "contanti",
+      dt: isoTra(0),
+      nt: "dall'altra finestra",
+    };
+    await altra.goto(`${BASE}/app.html#/pagamento?d=${await comprimi(JSON.stringify(avviso))}`);
+    await altra.click('[data-action="avviso-registra"]');
+    await altra.waitForSelector("#sezione-incassi");
+    // la prima finestra modifica il preventivo e poi torna indietro: deve unire, non sovrascrivere
+    await page.fill('[data-campo="tempi"]', "Tre giorni lavorativi");
+    await page.click(".back");
+    await page.waitForSelector(".voce-lista");
+    await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await page.reload();
+    await page.waitForSelector("#sezione-incassi");
+    assert.match(
+      await page.textContent("#sezione-incassi"),
+      /dall'altra finestra/,
+      "pagamento dell'altra finestra perso",
+    );
+    assert.equal(await page.inputValue('[data-campo="tempi"]'), "Tre giorni lavorativi");
+    await altra.close();
   });
 
   await passo("sicurezza: un backup costruito per attaccare l'app non esegue codice", async () => {

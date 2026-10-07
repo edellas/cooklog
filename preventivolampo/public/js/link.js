@@ -4,7 +4,14 @@
 // Il cliente lo apre, sceglie le voci facoltative, firma e rimanda all'artigiano un secondo link
 // con l'accettazione. Un'impronta SHA-256 permette all'app di accorgersi se i dati sono stati alterati.
 import { parseNumero, oggiISO } from "./core.js";
-import { normalizzaDisponibilita, dataValida, importoValido, METODI } from "./incassi.js";
+import {
+  normalizzaDisponibilita,
+  normalizzaAppuntamento,
+  normalizzaIncasso,
+  dataValida,
+  importoValido,
+  METODI,
+} from "./incassi.js";
 
 export const VERSIONE_LINK = 1;
 export const MAX_LUNGHEZZA_LINK = 16000; // WhatsApp e i browser gestiscono link molto più lunghi
@@ -120,6 +127,26 @@ export function urlSicuro(v) {
   }
 }
 
+// Le date passate dal cliente (firma, avviso di pagamento) devono essere plausibili:
+// non prima del 2020 e non nel futuro. Altrimenti vale il momento in cui arrivano.
+const MINIMO_DATE = Date.UTC(2020, 0, 1);
+function istantePlausibile(v, ora = Date.now()) {
+  const t = Date.parse(v);
+  return Number.isFinite(t) && t >= MINIMO_DATE && t <= ora + 864e5 ? t : ora;
+}
+
+// Date da proporre al cliente: nessuna se l'inizio è già fissato, mai date già passate.
+export function dateProposte(prev, oggi = oggiISO()) {
+  if (normalizzaAppuntamento(prev.appuntamento)) return [];
+  return normalizzaDisponibilita(prev.disponibilita).filter((d) => d.data >= oggi);
+}
+
+// Giorni per pagare il saldo dalla fine dei lavori: quelli del preventivo o delle impostazioni.
+export function giorniSaldoDi(prev, azienda) {
+  const g = normalizzaIncasso(prev.incasso).giorniSaldo;
+  return g ?? Math.min(Math.max(Math.round(Number(azienda && azienda.giorniSaldo) || 0), 0), 365);
+}
+
 // ---------------- preventivo -> dati del link ----------------
 export function datiPerLink(prev, azienda, { pro }) {
   const a = azienda || {};
@@ -164,8 +191,9 @@ export function datiPerLink(prev, azienda, { pro }) {
     tm: prev.tempi || "",
     nt: prev.note || "",
     cp: prev.caparra ? 1 : 0,
+    gs: giorniSaldoDi(prev, a),
     // Date proposte per iniziare: il cliente ne sceglie una quando firma.
-    dt: normalizzaDisponibilita(prev.disponibilita).map((d) => [d.data, d.fascia]),
+    dt: dateProposte(prev).map((d) => [d.data, d.fascia]),
     wm: pro ? 0 : 1,
   };
 }
@@ -237,6 +265,7 @@ export function preventivoDaDati(d) {
     tempi: str(d.tm, 300),
     note: str(d.nt, 3000),
     caparra: d.cp === 1,
+    giorniSaldo: Math.round(num(d.gs, 0, 365)),
     disponibilita: normalizzaDisponibilita(
       (Array.isArray(d.dt) ? d.dt : [])
         .slice(0, 10)
@@ -299,6 +328,8 @@ export function datiRichiesta(prev, azienda, { importo, tipo, causale, scadenza,
     tt: Number(totale) || 0,
     ic: Number(incassato) || 0,
     cp: prev.caparra ? 1 : 0,
+    // Ogni richiesta è diversa (anche a parità di importo): il cliente può segnalare un nuovo pagamento.
+    ts: Date.now(),
     wm: pro ? 0 : 1,
   };
 }
@@ -350,7 +381,7 @@ export async function leggiAvviso(codice) {
     numero: str(d.n, 40),
     importo,
     metodo: Object.hasOwn(METODI, d.me) ? d.me : "altro",
-    data: dataValida(d.dt) ? d.dt : oggiISO(),
+    data: dataValida(d.dt) && d.dt >= "2020-01-01" && d.dt <= oggiISO(new Date(Date.now() + 864e5)) ? d.dt : oggiISO(),
     nota: str(d.nt, 300),
     rif: await impronta(String(codice)),
   };
@@ -358,11 +389,11 @@ export async function leggiAvviso(codice) {
 
 // ---------------- risposta del cliente ----------------
 // scelte: indici delle voci facoltative scelte; descrizioni: le stesse voci, per controllo e riepilogo.
-// appuntamento: indice della data proposta scelta dal cliente (-1 = nessuna). Viaggia solo l'indice:
-// la data vera la legge l'app dell'impresa dal suo preventivo, il cliente non può inventarla.
+// appuntamento: la data proposta scelta dal cliente ({ data, fascia }) o null. Viaggia il valore, non la
+// posizione: l'app dell'impresa la accetta solo se è ancora tra le date che ha proposto.
 export async function creaLinkConferma(
   base,
-  { id, numero, hash, scelte, descrizioni, nome, firma, appuntamento = -1 },
+  { id, numero, hash, scelte, descrizioni, nome, firma, appuntamento = null },
 ) {
   const dati = {
     v: VERSIONE_LINK,
@@ -374,7 +405,7 @@ export async function creaLinkConferma(
     nm: nome,
     dt: new Date().toISOString(),
     f: firma,
-    ap: appuntamento,
+    ad: appuntamento ? [appuntamento.data, appuntamento.fascia] : null,
   };
   return `${base}app.html#/accettazione?d=${await comprimi(JSON.stringify(dati))}`;
 }
@@ -387,7 +418,7 @@ export async function leggiConferma(codice) {
     throw new Error(err.message && err.message.startsWith("Link") ? err.message : "Conferma non valida");
   }
   if (!d || d.v !== VERSIONE_LINK) throw new Error("Conferma non valida");
-  const dt = Date.parse(d.dt);
+  const dt = istantePlausibile(d.dt);
   return {
     id: str(d.id, 64).replace(/[^a-zA-Z0-9-]/g, ""),
     numero: str(d.n, 40),
@@ -395,10 +426,23 @@ export async function leggiConferma(codice) {
     scelte: (Array.isArray(d.s) ? d.s : []).filter((i) => Number.isInteger(i) && i >= 0 && i < 200).slice(0, 200),
     descrizioni: (Array.isArray(d.sd) ? d.sd : []).slice(0, 200).map((x) => str(x, 600)),
     nome: str(d.nm, 120),
-    data: Number.isFinite(dt) ? new Date(dt).toISOString() : new Date().toISOString(),
+    data: new Date(dt).toISOString(),
     firma: Array.isArray(d.f) ? d.f : [],
-    appuntamento: Number.isInteger(d.ap) && d.ap >= 0 && d.ap < 3 ? d.ap : -1,
+    appuntamento: Array.isArray(d.ad) ? normalizzaDisponibilita([{ data: d.ad[0], fascia: d.ad[1] }])[0] || null : null,
   };
+}
+
+// La data scelta dal cliente vale solo se è ancora tra quelle proposte e se l'impresa
+// non ha già fissato lei l'inizio dei lavori.
+export function dataDaConferma(prev, conferma) {
+  const scelta = conferma.appuntamento;
+  if (!scelta) return { esito: "nessuna", scelta: null };
+  const fissata = normalizzaAppuntamento(prev.appuntamento);
+  if (fissata && fissata.da === "impresa") return { esito: "gia-fissata", scelta, fissata };
+  const proposta = normalizzaDisponibilita(prev.disponibilita).some(
+    (d) => d.data === scelta.data && d.fascia === scelta.fascia,
+  );
+  return { esito: proposta ? "ok" : "non-proposta", scelta };
 }
 
 // Applica al preventivo l'accettazione ricevuta: le voci facoltative scelte entrano nel totale.
@@ -421,12 +465,14 @@ export function applicaConferma(prev, conferma, firmaPng) {
       facoltative.push(r.descrizione);
     }
   });
-  prev.firma = { img: firmaPng, nome: conferma.nome, luogo: "", data: conferma.data, online: true };
+  // Il cliente non può firmare prima che il link esista né nel futuro.
+  const t = Math.min(Math.max(Date.parse(conferma.data) || 0, (prev.link && prev.link.il) || 0), Date.now());
+  prev.firma = { img: firmaPng, nome: conferma.nome, luogo: "", data: new Date(t).toISOString(), online: true };
   prev.stato = "accettato";
-  prev.accettatoIl = oggiISO(new Date(conferma.data));
+  prev.accettatoIl = oggiISO(new Date(t));
   prev.accettazioneOnline = { il: Date.now(), hash: conferma.hash, facoltativeAggiunte: facoltative };
-  const scelta = normalizzaDisponibilita(prev.disponibilita)[conferma.appuntamento ?? -1];
-  if (scelta) prev.appuntamento = { ...scelta, da: "cliente", il: Date.now() };
+  const data = dataDaConferma(prev, conferma);
+  if (data.esito === "ok") prev.appuntamento = { ...data.scelta, da: "cliente", il: Date.now() };
   return facoltative;
 }
 

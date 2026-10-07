@@ -222,3 +222,9 @@ test("dati mestieri completi e coerenti", () => {
   }
   assert.ok(MESTIERI.length >= 25);
 });
+
+test("WhatsApp anche verso i numeri fissi italiani (WhatsApp Business)", () => {
+  assert.equal(telefonoWhatsApp("035 123456"), "39035123456");
+  assert.equal(telefonoWhatsApp("02 1234 5678"), "390212345678");
+  assert.equal(telefonoWhatsApp("+39 035 123456"), "39035123456");
+});

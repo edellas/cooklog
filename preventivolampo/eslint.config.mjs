@@ -26,6 +26,7 @@ const browser = [
   "structuredClone",
   "confirm",
   "ResizeObserver",
+  "BroadcastChannel",
   "MutationObserver",
   "Element",
   "HTMLAnchorElement",

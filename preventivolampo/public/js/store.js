@@ -131,12 +131,36 @@ export function validaBackup(dati) {
       righe: lista(p.righe).filter(oggetto),
       acconto: oggetto(p.acconto) ? p.acconto : { tipo: "perc", valore: 0 },
       foto: lista(p.foto).filter(oggetto),
-      firma: oggetto(p.firma) ? p.firma : null,
+      firma: oggetto(p.firma)
+        ? {
+            img: /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(p.firma.img) ? p.firma.img : "",
+            nome: testo(p.firma.nome, 120),
+            luogo: testo(p.firma.luogo, 120),
+            data: testo(p.firma.data, 40),
+            online: p.firma.online === true,
+          }
+        : null,
+      accettazioneOnline: oggetto(p.accettazioneOnline)
+        ? {
+            il: Number.isFinite(p.accettazioneOnline.il) ? p.accettazioneOnline.il : 0,
+            hash: testo(p.accettazioneOnline.hash, 64).replace(/[^0-9a-f]/g, ""),
+            facoltativeAggiunte: lista(p.accettazioneOnline.facoltativeAggiunte)
+              .filter((x) => typeof x === "string")
+              .slice(0, 200)
+              .map((x) => x.slice(0, 600)),
+          }
+        : null,
       caparra: p.caparra === true,
       disponibilita: normalizzaDisponibilita(p.disponibilita),
       appuntamento: normalizzaAppuntamento(p.appuntamento),
       accettatoIl: dataValida(p.accettatoIl) ? p.accettatoIl : "",
-      incasso: p.incasso == null ? null : normalizzaIncasso(p.incasso),
+      // Backup di prima del registro incassi: gli accettati restano "da aggiornare" (niente falsi scaduti).
+      incasso:
+        p.incasso === undefined && p.stato === "accettato"
+          ? normalizzaIncasso({ storico: true })
+          : p.incasso == null
+            ? null
+            : normalizzaIncasso(p.incasso),
     }));
   const clienti = lista(dati.clienti).filter(conId);
   const listino = lista(dati.listino)

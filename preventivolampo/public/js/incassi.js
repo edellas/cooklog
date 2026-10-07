@@ -25,6 +25,7 @@ export const FASI = {
   "da-saldare": "Da saldare",
   scaduto: "Scaduto",
   pagato: "Pagato",
+  storico: "Da aggiornare",
 };
 
 // Giorni concessi per versare l'acconto dopo la firma, prima di considerarlo in ritardo.
@@ -101,6 +102,10 @@ export function normalizzaIncasso(x) {
       }))
       .filter((s) => s.importo > 0),
     recensioneChiestaIl: istante(o.recensioneChiestaIl) || null,
+    // Accettato prima che esistesse il registro incassi: niente scadenze finché non lo aggiorni.
+    storico: o.storico === true,
+    // Acconto concordato al momento dell'accettazione (le modifiche successive non lo cambiano).
+    accontoPattuito: o.accontoPattuito == null || o.accontoPattuito === "" ? null : importoValido(o.accontoPattuito),
   };
 }
 
@@ -137,12 +142,14 @@ export function giorniTra(daIso, aIso) {
   return Math.round((ms(aIso) - ms(daIso)) / GIORNO);
 }
 
+const inizioGiorno = (iso) => new Date(iso + "T00:00:00").getTime();
+
 // Giorno in cui il cliente ha accettato: firma, accettazione online o cambio di stato.
 export function dataAccettazione(prev) {
   const f = prev.firma && Date.parse(prev.firma.data);
-  if (Number.isFinite(f)) return oggiISO(new Date(f));
+  if (Number.isFinite(f) && dataValida(oggiISO(new Date(f)))) return oggiISO(new Date(f));
   const o = prev.accettazioneOnline && istante(prev.accettazioneOnline.il);
-  if (o) return oggiISO(new Date(o));
+  if (o && dataValida(oggiISO(new Date(o)))) return oggiISO(new Date(o));
   if (dataValida(prev.accettatoIl)) return prev.accettatoIl;
   return dataValida(prev.data) ? prev.data : oggiISO();
 }
@@ -151,36 +158,43 @@ export function dataAccettazione(prev) {
 // Stato dei pagamenti di un preventivo
 // opzioni: { oggi: "AAAA-MM-GG", giorniSaldo: numero predefinito delle impostazioni }
 // ------------------------------------------------------------------
-export function statoIncasso(prev, totali, { oggi = oggiISO(), giorniSaldo = 30 } = {}) {
+export function statoIncasso(prev, totali, { oggi = oggiISO(), giorniSaldo = 0 } = {}) {
   const inc = normalizzaIncasso(prev.incasso);
   const totale = round2(totali.totale || 0);
   const incassato = round2(inc.pagamenti.reduce((s, p) => s + p.importo, 0));
   const residuo = Math.max(round2(totale - incassato), 0);
   const eccedenza = Math.max(round2(incassato - totale), 0);
   const accettato = prev.stato === "accettato";
+  const storico = accettato && inc.storico && !inc.pagamenti.length && !inc.fineLavori;
   const dataAcc = accettato ? dataAccettazione(prev) : null;
-  const acconto = Math.min(round2(totali.acconto || 0), totale);
+  const acconto = Math.min(inc.accontoPattuito ?? round2(totali.acconto || 0), totale);
   const accontoPagato = acconto <= 0 || incassato >= acconto - 0.005;
-  const scadenzaAcconto = dataAcc && acconto > 0 ? aggiungiGiorni(dataAcc, GRAZIA_ACCONTO) : null;
+  const scadenzaAcconto = dataAcc && acconto > 0 && !storico ? aggiungiGiorni(dataAcc, GRAZIA_ACCONTO) : null;
   const gs = inc.giorniSaldo ?? Math.min(Math.max(Math.round(Number(giorniSaldo) || 0), 0), 365);
   const scadenzaSaldo = inc.fineLavori ? aggiungiGiorni(inc.fineLavori, gs) : null;
 
-  let importoScaduto = 0;
-  let scadutoDal = null;
+  // Quote scadute, ognuna con la sua data: servono per messaggi, lettere e interessi corretti.
+  const accontoDaPagare = Math.max(round2(acconto - incassato), 0);
+  const saldoDaPagare = Math.max(round2(residuo - accontoDaPagare), 0);
+  const quote = [];
   if (accettato && residuo > 0.005) {
-    if (!accontoPagato && scadenzaAcconto && oggi > scadenzaAcconto) {
-      importoScaduto = round2(acconto - incassato);
-      scadutoDal = scadenzaAcconto;
-    }
+    const accontoScaduto = accontoDaPagare > 0.005 && scadenzaAcconto && oggi > scadenzaAcconto;
+    if (accontoScaduto) quote.push({ tipo: "acconto", importo: accontoDaPagare, dal: scadenzaAcconto });
     if (scadenzaSaldo && oggi > scadenzaSaldo) {
-      importoScaduto = residuo;
-      scadutoDal = scadutoDal || scadenzaSaldo;
+      if (saldoDaPagare > 0.005) quote.push({ tipo: "saldo", importo: saldoDaPagare, dal: scadenzaSaldo });
+      // Saldo scaduto prima della tolleranza sull'acconto: da quel giorno è dovuto anche l'acconto.
+      if (accontoDaPagare > 0.005 && !accontoScaduto)
+        quote.push({ tipo: "acconto", importo: accontoDaPagare, dal: scadenzaSaldo });
     }
   }
+  quote.sort((a, b) => a.dal.localeCompare(b.dal));
+  const importoScaduto = round2(quote.reduce((t, q) => t + q.importo, 0));
+  const scadutoDal = quote.length ? quote[0].dal : null;
 
   let fase;
   if (!accettato && incassato <= 0) fase = "non-accettato";
   else if (residuo <= 0.005) fase = totale > 0 ? "pagato" : "in-corso";
+  else if (storico) fase = "storico";
   else if (importoScaduto > 0) fase = "scaduto";
   else if (!accontoPagato) fase = "attesa-acconto";
   else if (scadenzaSaldo) fase = "da-saldare";
@@ -189,7 +203,7 @@ export function statoIncasso(prev, totali, { oggi = oggiISO(), giorniSaldo = 30 
   let prossima = null;
   if (residuo > 0.005) {
     prossima = !accontoPagato
-      ? { tipo: "acconto", importo: round2(acconto - incassato), data: scadenzaAcconto }
+      ? { tipo: "acconto", importo: accontoDaPagare, data: scadenzaAcconto }
       : { tipo: "saldo", importo: residuo, data: scadenzaSaldo };
   }
   const attesa = inc.segnalazioni.filter((s) => s.stato === "attesa");
@@ -208,7 +222,10 @@ export function statoIncasso(prev, totali, { oggi = oggiISO(), giorniSaldo = 30 
     dataAccettazione: dataAcc,
     importoScaduto,
     scadutoDal,
+    quote,
     giorniRitardo: scadutoDal ? Math.max(giorniTra(scadutoDal, oggi), 0) : 0,
+    accettato,
+    storico,
     fase,
     prossima,
     pagamenti: inc.pagamenti,
@@ -221,22 +238,31 @@ export function statoIncasso(prev, totali, { oggi = oggiISO(), giorniSaldo = 30 
 
 const ORDINE_FASI = { scaduto: 0, "attesa-acconto": 1, "da-saldare": 2, "in-corso": 3 };
 
-// Elenco per la dashboard "Da incassare": prima gli scaduti (dal più vecchio), poi il resto.
+// Ha soldi in ballo anche se non risulta accettato (per esempio un "Ho pagato" arrivato prima della firma).
+export function haMovimenti(prev) {
+  const i = normalizzaIncasso(prev.incasso);
+  return i.pagamenti.length > 0 || i.segnalazioni.some((s) => s.stato === "attesa");
+}
+
+// Elenco per la dashboard "Da incassare": prima gli avvisi da verificare e gli scaduti
+// (dal più vecchio), poi il resto. I totali contano solo i preventivi accettati.
 export function daIncassare(preventivi, totaliDi, opzioni = {}) {
   const voci = (preventivi || [])
-    .filter((p) => p.stato === "accettato")
+    .filter((p) => p.stato === "accettato" || haMovimenti(p))
     .map((p) => ({ prev: p, stato: statoIncasso(p, totaliDi(p), opzioni) }))
-    .filter((x) => x.stato.residuo > 0.005 && x.stato.fase in ORDINE_FASI)
+    .filter((x) => x.stato.segnalazioniAttesa.length > 0 || (x.stato.residuo > 0.005 && x.stato.fase in ORDINE_FASI))
     .sort((a, b) => {
-      const f = ORDINE_FASI[a.stato.fase] - ORDINE_FASI[b.stato.fase];
-      if (f) return f;
+      const va = a.stato.segnalazioniAttesa.length ? -1 : (ORDINE_FASI[a.stato.fase] ?? 4);
+      const vb = b.stato.segnalazioniAttesa.length ? -1 : (ORDINE_FASI[b.stato.fase] ?? 4);
+      if (va !== vb) return va - vb;
       if (a.stato.fase === "scaduto") return b.stato.giorniRitardo - a.stato.giorniRitardo;
       return String(a.stato.prossima?.data || "9999").localeCompare(String(b.stato.prossima?.data || "9999"));
     });
+  const accettate = voci.filter((x) => x.stato.accettato);
   return {
     voci,
-    totale: round2(voci.reduce((s, x) => s + x.stato.residuo, 0)),
-    scaduto: round2(voci.reduce((s, x) => s + x.stato.importoScaduto, 0)),
+    totale: round2(accettate.reduce((s, x) => s + x.stato.residuo, 0)),
+    scaduto: round2(accettate.reduce((s, x) => s + x.stato.importoScaduto, 0)),
     nScaduti: voci.filter((x) => x.stato.fase === "scaduto").length,
     daVerificare: round2(voci.reduce((s, x) => s + x.stato.daVerificare, 0)),
   };
@@ -249,12 +275,45 @@ export function sollecitoSuggerito(stato, ora = Date.now()) {
   const n = stato.solleciti.length;
   const ultimo = n ? stato.solleciti[n - 1].il : 0;
   const prontoIl = ultimo ? ultimo + PAUSA_SOLLECITI * GIORNO : 0;
-  return { livello: Math.min(n + 1, 3), ultimo, prontoIl, troppoPresto: Boolean(ultimo && ora < prontoIl) };
+  // Il tono sale solo con i solleciti mandati per il ritardo di adesso (non per un acconto pagato
+  // in ritardo mesi prima); se non è scaduto nulla si resta gentili.
+  let livello = 1;
+  if (stato.importoScaduto > 0 && stato.scadutoDal) {
+    const dal = inizioGiorno(stato.scadutoDal);
+    livello = Math.min(stato.solleciti.filter((s) => s.il >= dal).length + 1, 3);
+  }
+  return { livello, ultimo, prontoIl, troppoPresto: Boolean(ultimo && ora < prontoIl) };
 }
 
 export function causale(prev, tipo) {
   const nome = tipo === "acconto" ? (prev.caparra ? "Caparra" : "Acconto") : tipo === "saldo" ? "Saldo" : "Pagamento";
   return `${nome} preventivo n. ${prev.numero}`;
+}
+
+// Cosa chiedere adesso: tutto lo scaduto se c'è, altrimenti la prossima scadenza.
+// tipo "residuo" quando si chiedono insieme acconto e saldo (causale "Pagamento ...").
+export function daChiedere(prev, stato) {
+  const scaduto = stato.importoScaduto > 0;
+  const importo = scaduto ? stato.importoScaduto : stato.prossima ? stato.prossima.importo : stato.residuo;
+  const tipo = scaduto
+    ? stato.quote.length === 1
+      ? stato.quote[0].tipo
+      : "residuo"
+    : stato.prossima
+      ? stato.prossima.tipo
+      : "saldo";
+  return { importo, tipo, causale: causale(prev, tipo), scaduto };
+}
+
+const ITALIANO_GIORNI = (n) => `${n} ${n === 1 ? "giorno" : "giorni"}`;
+
+export function descriviScadenza(stato) {
+  if (stato.importoScaduto > 0) {
+    if (stato.quote.length > 1)
+      return `, scaduto in parte dal ${formatData(stato.quote[0].dal)} e in parte dal ${formatData(stato.quote[1].dal)}`;
+    return `, scaduto il ${formatData(stato.scadutoDal)}${stato.giorniRitardo > 1 ? ` (da ${ITALIANO_GIORNI(stato.giorniRitardo)})` : ""}`;
+  }
+  return stato.prossima && stato.prossima.data ? `, in scadenza il ${formatData(stato.prossima.data)}` : "";
 }
 
 function righeIban(azienda, causaleTesto) {
@@ -269,22 +328,19 @@ function righeIban(azienda, causaleTesto) {
 export function messaggioSollecito(prev, azienda, stato, livello, { link = "" } = {}) {
   const a = azienda || {};
   const nome = prev.cliente && prev.cliente.nome ? ` ${prev.cliente.nome}` : "";
-  const scaduto = stato.importoScaduto > 0;
-  const tipo = stato.prossima ? stato.prossima.tipo : "saldo";
-  const importo = scaduto ? stato.importoScaduto : stato.prossima ? stato.prossima.importo : stato.residuo;
-  // Se è scaduto anche il saldo si chiede tutto il dovuto, senza parlare solo di acconto.
-  const soloAcconto = tipo === "acconto" && (!scaduto || stato.importoScaduto <= stato.prossima.importo + 0.005);
-  const cosa = soloAcconto
-    ? `${prev.caparra ? "della caparra" : "dell'acconto"} di ${formatEuro(importo)}`
-    : `di ${formatEuro(importo)}`;
+  // Senza importi scaduti si resta su richiesta o promemoria gentile: niente "entro 7 giorni".
+  const { importo, tipo, causale: causaleTesto, scaduto } = daChiedere(prev, stato);
+  if (!scaduto) livello = Math.min(livello, 1);
+  const cosa =
+    tipo === "acconto"
+      ? `${prev.caparra ? "della caparra" : "dell'acconto"} di ${formatEuro(importo)}`
+      : tipo === "saldo"
+        ? `del saldo di ${formatEuro(importo)}`
+        : `di ${formatEuro(importo)}`;
   const rif = `il preventivo n. ${prev.numero}${prev.oggetto ? ` "${prev.oggetto}"` : ""}`;
-  const quando = scaduto
-    ? `, scaduto il ${formatData(stato.scadutoDal)}${stato.giorniRitardo > 1 ? ` (da ${stato.giorniRitardo} giorni)` : ""}`
-    : stato.prossima && stato.prossima.data
-      ? `, in scadenza il ${formatData(stato.prossima.data)}`
-      : "";
+  const quando = descriviScadenza(stato);
   const firmato = prev.firma && prev.firma.img ? "accettato e firmato" : "accettato";
-  const iban = righeIban(a, causale(prev, tipo));
+  const iban = righeIban(a, causaleTesto);
   const linkTxt = link ? `Qui trova importo, IBAN e QR per pagare: ${link}` : "";
   const firmaImpresa = [a.ragioneSociale, a.telefono].filter(Boolean).join(" - ");
   const corpo =
@@ -342,12 +398,24 @@ export function daRecensire(preventivi, totaliDi, { oggi = oggiISO(), giorni = 4
 }
 
 // ------------------------------------------------------------------
-// Interessi di mora (tasso annuo inserito dall'impresa: cambia ogni semestre)
+// Interessi di mora. Il tasso lo inserisce l'impresa: per i privati è il tasso legale
+// (art. 1284 c.c., fissato ogni anno), per imprese e P.A. quello del D.Lgs. 231/2002
+// (BCE + 8 punti, aggiornato ogni semestre).
 // ------------------------------------------------------------------
 export function interessiMora(importo, tassoAnnuo, giorni) {
-  const t = parseNumero(tassoAnnuo);
+  const t = parseNumero(String(tassoAnnuo ?? "").replace("%", ""));
   if (!(t > 0) || !(giorni > 0) || !(importo > 0)) return 0;
   return round2((importo * Math.min(t, 100) * giorni) / 36500);
+}
+
+// Interessi quota per quota, ciascuna dal giorno in cui è scaduta.
+export function interessiQuote(quote, tassoAnnuo, oggi = oggiISO()) {
+  return round2((quote || []).reduce((t, q) => t + interessiMora(q.importo, tassoAnnuo, giorniTra(q.dal, oggi)), 0));
+}
+
+// Partita IVA (11 cifre) = cliente impresa: interessi del D.Lgs. 231/2002; altrimenti privato.
+export function clienteImpresa(cliente) {
+  return /^(IT)?\d{11}$/i.test(String((cliente && cliente.cfpiva) || "").replace(/\s+/g, ""));
 }
 
 // ------------------------------------------------------------------

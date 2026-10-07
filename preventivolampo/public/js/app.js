@@ -27,6 +27,7 @@ import {
   applicaConferma,
   verificaImpronta,
   voceDaConferma,
+  dataDaConferma,
   urlSicuro,
   creaLinkRichiesta,
   leggiAvviso,
@@ -55,8 +56,9 @@ const AZIENDA_DEFAULT = {
   intestatarioIban: "",
   linkPagamento: "",
   tipoAnticipo: "acconto", // "caparra" = caparra confirmatoria (art. 1385 c.c.)
-  giorniSaldo: 30, // giorni dalla fine lavori per pagare il saldo
-  tassoMora: "", // tasso annuo per gli interessi di mora (facoltativo)
+  giorniSaldo: 0, // giorni dalla fine lavori per pagare il saldo (0 = a fine lavori)
+  tassoMoraPrivati: "", // tasso legale (art. 1284 c.c.), facoltativo
+  tassoMoraImprese: "", // tasso del D.Lgs. 231/2002 per clienti con partita IVA, facoltativo
   linkRecensioni: "",
   regime: "ordinario",
   ivaDefault: 22,
@@ -65,7 +67,7 @@ const AZIENDA_DEFAULT = {
   prefisso: "",
   validitaGiorni: 30,
   giorniRicontatto: 3,
-  pagamento: "Acconto del 30% all'accettazione, saldo a fine lavori tramite bonifico bancario.",
+  pagamento: "Acconto del 30% all'accettazione, saldo tramite bonifico bancario.",
   condizioni:
     "Il preventivo comprende esclusivamente le voci indicate. Eventuali lavori aggiuntivi o imprevisti saranno concordati e preventivati a parte.",
   colore: "#1d4ed8",
@@ -142,6 +144,13 @@ function incassoModificabile(prev) {
   return prev.incasso;
 }
 
+// L'acconto concordato si fissa quando il cliente accetta: modifiche successive al preventivo
+// non lo cambiano (e non fanno risultare "in ritardo" un acconto pagato per intero).
+function fissaAccordo(prev) {
+  const i = incassoModificabile(prev);
+  if (i.accontoPattuito == null) i.accontoPattuito = totaliDi(prev).acconto;
+}
+
 function mostraIncassi(prev) {
   const i = inc.normalizzaIncasso(prev.incasso);
   return prev.stato === "accettato" || i.pagamenti.length > 0 || i.segnalazioni.some((x) => x.stato === "attesa");
@@ -198,6 +207,13 @@ async function caricaTutto() {
     db.get("contatore", null),
   ]);
   state.azienda = { ...AZIENDA_DEFAULT, ...(azienda || {}) };
+  // Preventivi accettati prima del registro incassi: "da aggiornare", senza falsi scaduti.
+  for (const p of preventivi) {
+    if (p.stato === "accettato" && !("incasso" in p)) {
+      p.incasso = { storico: true };
+      await db.salva("preventivi", p);
+    }
+  }
   state.preventivi = preventivi;
   state.clienti = clienti;
   state.listino = listino;
@@ -225,19 +241,91 @@ async function salvaAziendaSubito() {
   await salvaAzienda();
 }
 
+// Più finestre aperte sull'app (l'app installata e un link aperto da WhatsApp nel browser) usano lo
+// stesso archivio. Per non cancellare ciò che ha registrato l'altra finestra:
+// 1. si salva solo un preventivo davvero modificato qui;
+// 2. se nell'archivio c'è una versione più recente, prima di scrivere si uniscono pagamenti, avvisi,
+//    solleciti, firma e accettazione;
+// 3. le altre finestre vengono avvisate e ricaricano i dati quando tornano visibili.
+const daSalvare = new Set();
+const canale = typeof BroadcastChannel === "function" ? new BroadcastChannel("preventivolampo") : null;
+
+function unisciLista(mia, altra, chiave) {
+  const viste = new Set(mia.map(chiave));
+  return [...mia, ...altra.filter((x) => !viste.has(chiave(x)))];
+}
+
+function unisciVersione(prev, nelDb) {
+  const a = inc.normalizzaIncasso(prev.incasso);
+  const b = inc.normalizzaIncasso(nelDb.incasso);
+  if (prev.incasso || nelDb.incasso) {
+    const segnalazioni = unisciLista(a.segnalazioni, b.segnalazioni, (x) => x.rif + x.il).map((x) => {
+      const altra = b.segnalazioni.find((y) => y.rif === x.rif && y.il === x.il);
+      return altra && x.stato === "attesa" ? { ...x, stato: altra.stato } : x;
+    });
+    prev.incasso = {
+      ...a,
+      pagamenti: unisciLista(a.pagamenti, b.pagamenti, (x) => x.id),
+      solleciti: unisciLista(a.solleciti, b.solleciti, (x) => x.il),
+      segnalazioni,
+      fineLavori: a.fineLavori || b.fineLavori,
+      accontoPattuito: a.accontoPattuito ?? b.accontoPattuito,
+      recensioneChiestaIl: Math.max(a.recensioneChiestaIl || 0, b.recensioneChiestaIl || 0) || null,
+      storico: a.storico && b.storico,
+    };
+  }
+  if (!prev.firma && nelDb.firma) prev.firma = nelDb.firma;
+  if (!prev.accettazioneOnline && nelDb.accettazioneOnline) {
+    prev.accettazioneOnline = nelDb.accettazioneOnline;
+    prev.stato = nelDb.stato;
+    prev.righe = nelDb.righe; // le voci facoltative scelte dal cliente
+  }
+  if (!prev.accettatoIl && nelDb.accettatoIl) prev.accettatoIl = nelDb.accettatoIl;
+  if (!prev.appuntamento && nelDb.appuntamento) prev.appuntamento = nelDb.appuntamento;
+  if (nelDb.link && (!prev.link || (nelDb.link.il || 0) > (prev.link.il || 0))) prev.link = nelDb.link;
+  prev.linkPrecedenti = [...new Set([...(prev.linkPrecedenti || []), ...(nelDb.linkPrecedenti || [])])].slice(0, 20);
+  prev.inviatoIl = prev.inviatoIl || nelDb.inviatoIl || null;
+  prev.ricontattatoIl = Math.max(prev.ricontattatoIl || 0, nelDb.ricontattatoIl || 0) || null;
+}
+
 async function salvaPreventivo(prev) {
-  prev.updatedAt = Date.now();
+  const nelDb = await db.leggi("preventivi", prev.id).catch(() => null);
+  if (nelDb && (nelDb.updatedAt || 0) > (prev.updatedAt || 0)) unisciVersione(prev, nelDb);
+  prev.updatedAt = Math.max(Date.now(), (nelDb && nelDb.updatedAt + 1) || 0);
   await db.salva("preventivi", prev);
+  daSalvare.delete(prev.id);
   const i = state.preventivi.findIndex((p) => p.id === prev.id);
   if (i >= 0) state.preventivi[i] = prev;
   else state.preventivi.push(prev);
+  canale?.postMessage({ id: prev.id });
 }
 
 let timerSalva;
 function salvaDopo(prev) {
+  daSalvare.add(prev.id);
   clearTimeout(timerSalva);
   timerSalva = setTimeout(() => salvaPreventivo(prev), 400);
 }
+
+// Un'altra finestra ha salvato: se qualcosa è cambiato, si ricarica (salvando prima le modifiche fatte qui).
+let controlloInCorso = null;
+function controllaAggiornamenti() {
+  if (document.visibilityState !== "visible" || !state.azienda.onboarded) return;
+  controlloInCorso ||= (async () => {
+    const nelDb = await db.tutti("preventivi");
+    const conosciuti = new Map(state.preventivi.map((p) => [p.id, p.updatedAt || 0]));
+    const cambiato =
+      nelDb.length !== state.preventivi.length || nelDb.some((p) => (p.updatedAt || 0) > (conosciuti.get(p.id) ?? -1));
+    if (!cambiato) return;
+    clearTimeout(timerSalva);
+    if (state.corrente && daSalvare.has(state.corrente.id)) await salvaPreventivo(state.corrente);
+    await caricaTutto();
+    state.corrente = null;
+    await render();
+    toast("Aggiornato con le modifiche fatte in un'altra finestra");
+  })().finally(() => (controlloInCorso = null));
+}
+canale?.addEventListener("message", controllaAggiornamenti);
 
 async function salvaClienteDa(prev) {
   const c = prev.cliente || {};
@@ -303,7 +391,7 @@ const PAGINE_SENZA_ONBOARDING = new Set(["benvenuto", "pro", "accettazione", "pa
 async function eseguiRender() {
   clearTimeout(timerSalva);
   await salvaAziendaSubito();
-  if (state.corrente) {
+  if (state.corrente && daSalvare.has(state.corrente.id)) {
     await salvaPreventivo(state.corrente);
     await salvaClienteDa(state.corrente);
   }
@@ -403,10 +491,13 @@ function htmlRicontatti() {
 
 function descriviIncasso(prev, s) {
   if (s.segnalazioniAttesa.length) return `Dice di aver pagato ${core.formatEuro(s.daVerificare)}: da verificare`;
+  if (!s.accettato) return "Pagamento su un preventivo non ancora accettato";
   if (s.fase === "scaduto")
     return `${core.formatEuro(s.importoScaduto)} scaduti da ${s.giorniRitardo} ${s.giorniRitardo === 1 ? "giorno" : "giorni"}`;
   if (s.fase === "attesa-acconto")
-    return `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} entro il ${core.formatData(s.scadenzaAcconto)}`;
+    return s.scadenzaAcconto
+      ? `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} entro il ${core.formatData(s.scadenzaAcconto)}`
+      : `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} da ricevere`;
   if (s.fase === "da-saldare") return `Saldo entro il ${core.formatData(s.scadenzaSaldo)}`;
   return "Lavori in corso · saldo a fine lavori";
 }
@@ -414,22 +505,23 @@ function descriviIncasso(prev, s) {
 function htmlDaIncassare() {
   const r = inc.daIncassare(state.preventivi, totaliDi, opzioniIncasso());
   if (!r.voci.length) return "";
+  const tutti = state.incassiTutti;
   return `<section class="card" id="da-incassare">
     <div class="sezione-titolo"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.euro}</span>
       <div><h2>Da incassare <span class="tnum">${esc(euroCorto(r.totale))}</span></h2>
       <div class="muted xsmall">${r.nScaduti ? `<b class="testo-bad">${esc(euroCorto(r.scaduto))} scaduti</b> · ` : ""}${r.voci.length} ${r.voci.length === 1 ? "lavoro" : "lavori"} da pagare${r.daVerificare ? ` · ${esc(euroCorto(r.daVerificare))} da verificare` : ""}</div></div></div>
     ${r.voci
-      .slice(0, 4)
+      .slice(0, tutti ? r.voci.length : 4)
       .map(
         ({ prev, stato }) => `<a class="ricontatto" href="#/p/${esc(prev.id)}?sez=incassi">
         ${avatar(core.nomeCliente(prev.cliente), "small")}
         <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))} · ${esc(euroCorto(stato.residuo))}</div>
           <div class="s">${esc(descriviIncasso(prev, stato))}</div></div>
-        <span class="badge ${esc(stato.fase)}">${esc(inc.FASI[stato.fase])}</span>
+        <span class="badge ${esc(stato.segnalazioniAttesa.length ? "attesa-acconto" : stato.fase)}">${esc(stato.segnalazioniAttesa.length ? "Da verificare" : inc.FASI[stato.fase])}</span>
       </a>`,
       )
       .join("")}
-    ${r.voci.length > 4 ? `<div class="muted xsmall" style="margin-top:8px;text-align:center">e altri ${r.voci.length - 4}</div>` : ""}
+    ${r.voci.length > 4 ? `<button class="btn ghost block small" data-action="incassi-tutti" style="margin-top:8px">${tutti ? "Mostra meno" : `Mostra tutti (altri ${r.voci.length - 4})`}</button>` : ""}
   </section>`;
 }
 
@@ -445,7 +537,7 @@ function htmlAgenda() {
         <span class="data-tile" aria-hidden="true"><b>${giorno}</b><small>${esc(mese)}</small></span>
         <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))}</div>
           <div class="s">${esc(inc.testoAppuntamento(a))}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div>
-        ${a.da === "cliente" ? `<span class="badge inviato nodot">Scelta dal cliente</span>` : ""}
+        ${a.da === "cliente" ? `<span class="badge inviato nodot solo-largo">Scelta dal cliente</span>` : ""}
       </a>`;
       })
       .join("")}
@@ -498,9 +590,16 @@ function filtraLista() {
 function htmlVoci() {
   const lista = filtraLista();
   if (!lista.length) return `<div class="vuoto muted">Nessun preventivo trovato.</div>`;
+  const BADGE_INCASSO = {
+    scaduto: "Scaduto",
+    "attesa-acconto": "Attesa acconto",
+    "da-saldare": "Da saldare",
+    pagato: "Pagato",
+  };
   return lista
     .map((p) => {
       const t = totaliDi(p);
+      const fase = p.stato === "accettato" ? incassoDi(p).fase : "";
       return `<a class="voce-lista" href="#/p/${esc(p.id)}">
         ${avatar(core.nomeCliente(p.cliente))}
         <div class="corpo">
@@ -508,7 +607,11 @@ function htmlVoci() {
           <div class="s">${esc(p.oggetto || "Senza oggetto")}</div>
           <div class="s xsmall">N. ${esc(p.numero)} · ${esc(core.formatData(p.data))}${p.accettazioneOnline ? " · firmato online" : ""}</div>
         </div>
-        <div class="dx"><span class="importo">${esc(core.formatEuro(t.totale))}</span><span class="badge ${esc(p.stato)}">${esc(core.STATI[p.stato] || "")}</span></div>
+        <div class="dx"><span class="importo">${esc(core.formatEuro(t.totale))}</span>${
+          BADGE_INCASSO[fase]
+            ? `<span class="badge ${esc(fase)}">${esc(BADGE_INCASSO[fase])}</span>`
+            : `<span class="badge ${esc(p.stato)}">${esc(core.STATI[p.stato] || "")}</span>`
+        }</div>
       </a>`;
     })
     .join("");
@@ -781,12 +884,15 @@ function viewEditor(id, q = new URLSearchParams()) {
 // Editor: incassi (pagamenti, scadenze, solleciti, QR, PDF di recupero)
 // ------------------------------------------------------------------
 function sottotitoloIncasso(prev, s) {
-  if (s.fase === "non-accettato") return "Segna il preventivo come accettato per seguire le scadenze";
+  if (!s.accettato) return "Il preventivo non risulta accettato";
   if (s.fase === "pagato") return "Tutto incassato";
+  if (s.fase === "storico") return "Accettato prima del registro incassi";
   const p = s.prossima;
   if (!p) return "";
   if (p.tipo === "acconto")
-    return `${nomeAnticipo(prev)} ${core.formatEuro(p.importo)} entro il ${core.formatData(p.data)}`;
+    return p.data
+      ? `${nomeAnticipo(prev)} ${core.formatEuro(p.importo)} entro il ${core.formatData(p.data)}`
+      : `${nomeAnticipo(prev)} ${core.formatEuro(p.importo)} da ricevere`;
   return p.data
     ? `Saldo ${core.formatEuro(p.importo)} entro il ${core.formatData(p.data)}`
     : `Saldo ${core.formatEuro(p.importo)}: scade ${s.giorniSaldo ? `${s.giorniSaldo} giorni dopo la` : "alla"} fine dei lavori`;
@@ -800,6 +906,17 @@ function htmlIncassi(prev) {
   const scad = s.fase === "scaduto";
   const giaSollecitato = s.solleciti.length > 0;
   const pro = state.pro ? "" : ` <span class="badge pro">PRO</span>`;
+  // Giorni di sollecito una volta sola (anche se generati più volte nello stesso giorno).
+  const registroSolleciti = [
+    ...new Map(
+      s.solleciti.map((x) => {
+        const giorno = core.oggiISO(new Date(x.il));
+        const tipo =
+          x.canale === "lettera" ? "lettera di messa in mora" : inc.LIVELLI_SOLLECITO[x.livello].toLowerCase();
+        return [giorno + tipo, `${core.formatData(giorno)} (${tipo})`];
+      }),
+    ).values(),
+  ];
   return `<div class="sezione-titolo" style="margin:0"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.euro}</span>
       <div><h2>Incassi</h2><div class="muted xsmall">${esc(sottotitoloIncasso(prev, s))}</div></div><span class="badge ${esc(s.fase)} dx">${esc(inc.FASI[s.fase])}</span></div>
     <div class="inc-totali">
@@ -817,7 +934,9 @@ function htmlIncassi(prev) {
       )
       .join("")}
     ${scad ? `<div class="banner bad"><span class="ico">⏰</span><div><b>${esc(core.formatEuro(s.importoScaduto))} scaduti</b> dal ${esc(core.formatData(s.scadutoDal))} (${s.giorniRitardo} ${s.giorniRitardo === 1 ? "giorno" : "giorni"}). Manda un sollecito: il primo è gentile, poi il tono sale.</div></div>` : ""}
-    ${s.fase === "attesa-acconto" ? `<div class="banner warn"><span class="ico">🛡️</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
+    ${s.fase === "attesa-acconto" && s.accettato ? `<div class="banner warn"><span class="ico">🛡️</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
+    ${!s.accettato ? `<div class="banner info"><span class="ico">ℹ️</span><div>Pagamento registrato su un preventivo non accettato: se il cliente ha accettato, registra l'accettazione o cambia lo stato in "Accettato" per seguire le scadenze.</div></div>` : ""}
+    ${s.fase === "storico" ? `<div class="banner info"><span class="ico">🗂️</span><div>Questo lavoro è stato accettato prima del registro incassi: registra i pagamenti già ricevuti o la data di fine lavori e l'app seguirà le scadenze.</div></div>` : ""}
     <div class="grid2">
       <button class="btn primary" data-action="registra-pagamento">${ICONE.piu} Pagamento</button>
       <button class="btn" data-action="mostra-qr" aria-label="Mostra il QR per pagare">${ICONE.euro} Mostra QR</button>
@@ -834,8 +953,8 @@ function htmlIncassi(prev) {
             .join("")}</div>`
         : ""
     }
-    <div class="grid2">
-      <label class="campo">Fine lavori<input type="date" data-inc="fineLavori" value="${esc(s.fineLavori)}"></label>
+    <div class="grid2 stack-mobile">
+      <label class="campo">Fine lavori<input type="date" data-inc="fineLavori" value="${esc(s.fineLavori)}" max="${core.aggiungiGiorni(core.oggiISO(), 730)}"></label>
       <label class="campo">Saldo entro<select data-inc="giorniSaldo">${[0, 7, 15, 30, 60, 90]
         .map(
           (n) =>
@@ -844,12 +963,12 @@ function htmlIncassi(prev) {
         .join("")}</select></label>
     </div>
     ${
-      s.residuo > 0.005 && s.fase !== "non-accettato"
+      s.residuo > 0.005 && s.accettato && s.fase !== "storico"
         ? `<div class="stack inc-recupero">
-      <button class="btn wa block" data-action="sollecito" data-livello="${scad || giaSollecitato ? sug.livello : 0}">${ICONE.whatsapp} ${scad || giaSollecitato ? `Sollecita: ${esc(inc.LIVELLI_SOLLECITO[sug.livello].toLowerCase())}` : "Chiedi il pagamento"}</button>
-      ${giaSollecitato ? `<div class="muted xsmall">Solleciti: ${s.solleciti.map((x) => `${esc(core.formatData(core.oggiISO(new Date(x.il))))} (${x.canale === "lettera" ? "lettera di messa in mora" : esc(inc.LIVELLI_SOLLECITO[x.livello].toLowerCase())})`).join(" · ")}</div>` : ""}
+      <button class="btn wa block" data-action="sollecito" data-livello="${scad ? sug.livello : 0}">${ICONE.whatsapp} ${scad ? `Sollecita: ${esc(inc.LIVELLI_SOLLECITO[sug.livello].toLowerCase())}` : "Chiedi il pagamento"}</button>
+      ${giaSollecitato ? `<div class="muted xsmall">Solleciti: ${esc(registroSolleciti.join(" · "))}</div>` : ""}
       <div class="grid2">
-        <button class="btn small" data-action="pdf-diffida">${ICONE.documento} Messa in mora${pro}</button>
+        ${scad ? `<button class="btn small" data-action="pdf-diffida">${ICONE.documento} Messa in mora${pro}</button>` : ""}
         <button class="btn small" data-action="pdf-fascicolo">${ICONE.documento} Fascicolo${pro}</button>
       </div>
       <div class="muted xsmall">${esc(AVVISO_LEGALE)}</div>
@@ -907,12 +1026,16 @@ function foglioPagamento() {
       <button class="btn primary big block" data-action="pag-salva">${ICONE.check} Registra</button>
     </div>`,
   );
+  let registrato = false; // un doppio tocco non registra due volte lo stesso pagamento
   azioni["pag-importo"] = (el) => ($("#pag-importo", f).value = numIn(Number(el.dataset.v)));
   azioni["pag-salva"] = async () => {
+    if (registrato) return;
     const importo = inc.importoValido($("#pag-importo", f).value);
     if (!(importo > 0)) return toast("Inserisci l'importo ricevuto");
+    registrato = true;
     const data = $("#pag-data", f).value;
     const i = incassoModificabile(prev);
+    i.storico = false;
     i.pagamenti.push({
       id: core.uid(),
       importo,
@@ -929,13 +1052,24 @@ function foglioPagamento() {
   };
 }
 
-async function confermaSegnalazione(rif, il, arrivato) {
-  const prev = state.corrente;
-  const i = incassoModificabile(prev);
-  const seg = i.segnalazioni.find((x) => x.rif === rif && x.il === il && x.stato === "attesa");
-  if (!seg) return;
-  seg.stato = arrivato ? "confermata" : "respinta";
-  if (arrivato && !(seg.rif && i.pagamenti.some((x) => x.rif === seg.rif))) {
+// Lo stesso bonifico può arrivare due volte: registrato a mano e poi segnalato dal cliente, o
+// segnalato da due link diversi. Si cerca un pagamento con lo stesso importo vicino nel tempo.
+function pagamentoSimile(i, importo, data, rif) {
+  return (
+    i.pagamenti.find(
+      (x) =>
+        x.rif !== rif &&
+        Math.abs(x.importo - importo) < 0.005 &&
+        Math.abs(inc.giorniTra(x.data, inc.dataValida(data) ? data : core.oggiISO())) <= 14,
+    ) || null
+  );
+}
+
+// Registra l'avviso del cliente come pagamento (o lo collega a un pagamento già inserito a mano).
+function registraDaAvviso(i, seg, collegaA = null) {
+  if (collegaA) {
+    if (!collegaA.rif) collegaA.rif = seg.rif;
+  } else if (!(seg.rif && i.pagamenti.some((x) => x.rif === seg.rif))) {
     i.pagamenti.push({
       id: core.uid(),
       importo: seg.importo,
@@ -945,16 +1079,35 @@ async function confermaSegnalazione(rif, il, arrivato) {
       rif: seg.rif,
     });
   }
-  await salvaIncasso(prev, arrivato ? "Pagamento registrato" : "Segnato come non arrivato", arrivato ? "ok" : "");
+  i.storico = false;
+  for (const x of i.segnalazioni) if (x.rif === seg.rif) x.stato = "confermata";
 }
 
-// Importo e tipo da chiedere adesso: se è scaduto anche il saldo si chiede tutto il dovuto.
-function daChiedere(prev, s) {
-  const tipo = s.prossima ? s.prossima.tipo : "saldo";
-  const importo = s.importoScaduto > 0 ? s.importoScaduto : s.prossima ? s.prossima.importo : s.residuo;
-  const tipoRichiesta = tipo === "acconto" && importo > s.prossima.importo + 0.005 ? "residuo" : tipo;
-  return { importo, tipo: tipoRichiesta, causale: inc.causale(prev, tipoRichiesta) };
+async function confermaSegnalazione(rif, il, arrivato) {
+  const prev = state.corrente;
+  const i = incassoModificabile(prev);
+  const seg = i.segnalazioni.find((x) => x.rif === rif && x.il === il && x.stato === "attesa");
+  if (!seg) return;
+  if (!arrivato) {
+    seg.stato = "respinta";
+    return salvaIncasso(prev, "Segnato come non arrivato", "");
+  }
+  const simile = pagamentoSimile(i, seg.importo, seg.data, seg.rif);
+  let collega = null;
+  if (simile) {
+    const stesso = await chiedi({
+      titolo: `Hai già registrato ${core.formatEuro(simile.importo)} il ${core.formatData(simile.data)}`,
+      testo: "È lo stesso pagamento che il cliente ti sta segnalando? Se sì, non viene contato due volte.",
+      ok: "Sì, è lo stesso",
+      annulla: "No, è un altro",
+    });
+    if (stesso) collega = simile;
+  }
+  registraDaAvviso(i, seg, collega);
+  await salvaIncasso(prev, collega ? "Avviso collegato al pagamento già registrato" : "Pagamento registrato");
 }
+
+const daChiedere = (prev, s) => inc.daChiedere(prev, s);
 
 function foglioQr() {
   const prev = state.corrente;
@@ -999,13 +1152,16 @@ async function foglioSollecito(livelloRichiesto) {
   }
   const testo = (l) => inc.messaggioSollecito(prev, state.azienda, s, l, { link });
   const email = prev.cliente.email || "";
+  // I toni decisi servono solo con importi scaduti.
+  const scaduto = s.importoScaduto > 0;
+  if (!scaduto) livello = Math.min(livello, 1);
   const f = apriFoglio(
     `${titoloFoglio(livello ? "Sollecita il pagamento" : "Chiedi il pagamento", `${esc(core.nomeCliente(prev.cliente))} · ${esc(core.formatEuro(richiesta.importo))}`)}
     <div class="stack">
       <div class="seg seg-pieno" role="group" aria-label="Tono del messaggio">${[0, 1, 2, 3]
         .map(
           (l) =>
-            `<button type="button" data-action="tono" data-l="${l}" class="${l === livello ? "on" : ""}" aria-pressed="${l === livello}">${esc(inc.TONI_MESSAGGIO[l])}${l >= 2 && !state.pro ? " ★" : ""}</button>`,
+            `<button type="button" data-action="tono" data-l="${l}" class="${l === livello ? "on" : ""}" aria-pressed="${l === livello}" ${l >= 2 && !scaduto ? 'disabled title="Solo per importi scaduti"' : ""}>${esc(inc.TONI_MESSAGGIO[l])}${l >= 2 && !state.pro && scaduto ? " ★" : ""}</button>`,
         )
         .join("")}</div>
       ${sug.troppoPresto ? `<div class="banner warn"><span class="ico">⏳</span><div>Hai già sollecitato il ${esc(core.formatData(core.oggiISO(new Date(sug.ultimo))))}: di solito conviene aspettare una settimana tra un messaggio e l'altro.</div></div>` : ""}
@@ -1029,6 +1185,7 @@ async function foglioSollecito(livelloRichiesto) {
   area.addEventListener("input", aggiornaLink);
   azioni.tono = (el) => {
     const l = Number(el.dataset.l);
+    if (l >= 2 && !scaduto) return;
     if (l >= 2 && !state.pro) return paywall("crediti");
     livello = l;
     area.value = testo(l);
@@ -1039,8 +1196,10 @@ async function foglioSollecito(livelloRichiesto) {
       b.setAttribute("aria-pressed", String(Number(b.dataset.l) === l));
     });
   };
+  let registrato = false; // un messaggio aperto o copiato più volte vale come un solo sollecito
   const registra = async (canale) => {
-    if (livello < 1) return;
+    if (livello < 1 || registrato) return;
+    registrato = true;
     incassoModificabile(prev).solleciti.push({ il: Date.now(), livello, canale });
     await salvaIncasso(prev);
     traccia("Sollecito", { livello, canale });
@@ -1050,8 +1209,9 @@ async function foglioSollecito(livelloRichiesto) {
     setTimeout(() => chiudiFoglio(), 300);
   };
   azioni["sol-copia"] = async () => {
-    toast((await copiaTesto(area.value)) ? "Messaggio copiato" : "Copia non riuscita");
-    registra("copia");
+    const ok = await copiaTesto(area.value);
+    toast(ok ? "Messaggio copiato" : "Copia non riuscita");
+    if (ok) registra("copia");
   };
 }
 
@@ -1059,8 +1219,10 @@ async function pdfDiffida() {
   if (!state.pro) return paywall("crediti");
   const prev = state.corrente;
   const s = incassoDi(prev);
-  if (!(s.residuo > 0.005)) return toast("Non c'è nulla da incassare");
-  if (!core.nomeCliente(prev.cliente) || !prev.cliente.nome) return toast("Inserisci il nome del cliente");
+  if (!(s.importoScaduto > 0))
+    return toast("Non ci sono importi scaduti: la lettera si manda solo per somme già dovute");
+  if (!prev.cliente.nome) return toast("Inserisci il nome del cliente");
+  const a = state.azienda;
   try {
     await caricaPdfLib();
     const { creaDiffidaBlob } = await import("./pdf.js");
@@ -1070,15 +1232,28 @@ async function pdfDiffida() {
       totali: totaliDi(prev),
       stato: s,
       config: CONFIG,
-      tassoMora: state.azienda.tassoMora,
+      // Privati: tasso legale; clienti con partita IVA: tasso del D.Lgs. 231/2002.
+      tassoMora: inc.clienteImpresa(prev.cliente) ? a.tassoMoraImprese : a.tassoMoraPrivati,
     });
     scaricaBlob(blob, nomeFile("Messa-in-mora", prev, "pdf"));
   } catch (err) {
     return toast(err.message || "Errore nella creazione del PDF");
   }
-  incassoModificabile(prev).solleciti.push({ il: Date.now(), livello: 3, canale: "lettera" });
-  await salvaIncasso(prev, "Lettera pronta: firmala e inviala con PEC o raccomandata A/R", "ok");
   traccia("Messa in mora");
+  // Generarla non vuol dire averla spedita: nel fascicolo finisce solo quando la mandi davvero.
+  const inviata = await chiedi({
+    titolo: "Lettera pronta",
+    testo:
+      "Firmala e inviala con PEC o raccomandata A/R. Quando l'hai spedita, registrala qui: comparirà nel fascicolo del credito con la data di oggi.",
+    ok: "L'ho inviata oggi",
+    annulla: "Non ancora",
+  });
+  if (!inviata) return;
+  const i = incassoModificabile(prev);
+  const oggi = core.oggiISO();
+  if (!i.solleciti.some((x) => x.canale === "lettera" && core.oggiISO(new Date(x.il)) === oggi))
+    i.solleciti.push({ il: Date.now(), livello: 3, canale: "lettera" });
+  await salvaIncasso(prev, "Lettera registrata nel fascicolo", "ok");
 }
 
 async function pdfFascicolo() {
@@ -1119,7 +1294,7 @@ function htmlDate(prev) {
   return `${titolo}
     ${lista
       .map(
-        (d, i) => `<div class="riga-data">
+        (d, i) => `<div class="riga-data ${inc.dataValida(d.data) && d.data < core.oggiISO() ? "passata" : ""}">
         <input type="date" data-disp="${i}.data" value="${esc(inc.dataValida(d.data) ? d.data : "")}" min="${core.oggiISO()}" aria-label="Data proposta ${i + 1}">
         <select data-disp="${i}.fascia" aria-label="Fascia oraria ${i + 1}">${Object.entries(inc.FASCE)
           .map(([k, v]) => `<option value="${k}" ${d.fascia === k ? "selected" : ""}>${esc(v)}</option>`)
@@ -1127,6 +1302,7 @@ function htmlDate(prev) {
         <button class="icon-btn" data-action="data-togli" data-i="${i}" aria-label="Togli la data ${i + 1}">${ICONE.cestino}</button></div>`,
       )
       .join("")}
+    ${lista.some((d) => inc.dataValida(d.data) && d.data < core.oggiISO()) ? `<div class="muted xsmall testo-bad">Le date già passate non vengono proposte al cliente.</div>` : ""}
     <div class="grid2">
       ${lista.length < inc.MAX_DISPONIBILITA ? `<button class="btn soft" data-action="data-aggiungi">${ICONE.piu} Proponi data</button>` : ""}
       <button class="btn" data-action="fissa-data">${ICONE.check} Fissa data</button>
@@ -1144,7 +1320,7 @@ function foglioFissaData() {
   const f = apriFoglio(
     `${titoloFoglio("Fissa l'inizio dei lavori", "Finisce in agenda e nel PDF")}
     <div class="stack">
-      <div class="grid2">
+      <div class="grid2 stack-mobile">
         <label class="campo">Data<input type="date" id="app-data" value="${esc(prima ? prima.data : core.aggiungiGiorni(core.oggiISO(), 1))}"></label>
         <label class="campo">Fascia<select id="app-fascia">${Object.entries(inc.FASCE)
           .map(([k, v]) => `<option value="${k}" ${prima && prima.fascia === k ? "selected" : ""}>${esc(v)}</option>`)
@@ -1277,15 +1453,26 @@ function suInputEditor(e) {
     const valore = CAMPI_NUMERICI.has(campo) ? core.parseNumero(el.value) : el.value;
     impostaPercorso(prev, campo, valore);
     if (campo === "stato") {
-      if (valore === "accettato" && !prev.accettatoIl) prev.accettatoIl = core.oggiISO();
+      if (valore === "accettato") {
+        if (!prev.accettatoIl) prev.accettatoIl = core.oggiISO();
+        fissaAccordo(prev);
+      } else if (prev.incasso) {
+        prev.incasso.accontoPattuito = null;
+      }
       aggiornaIncassi();
     }
   } else if (el.dataset.inc) {
     const i = incassoModificabile(prev);
-    if (el.dataset.inc === "fineLavori") i.fineLavori = inc.dataValida(el.value) ? el.value : "";
+    if (el.dataset.inc === "fineLavori") {
+      // Mentre si scrive la data a mano il valore è parziale: si aspetta una data completa.
+      if (el.value && !inc.dataValida(el.value)) return;
+      i.fineLavori = el.value;
+      if (el.value) i.storico = false;
+    }
     if (el.dataset.inc === "giorniSaldo") i.giorniSaldo = Number(el.value);
     salvaDopo(prev);
-    if (e.type === "change") aggiornaIncassi();
+    // La sezione si ridisegna quando il campo data perde il focus (vedi "focusout").
+    if (e.type === "change" && el.tagName === "SELECT") aggiornaIncassi();
     return;
   } else if (el.dataset.disp) {
     const [k, chiave] = el.dataset.disp.split(".");
@@ -1659,6 +1846,7 @@ function foglioFirma() {
     };
     prev.stato = "accettato";
     prev.accettatoIl = prev.accettatoIl || core.oggiISO();
+    fissaAccordo(prev);
     await salvaPreventivo(prev);
     traccia("Firma cliente");
     chiudiFoglio();
@@ -1912,17 +2100,30 @@ async function viewAccettazione(q) {
   }[verifica];
   const scelte = conferma.scelte.map((_, k) => voceDaConferma(prev, conferma, k)).filter(Boolean);
   const copia = { ...prev, righe: prev.righe.map((r) => (scelte.includes(r) ? { ...r, opzionale: false } : r)) };
+  const data = dataDaConferma(prev, conferma);
+  const testoData = data.scelta ? esc(inc.testoAppuntamento(data.scelta)) : "";
+  const htmlData = {
+    nessuna: "",
+    ok: `<div class="banner info"><span class="ico">📅</span><div>Per iniziare il cliente ha scelto <b>${testoData}</b>.</div></div>`,
+    "non-proposta": `<div class="banner warn"><span class="ico">📅</span><div>Il cliente ha scelto <b>${testoData}</b>, che non è più tra le date che proponi: la data non viene salvata, concordala con lui.</div></div>`,
+    "gia-fissata": `<div class="banner warn"><span class="ico">📅</span><div>Il cliente avrebbe preferito <b>${testoData}</b>, ma hai già fissato <b>${data.fissata ? esc(inc.testoAppuntamento(data.fissata)) : ""}</b>: resta la tua data.</div></div>`,
+  }[data.esito];
   pagina(`<section class="card stack">
       <div class="row">${avatar(conferma.nome)}<div><div style="font-weight:750;font-size:17px">${esc(conferma.nome)} ha accettato</div><div class="muted small">Preventivo n. ${esc(prev.numero)}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div></div>
       ${avviso}
       ${scelte.length ? `<div><div class="muted xsmall">VOCI FACOLTATIVE AGGIUNTE DAL CLIENTE</div>${scelte.map((r) => `<div>✨ ${esc(r.descrizione)}</div>`).join("")}</div>` : ""}
+      ${htmlData}
       <div class="r" style="display:flex;justify-content:space-between"><span>Nuovo totale</span><b class="big">${esc(core.formatEuro(totaliDi(copia).totale))}</b></div>
       ${dettaglio}
       <button class="btn primary big block" data-action="registra-accettazione">${ICONE.check} Registra accettazione</button>
       <a class="btn ghost block" href="#/p/${esc(prev.id)}">Apri senza registrare</a>
     </section>`);
+  let registrata = false; // un doppio tocco non deve applicare due volte la conferma
   azioni["registra-accettazione"] = async () => {
+    if (registrata) return;
+    registrata = true;
     applicaConferma(prev, conferma, firma);
+    fissaAccordo(prev);
     await salvaPreventivo(prev);
     traccia("Accettazione online registrata", { verifica });
     vibra(30);
@@ -1963,48 +2164,61 @@ async function viewAvviso(q) {
   }
   const giaInAttesa = i.segnalazioni.some((x) => x.rif === avviso.rif && x.stato === "attesa");
   const s = incassoDi(prev);
+  const simile = pagamentoSimile(i, avviso.importo, avviso.data, avviso.rif);
+  const altraSegnalazione = i.segnalazioni.find(
+    (x) => x.rif !== avviso.rif && x.stato === "attesa" && Math.abs(x.importo - avviso.importo) < 0.005,
+  );
   pagina(`<section class="card stack">
       <div class="row">${avatar(core.nomeCliente(prev.cliente))}<div><div style="font-weight:750;font-size:17px">${esc(core.nomeCliente(prev.cliente))} dice di aver pagato</div><div class="muted small">Preventivo n. ${esc(prev.numero)}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div></div>
       <div class="risultato-calc"><div class="muted small">${esc(inc.METODI[avviso.metodo])} · ${esc(core.formatData(avviso.data))}</div><div class="big tnum">${esc(core.formatEuro(avviso.importo))}</div>${avviso.nota ? `<div class="small">${esc(avviso.nota)}</div>` : ""}</div>
       <div class="banner warn"><span class="ico">🔎</span><div><b>Controlla sul conto</b> che il pagamento sia arrivato davvero prima di registrarlo: l'avviso lo manda il cliente.</div></div>
+      ${prev.stato !== "accettato" ? `<div class="banner warn"><span class="ico">✍️</span><div>Non hai ancora registrato l'<b>accettazione firmata</b> di questo preventivo: chiedi al cliente di mandarti anche la conferma.</div></div>` : ""}
       ${avviso.importo > s.residuo + 0.005 ? `<div class="banner bad"><span class="ico">⚠️</span><div>L'importo è superiore a quanto resta da incassare (${esc(core.formatEuro(s.residuo))}).</div></div>` : ""}
+      ${simile ? `<div class="banner warn"><span class="ico">🔁</span><div>Hai già registrato <b>${esc(core.formatEuro(simile.importo))}</b> il ${esc(core.formatData(simile.data))} (${esc(inc.METODI[simile.metodo])}): potrebbe essere lo stesso pagamento.</div></div>` : ""}
+      ${altraSegnalazione ? `<div class="banner warn"><span class="ico">🔁</span><div>Il cliente aveva già segnalato ${esc(core.formatEuro(altraSegnalazione.importo))}: potrebbe essere lo stesso pagamento.</div></div>` : ""}
       <div class="muted small">Da incassare prima di questo pagamento: <b class="tnum">${esc(core.formatEuro(s.residuo))}</b></div>
-      <button class="btn primary big block" data-action="avviso-registra">${ICONE.check} È arrivato: registra</button>
+      ${simile ? `<button class="btn big block" data-action="avviso-stesso">È lo stesso: non contarlo due volte</button>` : ""}
+      <button class="btn primary big block" data-action="avviso-registra">${ICONE.check} ${simile ? "È un altro pagamento: registra" : "È arrivato: registra"}</button>
       ${giaInAttesa ? "" : `<button class="btn block" data-action="avviso-attesa">Non ancora: lo controllo dopo</button>`}
       ${apri}
     </section>`);
-  azioni["avviso-registra"] = async () => {
-    const dati = incassoModificabile(prev);
-    if (!dati.pagamenti.some((x) => x.rif === avviso.rif)) {
-      dati.pagamenti.push({
-        id: core.uid(),
-        importo: avviso.importo,
-        data: avviso.data,
-        metodo: avviso.metodo,
-        nota: ["Segnalato dal cliente", avviso.nota].filter(Boolean).join(": "),
-        rif: avviso.rif,
-      });
-    }
-    for (const x of dati.segnalazioni) if (x.rif === avviso.rif) x.stato = "confermata";
-    await salvaIncasso(prev, "Pagamento registrato");
-    traccia("Avviso pagamento registrato");
+  // La data dichiarata dal cliente non può precedere il preventivo né cadere nel futuro.
+  const dataPagamento =
+    avviso.data < prev.data ? prev.data : avviso.data > core.oggiISO() ? core.oggiISO() : avviso.data;
+  const seg = { ...avviso, data: dataPagamento, il: Date.now(), stato: "attesa" };
+  let fatto = false; // un doppio tocco non registra due volte
+  const chiudi = async (messaggio) => {
+    await salvaIncasso(prev, messaggio);
     vai(`#/p/${prev.id}?sez=incassi`);
   };
-  azioni["avviso-attesa"] = async () => {
+  azioni["avviso-registra"] = async () => {
+    if (fatto) return;
+    fatto = true;
+    registraDaAvviso(incassoModificabile(prev), seg);
+    traccia("Avviso pagamento registrato");
+    await chiudi("Pagamento registrato");
+  };
+  azioni["avviso-stesso"] = async () => {
+    if (fatto) return;
+    fatto = true;
     const dati = incassoModificabile(prev);
-    if (!dati.segnalazioni.some((x) => x.rif === avviso.rif)) {
-      dati.segnalazioni.push({
-        il: Date.now(),
-        data: avviso.data,
-        importo: avviso.importo,
-        metodo: avviso.metodo,
-        nota: avviso.nota,
-        rif: avviso.rif,
-        stato: "attesa",
-      });
+    const stesso = dati.pagamenti.find((x) => x.id === simile.id);
+    if (!dati.segnalazioni.some((x) => x.rif === seg.rif)) dati.segnalazioni.push({ ...seg, stato: "confermata" });
+    registraDaAvviso(dati, seg, stesso);
+    await chiudi("Avviso collegato al pagamento già registrato");
+  };
+  azioni["avviso-attesa"] = async () => {
+    if (fatto) return;
+    fatto = true;
+    const dati = incassoModificabile(prev);
+    const esistente = dati.segnalazioni.find((x) => x.rif === seg.rif);
+    if (!esistente) dati.segnalazioni.push(seg);
+    else if (esistente.stato === "respinta") {
+      // Il cliente l'ha rimandato dopo un "non è arrivato": torna da verificare.
+      esistente.stato = "attesa";
+      esistente.il = Date.now();
     }
-    await salvaIncasso(prev, "Lo trovi nel preventivo, da verificare");
-    vai(`#/p/${prev.id}?sez=incassi`);
+    await chiudi("Lo trovi nel preventivo, da verificare");
   };
 }
 
@@ -2363,8 +2577,8 @@ function viewImpostazioni() {
                 `<option value="${n}" ${Number(a.giorniSaldo) === n ? "selected" : ""}>${n === 0 ? "la fine dei lavori" : `${n} giorni dalla fine dei lavori`}</option>`,
             )
             .join("")}</select></label>
-        ${campo("tassoMora", "Tasso annuo interessi di mora % (facoltativo)", "es. 10,15")}
-        <p class="muted xsmall" style="margin:0">Serve alla lettera di messa in mora per calcolare gli interessi maturati. I tassi di legge cambiano periodicamente: inserisci quello in vigore.</p>
+        <div class="grid2 stack-mobile">${campo("tassoMoraPrivati", "Interessi di mora % - clienti privati", "tasso legale in vigore")}${campo("tassoMoraImprese", "Interessi di mora % - clienti con P.IVA", "tasso D.Lgs. 231/2002")}</div>
+        <p class="muted xsmall" style="margin:0">Facoltativi: servono alla lettera di messa in mora per calcolare gli interessi. Per i privati vale il tasso legale (art. 1284 c.c., fissato ogni anno dal Ministero dell'Economia); per imprese e P.A. quello del D.Lgs. 231/2002 (BCE + 8 punti, aggiornato ogni sei mesi). Il cliente conta come impresa se nel preventivo c'è la sua partita IVA.</p>
         ${campo("linkRecensioni", "Link per lasciarti una recensione (Google)", "https://g.page/r/...", "url")}
         <button class="btn soft block" data-action="clausola-pagamenti">${ICONE.condizioni} Aggiungi alle condizioni la clausola sui ritardi</button>
         <p class="muted xsmall" style="margin:0">${esc(AVVISO_LEGALE)}</p>
@@ -2498,8 +2712,9 @@ function suInputImpostazioni(e) {
   if (conLink && e.type === "change" && v && !urlSicuro(v)) {
     toast("Il link deve iniziare con https://");
   }
-  if (k === "tassoMora" && e.type === "change") {
-    const t = core.parseNumero(v);
+  if ((k === "tassoMoraPrivati" || k === "tassoMoraImprese") && e.type === "change") {
+    const t = core.parseNumero(String(v).replace(/%/g, ""));
+    if (v && !(t > 0 && t <= 100)) toast("Inserisci un tasso tra 0 e 100, per esempio 2,5");
     v = t > 0 && t <= 100 ? String(core.round2(t)).replace(".", ",") : "";
     el.value = v;
   }
@@ -2820,6 +3035,11 @@ const azioni = {
 
   // Incassi
   "registra-pagamento": () => foglioPagamento(),
+  "incassi-tutti": () => {
+    state.incassiTutti = !state.incassiTutti;
+    const el = $("#da-incassare");
+    if (el) el.outerHTML = htmlDaIncassare();
+  },
   "togli-pagamento": async (el) => {
     const prev = state.corrente;
     const i = incassoModificabile(prev);
@@ -2932,6 +3152,10 @@ document.addEventListener("change", (e) => {
   } else if (e.target.dataset.az) suInputImpostazioni(e);
 });
 
+document.addEventListener("focusout", (e) => {
+  if (state.corrente && e.target.dataset && e.target.dataset.inc === "fineLavori") setTimeout(aggiornaIncassi, 0);
+});
+
 window.addEventListener("hashchange", render);
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
@@ -2940,11 +3164,15 @@ window.addEventListener("beforeinstallprompt", (e) => {
 });
 function salvaTuttoOra() {
   salvaAziendaSubito();
-  if (state.corrente) salvaPreventivo(state.corrente);
+  if (state.corrente && daSalvare.has(state.corrente.id)) {
+    clearTimeout(timerSalva);
+    salvaPreventivo(state.corrente);
+  }
 }
 window.addEventListener("pagehide", salvaTuttoOra);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") salvaTuttoOra();
+  else controllaAggiornamenti();
 });
 
 // ------------------------------------------------------------------

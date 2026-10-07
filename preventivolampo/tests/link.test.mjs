@@ -20,6 +20,7 @@ import {
   datiRichiesta,
   creaLinkAvviso,
   leggiAvviso,
+  dataDaConferma,
 } from "../public/js/link.js";
 import { codificaTratti, decodificaTratti, semplifica, lunghezzaTratti } from "../public/js/firma.js";
 import { calcolaTotali } from "../public/js/core.js";
@@ -266,20 +267,28 @@ test("firma: semplificazione, codifica compatta e limiti di sicurezza", () => {
   assert.deepEqual(decodificaTratti(null), []);
 });
 
-test("date proposte e caparra viaggiano nel link; il cliente sceglie solo l'indice della data", async () => {
+test("date proposte: viaggia la data scelta (non la posizione), mai date passate o già fissate", async () => {
+  const giorno = (n) => {
+    const d = new Date(Date.now() + n * 864e5);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
   const prev = preventivo();
   prev.caparra = true;
+  prev.incasso = { giorniSaldo: 15 };
   prev.disponibilita = [
-    { data: "2026-10-12", fascia: "mattina" },
+    { data: giorno(-2), fascia: "mattina" }, // già passata: non va proposta
+    { data: giorno(2), fascia: "mattina" },
     { data: "2026-02-30", fascia: "mattina" },
-    { data: "2026-10-14", fascia: "pomeriggio" },
+    { data: giorno(4), fascia: "pomeriggio" },
+    { data: giorno(6), fascia: "giornata" },
   ];
   const { codice, hash } = await creaLinkAccettazione("https://x.it/", prev, AZIENDA, { pro: true });
   const letto = await leggiLinkAccettazione(codice);
   assert.equal(letto.prev.caparra, true);
+  assert.equal(letto.prev.giorniSaldo, 15);
   assert.deepEqual(letto.prev.disponibilita, [
-    { data: "2026-10-12", fascia: "mattina" },
-    { data: "2026-10-14", fascia: "pomeriggio" },
+    { data: giorno(2), fascia: "mattina" },
+    { data: giorno(4), fascia: "pomeriggio" },
   ]);
   // date ostili nel link: scartate
   const dati = JSON.parse(await decomprimi(codice));
@@ -289,47 +298,70 @@ test("date proposte e caparra viaggiano nel link; il cliente sceglie solo l'indi
     "x",
     ...Array.from({ length: 50 }, () => ["2026-11-01", "mattina"]),
   ];
+  dati.gs = 99999;
   const ostile = preventivoDaDati(dati);
   assert.deepEqual(ostile.disponibilita, [
     { data: "2026-10-20", fascia: "giornata" },
     { data: "2026-11-01", fascia: "mattina" },
   ]);
-  // conferma con la seconda data proposta (indice 1 della lista "pulita")
-  const url = await creaLinkConferma("https://x.it/", {
-    id: prev.id,
-    numero: prev.numero,
-    hash,
-    scelte: [],
-    descrizioni: [],
-    nome: "Giulia",
-    firma: [],
-    appuntamento: 1,
-  });
-  const conferma = await leggiConferma(url.split("?d=")[1]);
-  assert.equal(conferma.appuntamento, 1);
-  applicaConferma(prev, conferma, "data:image/png;base64,xx");
-  assert.equal(prev.appuntamento.data, "2026-10-14");
-  assert.equal(prev.appuntamento.fascia, "pomeriggio");
-  assert.equal(prev.appuntamento.da, "cliente");
-  assert.match(prev.accettatoIl, /^\d{4}-\d{2}-\d{2}$/);
-  // indici fuori lista o non numerici non fissano nessuna data
-  for (const ap of [7, -3, "1", 1.5]) {
-    const u = await creaLinkConferma("https://x.it/", {
-      id: "a",
-      numero: "1",
+  assert.equal(ostile.giorniSaldo, 365);
+
+  const conferma = async (appuntamento, dt) => {
+    const url = await creaLinkConferma("https://x.it/", {
+      id: prev.id,
+      numero: prev.numero,
       hash,
       scelte: [],
       descrizioni: [],
-      nome: "x",
+      nome: "Giulia",
       firma: [],
-      appuntamento: ap,
+      appuntamento,
     });
-    assert.equal((await leggiConferma(u.split("?d=")[1])).appuntamento, -1);
-  }
+    const codiceConferma = url.split("?d=")[1];
+    if (!dt) return leggiConferma(codiceConferma);
+    const d = JSON.parse(await decomprimi(codiceConferma));
+    d.dt = dt;
+    return leggiConferma(await comprimi(JSON.stringify(d)));
+  };
+  const scelta = { data: giorno(4), fascia: "pomeriggio" };
+  const c = await conferma(scelta);
+  assert.deepEqual(c.appuntamento, scelta);
+  // l'impresa toglie la prima data dopo l'invio: si salva comunque la data che il cliente ha visto
+  prev.disponibilita = prev.disponibilita.filter((d) => d.data !== giorno(2));
+  assert.equal(dataDaConferma(prev, c).esito, "ok");
+  applicaConferma(prev, c, "data:image/png;base64,xx");
+  assert.equal(prev.appuntamento.data, giorno(4));
+  assert.equal(prev.appuntamento.fascia, "pomeriggio");
+  assert.equal(prev.appuntamento.da, "cliente");
+  // una data non più proposta non viene salvata
   const p2 = preventivo();
-  p2.disponibilita = [{ data: "2026-10-12", fascia: "mattina" }];
-  applicaConferma(p2, { ...conferma, appuntamento: 2 }, "x");
+  p2.disponibilita = [{ data: giorno(9), fascia: "mattina" }];
+  assert.equal(dataDaConferma(p2, c).esito, "non-proposta");
+  applicaConferma(p2, c, "x");
   assert.equal(p2.appuntamento, undefined);
+  // una data già fissata dall'impresa non viene sostituita
+  const p3 = preventivo();
+  p3.disponibilita = [scelta];
+  p3.appuntamento = { data: giorno(10), fascia: "mattina", da: "impresa" };
+  assert.equal(dataDaConferma(p3, c).esito, "gia-fissata");
+  applicaConferma(p3, c, "x");
+  assert.equal(p3.appuntamento.data, giorno(10));
+  // con l'inizio già fissato il link non propone più date
+  assert.deepEqual(
+    JSON.parse(await decomprimi((await creaLinkAccettazione("https://x.it/", p3, AZIENDA, { pro: true })).codice)).dt,
+    [],
+  );
+  // date della firma non plausibili: valgono il momento in cui arriva la conferma
+  for (const dt of ["2199-01-01T10:00:00Z", "1970-01-01T00:00:00Z", "+275760-09-13T00:00:00Z", "ieri"]) {
+    const cc = await conferma(null, dt);
+    assert.ok(Math.abs(Date.parse(cc.data) - Date.now()) < 60000, dt);
+  }
+  // la firma non può precedere la creazione del link
+  const p4 = preventivo();
+  p4.link = { hash, il: Date.now() - 3600e3 };
+  applicaConferma(p4, await conferma(null, new Date(Date.now() - 30 * 864e5).toISOString()), "x");
+  assert.ok(Date.parse(p4.firma.data) >= p4.link.il);
+  assert.match(p4.accettatoIl, /^\d{4}-\d{2}-\d{2}$/);
 });
 
 test("richiesta di pagamento: andata e ritorno e dati ostili ripuliti", async () => {
@@ -417,5 +449,10 @@ test("avviso 'Ho pagato': andata e ritorno, impronta per non registrarlo due vol
   assert.equal(strano.importo, 1e7);
   assert.equal(strano.metodo, "altro");
   assert.match(strano.data, /^\d{4}-\d{2}-\d{2}$/);
+  const futuro = await fai({ v: 1, k: "av", id: "x", im: 5, dt: "2199-12-31" });
+  const oggi = new Date();
+  const iso = `${oggi.getFullYear()}-${String(oggi.getMonth() + 1).padStart(2, "0")}-${String(oggi.getDate()).padStart(2, "0")}`;
+  assert.equal(futuro.data, iso, "una data di pagamento nel futuro non è plausibile");
+  assert.equal((await fai({ v: 1, k: "av", id: "x", im: 5, dt: "2001-01-01" })).data, iso);
   assert.equal(strano.nota.length, 300);
 });

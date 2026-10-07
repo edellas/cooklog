@@ -17,7 +17,10 @@ import {
   normalizzaDisponibilita,
   normalizzaAppuntamento,
   testoAppuntamento,
-  interessiMora,
+  interessiQuote,
+  clienteImpresa,
+  daChiedere,
+  normalizzaIncasso,
   ibanValido,
 } from "./incassi.js";
 import { matriceQr, rettangoliQr } from "./qr.js";
@@ -36,6 +39,49 @@ function hexRgb(hex) {
 function righeNonVuote(...valori) {
   return valori.map((v) => (v == null ? "" : String(v).trim())).filter(Boolean);
 }
+
+// I font standard dei PDF coprono solo l'alfabeto occidentale (WinAnsi/cp1252): lettere come
+// "Ș", "ă", "Ł" o le emoji uscirebbero storpiate. Si tolgono gli accenti che il font non ha
+// ("Ștefan" -> "Stefan") e si sostituiscono pochi simboli comuni; il resto si scarta.
+const CP1252 = new Set([..."€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ"]);
+const SOSTITUZIONI = {
+  ł: "l",
+  Ł: "L",
+  đ: "d",
+  Đ: "D",
+  ı: "i",
+  "✓": "v",
+  "✔": "v",
+  "≥": ">=",
+  "≤": "<=",
+  "≠": "!=",
+  "→": "->",
+  "←": "<-",
+};
+const ammesso = (ch) => {
+  const cp = ch.codePointAt(0);
+  return (cp >= 32 && cp < 127) || (cp >= 160 && cp < 256) || ch === "\n" || CP1252.has(ch);
+};
+export function testoPdf(t) {
+  if (typeof t !== "string") return t;
+  let out = "";
+  for (const ch of t) {
+    if (ammesso(ch)) out += ch;
+    else if (SOSTITUZIONI[ch]) out += SOSTITUZIONI[ch];
+    else for (const b of ch.normalize("NFD").replace(/\p{M}/gu, "")) if (ammesso(b)) out += b;
+  }
+  return out;
+}
+function testoSicuro(doc) {
+  const conv = (t) => (Array.isArray(t) ? t.map(testoPdf) : testoPdf(t));
+  for (const m of ["text", "splitTextToSize", "getTextWidth", "getStringUnitWidth", "textWithLink"]) {
+    if (typeof doc[m] !== "function") continue;
+    const originale = doc[m].bind(doc);
+    doc[m] = (t, ...resto) => originale(conv(t), ...resto);
+  }
+  return doc;
+}
+const immagine = (src) => typeof src === "string" && /^data:image\/(png|jpeg|webp);base64,/.test(src);
 
 const due = (n) => String(n).padStart(2, "0");
 function dataOra(v) {
@@ -100,7 +146,7 @@ function riquadroQr(doc, { x, y, larghezza, payload, titolo, righe, accento }) {
 export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione = "", fascicolo = null }) {
   const { jsPDF } = globalThis.jspdf;
   const autoTable = globalThis.autoTable;
-  const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
+  const doc = testoSicuro(new jsPDF({ unit: "mm", format: "a4", compress: true }));
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const accento = pro ? hexRgb(azienda.colore) : hexRgb("#1d4ed8");
@@ -137,7 +183,8 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
   const nomeImpresa = azienda.ragioneSociale || "La tua impresa";
-  doc.text(doc.splitTextToSize(nomeImpresa, 95 - (xTesto - MARGINE)), xTesto, y + 5);
+  const lineeNome = doc.splitTextToSize(nomeImpresa, 95 - (xTesto - MARGINE));
+  doc.text(lineeNome, xTesto, y + 5);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.5);
@@ -152,7 +199,7 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     azienda.pec ? `PEC ${azienda.pec}` : "",
     azienda.sito,
   );
-  let yImpresa = y + 10.5;
+  let yImpresa = y + 10.5 + (lineeNome.length - 1) * 5.3;
   for (const r of datiImpresa) {
     doc.text(r, xTesto, yImpresa);
     yImpresa += 3.8;
@@ -191,19 +238,21 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   y += 4.5;
   doc.setTextColor(...NERO);
   doc.setFontSize(10.5);
-  doc.text(doc.splitTextToSize(c.nome || "-", colonna), MARGINE, y);
+  const lineeCliente = doc.splitTextToSize(c.nome || "-", colonna);
+  doc.text(lineeCliente, MARGINE, y);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.5);
   doc.setTextColor(...GRIGIO);
-  let yCli = y + 4.5;
+  let yCli = y + 4.5 + (lineeCliente.length - 1) * 4.4;
   for (const r of righeNonVuote(
     c.indirizzo,
     c.citta,
     c.cfpiva ? `C.F./P.IVA ${c.cfpiva}` : "",
     [c.telefono ? `Tel. ${c.telefono}` : "", c.email].filter(Boolean).join(" - "),
   )) {
-    doc.text(doc.splitTextToSize(r, colonna), MARGINE, yCli);
-    yCli += 3.8;
+    const linee = doc.splitTextToSize(r, colonna);
+    doc.text(linee, MARGINE, yCli);
+    yCli += 3.8 * linee.length;
   }
   let yLuogo = y;
   if (prev.luogo) {
@@ -218,6 +267,9 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   // --- Oggetto ---
   if (prev.oggetto) {
     doc.setFillColor(244, 246, 250);
+    // Si misura con lo stesso carattere con cui si scrive (grassetto 9,5).
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
     const linee = doc.splitTextToSize(prev.oggetto, larghezza - 24);
     const h = 4 + linee.length * 4.4;
     doc.rect(MARGINE, y, larghezza, h, "F");
@@ -341,7 +393,8 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     doc.text(formatEuro(totali.acconto), W - MARGINE - 2, y, { align: "right" });
     y += 5;
     doc.setFont("helvetica", "normal");
-    doc.text("Saldo a fine lavori", xEt, y);
+    const gs = normalizzaIncasso(prev.incasso).giorniSaldo ?? (Math.round(Number(azienda.giorniSaldo)) || 0);
+    doc.text(gs > 0 ? `Saldo entro ${gs} giorni dalla fine lavori` : "Saldo a fine lavori", xEt, y);
     doc.text(formatEuro(totali.saldo), W - MARGINE - 2, y, { align: "right" });
     y += 6;
   }
@@ -401,9 +454,17 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
 
   sezione("Tempi di esecuzione", prev.tempi);
   const appuntamento = normalizzaAppuntamento(prev.appuntamento);
-  const proposte = normalizzaDisponibilita(prev.disponibilita);
+  const proposte = normalizzaDisponibilita(prev.disponibilita).filter((d) => d.data >= oggiISO());
+  const firmato = Boolean((prev.firma && prev.firma.img) || prev.stato === "accettato");
   if (appuntamento) {
-    sezione("Inizio lavori concordato", testoAppuntamento(appuntamento));
+    sezione(
+      appuntamento.da === "cliente" && !appuntamento.il
+        ? "Inizio lavori scelto dal cliente"
+        : "Inizio lavori concordato",
+      testoAppuntamento(appuntamento),
+    );
+  } else if (firmato) {
+    if (proposte.length) sezione("Inizio lavori", "Data da concordare con l'impresa.");
   } else if (proposte.length) {
     sezione(
       "Date proposte per l'inizio dei lavori",
@@ -497,7 +558,7 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   }
 
   const xFirma = W - MARGINE - 75;
-  if (prev.firma && prev.firma.img) {
+  if (prev.firma && immagine(prev.firma.img)) {
     try {
       // Il riquadro firma nell'app ha proporzioni 2,5:1.
       doc.addImage(prev.firma.img, "PNG", xFirma + 10, y - 2, 50, 20);
@@ -522,7 +583,10 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     doc.setFontSize(7);
     doc.setTextColor(...GRIGIO);
     doc.text(
-      `Firmato da ${prev.firma.nome || c.nome || "il cliente"} ${prev.firma.online ? "online (accettazione via link)" : "su dispositivo"}`,
+      doc.splitTextToSize(
+        `Firmato da ${prev.firma.nome || c.nome || "il cliente"} ${prev.firma.online ? "online (accettazione via link)" : "su dispositivo"}`,
+        W - MARGINE - xFirma,
+      ),
       xFirma,
       yLinea + 7.5,
     );
@@ -639,10 +703,16 @@ function paginaFascicolo(doc, { prev, azienda, totali, stato, accento, autoTable
   ];
   const aggiunte = prev.accettazioneOnline?.facoltativeAggiunte || [];
   if (aggiunte.length) righe.push(["Voci aggiunte dal cliente", aggiunte.join(", ")]);
-  if (totali.acconto > 0)
+  if (stato.acconto > 0)
     righe.push([
       prev.caparra ? "Caparra confirmatoria" : "Acconto",
-      `${formatEuro(totali.acconto)} ${stato.accontoPagato ? "(versato)" : "(non versato)"}`,
+      `${formatEuro(stato.acconto)} ${
+        stato.accontoPagato
+          ? "(versato)"
+          : stato.incassato > 0
+            ? `(versati ${formatEuro(Math.min(stato.incassato, stato.acconto))})`
+            : "(non versato)"
+      }`,
     ]);
   if (app)
     righe.push([
@@ -653,10 +723,10 @@ function paginaFascicolo(doc, { prev, azienda, totali, stato, accento, autoTable
   if (stato.scadenzaSaldo) righe.push(["Scadenza del saldo", formatData(stato.scadenzaSaldo)]);
   righe.push(["Incassato", formatEuro(stato.incassato)]);
   righe.push(["Da incassare", formatEuro(stato.residuo)]);
-  if (stato.importoScaduto > 0)
+  for (const q of stato.quote || [])
     righe.push([
-      "Scaduto",
-      `${formatEuro(stato.importoScaduto)} dal ${formatData(stato.scadutoDal)} (${stato.giorniRitardo} giorni)`,
+      q.tipo === "acconto" ? (prev.caparra ? "Caparra scaduta" : "Acconto scaduto") : "Saldo scaduto",
+      `${formatEuro(q.importo)} dal ${formatData(q.dal)}`,
     ]);
 
   const stile = {
@@ -728,7 +798,7 @@ function paginaFascicolo(doc, { prev, azienda, totali, stato, accento, autoTable
 // ------------------------------------------------------------------
 export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiISO(), tassoMora = "" }) {
   const { jsPDF } = globalThis.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
+  const doc = testoSicuro(new jsPDF({ unit: "mm", format: "a4", compress: true }));
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const larghezza = W - MARGINE * 2;
@@ -744,11 +814,12 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   doc.setFont("helvetica", "bold");
   doc.setFontSize(11);
   doc.setTextColor(...NERO);
-  doc.text(doc.splitTextToSize(a.ragioneSociale || "", 90), MARGINE, y);
+  const lineeImpresa = doc.splitTextToSize(a.ragioneSociale || "", 90);
+  doc.text(lineeImpresa, MARGINE, y);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.5);
   doc.setTextColor(...GRIGIO);
-  let ym = y + 5;
+  let ym = y + 5 + (lineeImpresa.length - 1) * 4.5;
   for (const r of righeNonVuote(
     a.indirizzo,
     [a.cap, a.citta, a.provincia ? `(${a.provincia})` : ""].filter(Boolean).join(" "),
@@ -767,9 +838,10 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   doc.text("Spett.le / Gent.mo", xd, yd);
   yd += 5;
   doc.setFont("helvetica", "bold");
-  doc.text(doc.splitTextToSize(nomeCliente(c), W - MARGINE - xd), xd, yd);
+  const lineeCliente = doc.splitTextToSize(nomeCliente(c), W - MARGINE - xd);
+  doc.text(lineeCliente, xd, yd);
   doc.setFont("helvetica", "normal");
-  yd += 5;
+  yd += 5 + (lineeCliente.length - 1) * 4.5;
   for (const r of righeNonVuote(c.indirizzo, c.citta, c.cfpiva ? `C.F./P.IVA ${c.cfpiva}` : "")) {
     for (const l of doc.splitTextToSize(r, W - MARGINE - xd)) {
       doc.text(l, xd, yd);
@@ -812,39 +884,60 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
     : prev.firma && prev.firma.img
       ? "sottoscrivendolo"
       : "";
+  // Si chiede solo ciò che è davvero scaduto, quota per quota con la sua data.
+  const richiesta = daChiedere(prev, stato);
+  const dovuto = stato.importoScaduto;
+  const nomeQuota = (q) => (q.tipo === "acconto" ? (prev.caparra ? "caparra confirmatoria" : "acconto") : "saldo");
+  const nonScaduto = Math.max(Math.round((stato.residuo - dovuto) * 100) / 100, 0);
   scrivi(`Gentile ${nomeCliente(c)},`);
   scrivi("con la presente Le ricordiamo che:");
   punto(
     `in data ${formatData(stato.dataAccettazione || prev.data)} Lei ha accettato${modo ? ` ${modo},` : ""} il preventivo n. ${prev.numero} del ${formatData(prev.data)}${prev.oggetto ? ` relativo a "${prev.oggetto}"` : ""}, per un importo complessivo di ${formatEuro(stato.totale)}${iva};`,
   );
-  if (stato.fineLavori) punto(`i lavori sono stati eseguiti e ultimati in data ${formatData(stato.fineLavori)};`);
+  if (stato.fineLavori && stato.fineLavori <= oggi)
+    punto(`i lavori sono stati eseguiti e ultimati in data ${formatData(stato.fineLavori)};`);
   punto(
     stato.incassato > 0
       ? `a fronte di tale importo risultano versati ${formatEuro(stato.incassato)} (${stato.pagamenti.map((p) => `${formatEuro(p.importo)} il ${formatData(p.data)}`).join(", ")});`
       : "a oggi non risulta effettuato alcun pagamento;",
   );
   punto(
-    `residua pertanto a Suo carico la somma di ${formatEuro(stato.residuo)}${stato.scadutoDal ? `, scaduta il ${formatData(stato.scadutoDal)}` : ""};`,
+    `risulta pertanto scaduta e non pagata la somma di ${formatEuro(dovuto)} (${stato.quote
+      .map(
+        (q) =>
+          `${nomeQuota(q)} di ${formatEuro(q.importo)}, ${q.tipo === "acconto" && prev.caparra ? "scaduta" : "scaduto"} il ${formatData(q.dal)}`,
+      )
+      .join("; ")})${
+      nonScaduto > 0.005
+        ? `, oltre a ${formatEuro(nonScaduto)} non ancora scaduti${stato.scadenzaSaldo ? `, da pagare entro il ${formatData(stato.scadenzaSaldo)}` : ""}`
+        : ""
+    };`,
   );
-  const precedenti = stato.solleciti.filter((s) => s.canale !== "lettera");
-  if (precedenti.length)
+  const giorniSolleciti = [
+    ...new Set(stato.solleciti.filter((s) => s.canale !== "lettera").map((s) => oggiISO(new Date(s.il)))),
+  ];
+  if (giorniSolleciti.length)
     punto(
-      `nonostante i solleciti del ${precedenti.map((s) => formatData(oggiISO(new Date(s.il)))).join(", ")}, il pagamento non è stato effettuato.`,
+      `nonostante i solleciti del ${giorniSolleciti.map(formatData).join(", ")}, il pagamento non è stato effettuato.`,
     );
   y += 2;
   scrivi(
-    `La invitiamo pertanto formalmente a corrispondere la somma di ${formatEuro(stato.residuo)} entro e non oltre 15 (quindici) giorni dal ricevimento della presente${
+    `La invitiamo pertanto formalmente a corrispondere la somma di ${formatEuro(dovuto)} entro e non oltre 15 (quindici) giorni dal ricevimento della presente${
       a.iban
-        ? `, mediante bonifico bancario sul conto IBAN ${a.iban}${a.intestatarioIban ? ` intestato a ${a.intestatarioIban}` : ""}, causale "${causale(prev, "saldo")}"`
+        ? `, mediante bonifico bancario sul conto IBAN ${a.iban}${a.intestatarioIban ? ` intestato a ${a.intestatarioIban}` : ""}, causale "${richiesta.causale}"`
         : ""
     }.`,
   );
-  const giorni = stato.giorniRitardo;
-  const interessi = interessiMora(stato.importoScaduto || stato.residuo, tassoMora, giorni);
+  // Privati: interessi al tasso legale (artt. 1224 e 1284 c.c.). Imprese: D.Lgs. 231/2002.
+  const impresa = clienteImpresa(c);
+  const interessi = interessiQuote(stato.quote, tassoMora, oggi);
   scrivi(
-    "La presente vale quale atto di costituzione in mora ai sensi e per gli effetti dell'art. 1219 del Codice civile. Sulla somma dovuta decorrono gli interessi moratori nella misura di legge" +
+    "La presente vale quale atto di costituzione in mora ai sensi e per gli effetti dell'art. 1219 del Codice civile. " +
+      (impresa
+        ? "Sulle somme scadute decorrono gli interessi moratori previsti dal D.Lgs. 231/2002"
+        : "Sulle somme scadute decorrono gli interessi moratori al tasso legale (artt. 1224 e 1284 c.c.)") +
       (interessi > 0
-        ? ` (tasso annuo applicato ${String(tassoMora).replace(".", ",")}%: ${formatEuro(interessi)} maturati alla data odierna per ${giorni} giorni di ritardo).`
+        ? `, calcolati al tasso annuo del ${String(tassoMora).replace(".", ",").replace(/%$/, "")}% dalla scadenza di ciascuna somma: ${formatEuro(interessi)} alla data odierna.`
         : "."),
   );
   scrivi(
@@ -859,7 +952,9 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   doc.setFont("helvetica", "normal");
   doc.setDrawColor(...GRIGIO);
   doc.setLineWidth(0.3);
-  if (y > H - 60) {
+  // Firma e riquadro QR devono stare insieme sopra la riga "Allegato" (in fondo alla pagina).
+  const payload = payloadPerImporto(a, dovuto, richiesta.causale);
+  if (y > H - (payload ? 74 : 34)) {
     doc.addPage();
     y = MARGINE;
   }
@@ -869,17 +964,16 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   doc.text("Firma", MARGINE, y + 14);
   y += 22;
 
-  const payload = payloadPerImporto(a, stato.residuo, causale(prev, "saldo"));
   if (payload) {
     riquadroQr(doc, {
       x: MARGINE,
       y,
       larghezza,
       payload,
-      titolo: `Paga ${formatEuro(stato.residuo)} con il QR del bonifico`,
+      titolo: `Paga ${formatEuro(dovuto)} con il QR del bonifico`,
       righe: [
         "Inquadra il codice con l'app della tua banca: importo, IBAN e causale si compilano da soli.",
-        `Causale: ${causale(prev, "saldo")}`,
+        `Causale: ${richiesta.causale}`,
       ],
       accento: NERO,
     });
