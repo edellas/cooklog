@@ -2204,6 +2204,7 @@ function menuPreventivo() {
     `${titoloFoglio("Altre azioni", `Preventivo n. ${esc(prev.numero)}`)}
     <div class="lista-azioni">
       ${prev.stato === "accettato" ? voce("invia", ICONE.invia, "Manda di nuovo al cliente", "Il PDF o il link aggiornato") : ""}
+      ${voce("anteprima", ICONE.occhio, "Vedi il PDF", "Com'è il preventivo stampato")}
       ${voce("scarica-pdf", ICONE.scarica, "Scarica il PDF")}
       ${prev.stato === "accettato" ? voce("crea-variante", ICONE.variante, "Lavori extra da far firmare", "Una variante con le sole voci in più") : ""}
       ${voce("lista-materiali", ICONE.carrello, "Lista materiali per il fornitore", "I materiali del preventivo in un messaggio")}
@@ -4145,7 +4146,10 @@ const azioni = {
     await salvaPreventivo(state.corrente);
     $("#sezione-firma").innerHTML = htmlFirma(state.corrente);
   },
-  anteprima: () => anteprima(),
+  anteprima: () => {
+    chiudiFoglio(true); // dal menu: il menu si chiude, si vede il PDF
+    anteprima();
+  },
   invia: (el) => invia(el),
   checkout: (el) => {
     const url = urlSicuro(CONFIG.checkout[el.dataset.piano]);

@@ -4,7 +4,7 @@
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -25,26 +25,35 @@ const normale = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><re
 const maskable = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="${INCHIOSTRO}"/>${scala(0.72)}</svg>`;
 // Apple e store: quadrato pieno senza trasparenza, gli angoli li arrotonda il sistema.
 const pieno = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="${INCHIOSTRO}"/>${scala(0.85)}</svg>`;
-// Primo piano dell'icona adattiva Android: solo il lampo, su trasparente, nella zona sicura (66%).
+// App mobile (Capacitor): primo piano dell'icona adattiva Android (solo il lampo, nella zona sicura),
+// il suo sfondo, e la schermata di avvio con il simbolo al centro su fondo carta (o scuro).
 const primoPiano = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${scala(0.6)}</svg>`;
-// Schermata di avvio delle app: il simbolo al centro su fondo carta.
-const avvio = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f4f2ed"/><g transform="translate(32 32) scale(0.14) translate(-32 -32)"><rect width="64" height="64" rx="14" fill="${INCHIOSTRO}"/>${fulmine}</g></svg>`;
+const sfondo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="${INCHIOSTRO}"/></svg>`;
+const avvio = (fondo) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="${fondo}"/><g transform="translate(32 32) scale(0.14) translate(-32 -32)"><rect width="64" height="64" rx="14" fill="${INCHIOSTRO}"/>${fulmine}</g></svg>`;
 
+const mobile = path.join(dir, "..", "..", "mobile", "assets");
+mkdirSync(mobile, { recursive: true });
 writeFileSync(path.join(dir, "icona.svg"), normale + "\n");
 const browser = await playwright.chromium.launch();
 const page = await browser.newPage();
-for (const [nome, svg, lato, trasparente] of [
+for (const [nome, svg, lato, trasparente, cartella = dir] of [
   ["icona-192.png", normale, 192, true],
   ["icona-512.png", normale, 512, true],
   ["icona-maskable-512.png", maskable, 512, false],
   ["icona-180.png", pieno, 180, false],
   ["favicon-32.png", normale, 32, true],
+  ["icon-only.png", pieno, 1024, false, mobile],
+  ["icon-foreground.png", primoPiano, 1024, true, mobile],
+  ["icon-background.png", sfondo, 1024, false, mobile],
+  ["splash.png", avvio("#f4f2ed"), 2732, false, mobile],
+  ["splash-dark.png", avvio("#131518"), 2732, false, mobile],
 ]) {
   await page.setViewportSize({ width: lato, height: lato });
   await page.setContent(
     `<html><body style="margin:0;background:transparent">${svg.replace("<svg ", `<svg width="${lato}" height="${lato}" `)}</body></html>`,
   );
-  await page.screenshot({ path: path.join(dir, nome), omitBackground: trasparente });
+  await page.screenshot({ path: path.join(cartella, nome), omitBackground: trasparente });
   console.log("creata", nome);
 }
 await browser.close();

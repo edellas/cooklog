@@ -78,6 +78,7 @@ stile.textContent = `
 .pl-entra { margin-bottom: 6px; }
 /* Nell'anteprima "Prova come il cliente" fa già vedere la pagina del cliente. */
 [data-action="guarda-cliente"] { display: none !important; }
+.grid2:has(> [data-action="guarda-cliente"]) { grid-template-columns: 1fr; }
 .pl-qr-avviso { margin-top: 6px; font-size: 12px; font-weight: 650; color: var(--warn); text-align: center; }
 `;
 document.head.appendChild(stile);
