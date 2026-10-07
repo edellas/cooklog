@@ -1,0 +1,39 @@
+{
+  "appId": "it.preventivolampo.app",
+  "appName": "PreventivoLampo",
+  "webDir": "www",
+  "loggingBehavior": "debug",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#f4f2ed"
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#f4f2ed",
+    "allowsLinkPreview": false,
+    "preferredContentMode": "mobile"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "launchShowDuration": 3000,
+      "backgroundColor": "#f4f2ed",
+      "androidScaleType": "CENTER_CROP",
+      "showSpinner": false,
+      "splashFullScreen": false,
+      "splashImmersive": false
+    },
+    "SystemBars": {
+      "insetsHandling": "css",
+      "style": "DEFAULT",
+      "initialViewportFitValueHint": "cover"
+    },
+    "Keyboard": {
+      "resize": "native"
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_lampo",
+      "iconColor": "#FFC21A"
+    }
+  }
+}

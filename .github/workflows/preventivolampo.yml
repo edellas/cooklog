@@ -1,0 +1,132 @@
+# PreventivoLampo: prove del sito e dell'app web, e compilazione con prova delle app iOS e Android.
+# Le app si provano davvero: Android su un emulatore (Playwright collegato alla WebView dell'app installata),
+# iOS nel simulatore (lo schermo letto con l'OCR di macOS). Gli APK e le foto restano tra gli artefatti.
+name: PreventivoLampo
+
+on:
+  push:
+    paths: ["preventivolampo/**", ".github/workflows/preventivolampo.yml"]
+  pull_request:
+    paths: ["preventivolampo/**", ".github/workflows/preventivolampo.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: preventivolampo-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Sito, app web e app nativa simulata
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: preventivolampo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: preventivolampo/mobile/package-lock.json
+      - name: Strumenti
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q poppler-utils
+          npm i -g eslint@10.1.0 playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - run: eslint .
+      - run: npm test
+      - run: npm run test:e2e
+      - run: npm ci
+        working-directory: preventivolampo/mobile
+      - run: npm run test:nativo
+
+  android:
+    name: App Android (APK + emulatore)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: preventivolampo/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: preventivolampo/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - run: npm ci
+      - name: App web dentro il progetto Android
+        run: npm run www && npx cap sync android
+      - name: Compila l'APK
+        working-directory: preventivolampo/mobile/android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preventivolampo-android-debug
+          path: preventivolampo/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Abilita la virtualizzazione per l'emulatore
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: npm i -g playwright@1.56.1
+      - name: Prova sull'emulatore
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          working-directory: preventivolampo/mobile
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            node prove/android.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preventivolampo-android-foto
+          path: preventivolampo/mobile/prove/foto
+          if-no-files-found: ignore
+
+  ios:
+    name: App iOS (simulatore)
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: preventivolampo/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: preventivolampo/mobile/package-lock.json
+      - run: npm ci
+      - name: App web dentro il progetto iOS
+        run: npm run www && npx cap sync ios
+      - name: Compila per il simulatore
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 80
+      - name: Prova nel simulatore
+        run: bash prove/ios.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preventivolampo-ios-foto
+          path: preventivolampo/mobile/prove/foto
+          if-no-files-found: ignore

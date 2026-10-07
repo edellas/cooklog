@@ -1,0 +1,39 @@
+{
+  "name": "preventivolampo-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App nativa iOS e Android di PreventivoLampo (Capacitor): la stessa app web, con le funzioni del telefono.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "www": "node ../scripts/prepara-www.mjs",
+    "sync": "npm run www && cap sync",
+    "android": "npm run sync && cap open android",
+    "ios": "npm run sync && cap open ios",
+    "risorse": "node ../scripts/genera-icone.mjs && capacitor-assets generate --assetPath assets --iconBackgroundColor \"#1a1d21\" --iconBackgroundColorDark \"#1a1d21\" --splashBackgroundColor \"#f4f2ed\" --splashBackgroundColorDark \"#131518\""
+  },
+  "dependencies": {
+    "@capacitor-community/contacts": "^8.0.0",
+    "@capacitor-community/file-opener": "^8.0.1",
+    "@capacitor-community/keep-awake": "^8.0.1",
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/app-launcher": "^8.0.1",
+    "@capacitor/clipboard": "^8.0.1",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.4",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.5.2",
+    "@capacitor/keyboard": "^8.0.6",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/share": "^8.0.3",
+    "@capacitor/splash-screen": "^8.0.2",
+    "@capgo/capacitor-speech-recognition": "^8.3.2",
+    "@ebarooni/capacitor-calendar": "^8.8.0",
+    "@revenuecat/purchases-capacitor": "^13.7.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.5.2"
+  }
+}

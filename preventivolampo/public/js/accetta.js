@@ -36,6 +36,7 @@ import { creaPadFirma, decodificaTratti, disegnaTratti, trattiInPng } from "./fi
 import { $, $$, esc, toast, apriFoglio, chiudiFoglio, titoloFoglio, copiaTesto, vibra, avatar } from "./ui.js";
 import { ICONE } from "./icone.js";
 import { CONFIG } from "./config.js";
+import * as nativo from "./nativo.js";
 
 const BASE = new URL(".", location.href).href;
 const app = () => $("#app");
@@ -44,6 +45,8 @@ const app = () => $("#app");
 // invio della conferma, "Ho già pagato"), lo schermo resta acceso e dopo la firma il telefono torna
 // all'artigiano, che registra l'accettazione nell'app.
 const presenta = new URLSearchParams(location.search).has("presenta");
+// Aperta dentro l'app nativa (firma al tavolo, "come lo vede lui"): i link esterni li apre il telefono.
+nativo.installa();
 
 // Icone Lucide (licenza ISC) che servono solo qui: altoparlante, stop, dimensione del testo, ingrandisci.
 const svg = (d) =>
@@ -1365,6 +1368,11 @@ function testoGrande(attiva) {
 // File: PDF (da stampare prima della firma, firmato dopo) e calendario
 // ------------------------------------------------------------------
 function scaricaFile(blob, nome) {
+  // Firma al tavolo nell'app nativa: il PDF si apre nel lettore del telefono (lì i download non esistono).
+  if (nativo.attiva) {
+    nativo.apriFile(blob, nome).catch(() => toast("Non riesco ad aprire il file"));
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -1613,6 +1621,8 @@ if (leggiPref()) testoGrande(true);
 let schermo = null;
 async function schermoAcceso() {
   if (!presenta || document.visibilityState !== "visible") return;
+  // Nell'app nativa lo tiene acceso il telefono (la WebView non ha il blocco dello schermo del browser).
+  if (nativo.attiva && (await nativo.schermoAcceso(true))) return;
   try {
     schermo = (await navigator.wakeLock?.request("screen")) || null;
   } catch {
@@ -1626,6 +1636,7 @@ if (presenta) {
     if (document.visibilityState === "visible") schermoAcceso();
   });
   window.addEventListener("pagehide", () => {
+    if (nativo.attiva) nativo.schermoAcceso(false);
     try {
       schermo?.release?.().catch?.(() => {});
     } catch {

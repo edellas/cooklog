@@ -531,6 +531,20 @@ function piega(riga) {
 
 // anticipo: quando suona il promemoria rispetto all'inizio ("-PT12H" la sera prima, "PT0M" all'ora di inizio).
 // Ripetizioni ammesse (valori fissi: niente testo libero dentro il file del calendario).
+// Inizio e fine dell'evento in ora locale (come nel file .ics): la fascia dà gli orari, senza fascia è tutto il giorno.
+export function orariEvento(data, fascia) {
+  if (!dataValida(data)) return null;
+  const [a, m, g] = data.split("-").map(Number);
+  const orari = ORARI_FASCIA[fascia];
+  if (!orari) return { inizio: new Date(a, m - 1, g), fine: new Date(a, m - 1, g + 1), tuttoIlGiorno: true };
+  const ora = (hhmmss) => [Number(hhmmss.slice(0, 2)), Number(hhmmss.slice(2, 4))];
+  return {
+    inizio: new Date(a, m - 1, g, ...ora(orari[0])),
+    fine: new Date(a, m - 1, g, ...ora(orari[1])),
+    tuttoIlGiorno: false,
+  };
+}
+
 const RIPETIZIONI = { settimanale: "FREQ=WEEKLY" };
 const ANTICIPI = new Set(["-PT12H", "-PT1H", "PT0M"]);
 export function creaIcs({

@@ -49,6 +49,15 @@ export const CONFIG = {
   // Funzione serverless che verifica il codice licenza (inclusa nel progetto).
   apiLicenza: "/api/licenza",
 
+  // App per iPhone e Android (cartella mobile/): App Store e Google Play vogliono che Pro si compri dentro
+  // l'app. Con RevenueCat (gratis fino a 2.500 $ al mese di incassi) basta incollare qui le chiavi
+  // pubbliche dell'app: vedi mobile/README.md. Finché sono vuote, nell'app Pro si attiva solo con il codice.
+  app: {
+    revenuecatIos: "",
+    revenuecatAndroid: "",
+    entitlement: "pro",
+  },
+
   // Ogni quanti giorni l'app ricontrolla la licenza (se online) e quanti giorni
   // continua a funzionare in Pro senza connessione.
   giorniRevalidazione: 3,

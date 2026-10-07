@@ -1,4 +1,5 @@
 // Componenti di interfaccia condivisi: escape HTML, toast, fogli a comparsa, conferme, avatar.
+import * as nativo from "./nativo.js";
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -21,6 +22,7 @@ export function immagineSicura(src) {
 export const VIBRA = { tocco: 10, successo: [16, 50, 28], errore: [36, 60, 36] };
 
 export function vibra(ms = VIBRA.tocco) {
+  if (nativo.attiva) return nativo.vibra(ms); // nell'app: il motore di vibrazione del telefono
   try {
     navigator.vibrate?.(ms);
   } catch {
@@ -99,7 +101,8 @@ function trascinaPerChiudere(ov, foglio) {
     if (inizio || e.button > 0 || matchMedia("(min-width: 700px)").matches) return;
     // Si trascina dalla maniglia o dalla testata, oppure dal contenuto quando è già in cima.
     const daTesta = e.target.closest(".maniglia, .foglio-testa");
-    if (!daTesta && (foglio.scrollTop > 0 || e.target.closest("input, textarea, select, canvas, button, a, label"))) return;
+    if (!daTesta && (foglio.scrollTop > 0 || e.target.closest("input, textarea, select, canvas, button, a, label")))
+      return;
     inizio = { y: e.clientY, t: performance.now(), id: e.pointerId, dy: 0 };
   });
   foglio.addEventListener("pointermove", (e) => {
@@ -206,6 +209,7 @@ export async function transizione(fn) {
 }
 
 export async function copiaTesto(testo) {
+  if (nativo.attiva && (await nativo.copia(testo))) return true;
   try {
     await navigator.clipboard.writeText(testo);
     return true;

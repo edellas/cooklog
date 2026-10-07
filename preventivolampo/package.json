@@ -10,7 +10,9 @@
     "seo": "node scripts/genera-pagine-seo.mjs",
     "icone": "node scripts/genera-icone.mjs",
     "dev": "npx --yes serve public -l 5173",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:nativo": "node scripts/prepara-www.mjs && node tests/nativo.e2e.mjs",
+    "mobile:www": "node scripts/prepara-www.mjs"
   },
   "license": "UNLICENSED"
 }

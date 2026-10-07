@@ -119,3 +119,24 @@ test("handler HTTP: corpo troppo grande rifiutato", async () => {
   const r = await gestisciRichiesta(req({ chiave: "A".repeat(5000) }), ENV_POLAR, json(200, { status: "granted" }));
   assert.equal(r.status, 413);
 });
+
+test("app nativa: CORS solo per le origini dell'app, anche sulla richiesta preliminare", async () => {
+  const conOrigine = (origine, metodo = "POST") =>
+    new Request("https://x.it/api/licenza", {
+      method: metodo,
+      headers: { "content-type": "application/json", origin: origine },
+      body: metodo === "POST" ? JSON.stringify({ chiave: "ABCD-1234-EFGH" }) : undefined,
+    });
+  for (const origine of ["capacitor://localhost", "https://localhost"]) {
+    const pre = await gestisciRichiesta(conOrigine(origine, "OPTIONS"), ENV_POLAR);
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get("access-control-allow-origin"), origine);
+    assert.match(pre.headers.get("access-control-allow-methods"), /POST/);
+    const ok = await gestisciRichiesta(conOrigine(origine), ENV_POLAR, json(200, { status: "granted" }));
+    assert.equal(ok.headers.get("access-control-allow-origin"), origine);
+    assert.equal((await ok.json()).valida, true);
+  }
+  // un sito qualunque non può leggere le risposte
+  const altro = await gestisciRichiesta(conOrigine("https://sito-malevolo.example"), ENV_POLAR, json(200, {}));
+  assert.equal(altro.headers.get("access-control-allow-origin"), null);
+});

@@ -83,8 +83,27 @@ export async function verificaLicenza(chiave, env, fetchImpl = fetch, ora = Date
   return verificaPolar(chiave, env, fetchImpl, ora);
 }
 
+// L'app per iPhone e Android (cartella mobile/) chiama da un'origine sua: solo queste due sono ammesse
+// oltre al sito stesso (che non ha bisogno di CORS).
+const ORIGINI_APP = new Set(["capacitor://localhost", "https://localhost"]);
+
 // Gestore HTTP standard (Request -> Response), usato da entrambe le piattaforme.
 export async function gestisciRichiesta(req, env = {}, fetchImpl = fetch) {
+  const r = await gestisci(req, env, fetchImpl);
+  const origine = req.headers.get("origin");
+  if (origine && ORIGINI_APP.has(origine)) {
+    r.headers.set("access-control-allow-origin", origine);
+    r.headers.set("vary", "Origin");
+    if (req.method === "OPTIONS") {
+      r.headers.set("access-control-allow-methods", "POST, OPTIONS");
+      r.headers.set("access-control-allow-headers", "content-type");
+      r.headers.set("access-control-max-age", "86400");
+    }
+  }
+  return r;
+}
+
+async function gestisci(req, env, fetchImpl) {
   if (req.method === "OPTIONS") return new Response(null, { status: 204 });
   if (req.method !== "POST") return risposta(405, { valida: false, messaggio: "Metodo non consentito" });
 

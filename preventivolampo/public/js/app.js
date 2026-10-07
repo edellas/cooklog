@@ -36,6 +36,8 @@ import {
 } from "./link.js";
 import * as inc from "./incassi.js";
 import { svgQr } from "./qr.js";
+import * as nativo from "./nativo.js";
+import { pianificaAvvisi } from "./avvisi.js";
 
 // ------------------------------------------------------------------
 // Stato
@@ -85,6 +87,8 @@ const state = {
   licenza: null,
   contatore: null,
   provaPresenta: false,
+  offerte: null, // piani Pro dello store (app nativa): null, "carico", "errore" o l'elenco
+  recuperato: false, // dati ripresi dalla copia di sicurezza dell'app nativa
   pro: false,
   corrente: null, // preventivo aperto nell'editor
   filtro: "tutti",
@@ -959,7 +963,10 @@ function htmlRiga(r, i) {
   </div>`;
 }
 
-const Riconoscimento = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition || null;
+// Nell'app nativa la dettatura usa il riconoscimento vocale del telefono (la WebView non ha quello del browser).
+const Riconoscimento = nativo.attiva
+  ? nativo.RiconoscimentoNativo
+  : globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition || null;
 
 function micBtn(target) {
   if (!Riconoscimento) return "";
@@ -1163,7 +1170,7 @@ function htmlAccettato(prev) {
       const app = inc.normalizzaAppuntamento(prev.appuntamento);
       return app
         ? `<div class="small accettato-data">${ICONE.calendario}<span>Inizio: <b>${esc(inc.testoAppuntamento(app))}</b></span><button class="btn small ghost" data-action="appuntamento-ics">Metti in calendario</button></div>`
-        : "";
+        : `<div class="small accettato-data">${ICONE.calendario}<span>Inizio da decidere</span><button class="btn small ghost" data-action="fissa-data">Fissa l'inizio dei lavori</button></div>`;
     })()}
     ${bloccato(prev) ? `<div class="small">Voci e prezzi sono bloccati, così non cambi per sbaglio quello che ha firmato.</div><button class="btn small ghost" data-action="sblocca" style="padding-inline:0;margin-top:4px">${ICONE.matita} Modifica comunque</button>` : ""}
   </div></div>`;
@@ -1182,7 +1189,7 @@ function viewEditor(id, q = new URLSearchParams()) {
   const fermo = bloccato(prev);
   caricaPdfLib().catch(() => {});
   import("./pdf.js").catch(() => {});
-  const rubrica = "contacts" in navigator && "select" in (navigator.contacts || {});
+  const rubrica = nativo.attiva || ("contacts" in navigator && "select" in (navigator.contacts || {}));
 
   app().innerHTML = `
     <header class="topbar">
@@ -1193,7 +1200,7 @@ function viewEditor(id, q = new URLSearchParams()) {
     </header>
     <main class="pagina">
       ${htmlBannerVariante(prev)}
-      ${htmlAccettato(prev)}
+      <div id="riquadro-accettato">${htmlAccettato(prev)}</div>
       <div id="striscia-stato">${htmlStrisciaStato(prev)}</div>
       <section class="card stack" id="sezione-incassi" ${mostraIncassi(prev) ? "" : "hidden"}>${mostraIncassi(prev) ? htmlIncassi(prev) : ""}</section>
       ${htmlVariantiDi(prev)}
@@ -1440,7 +1447,9 @@ function htmlIncassi(prev) {
     </div>
     ${
       s.accettato && s.prossima && s.prossima.data && s.prossima.data >= core.oggiISO()
-        ? `<button class="btn ghost block small" data-action="promemoria-scadenza">${ICONE.sveglia} Ricordami la scadenza del ${esc(core.formatData(s.prossima.data))} nel calendario</button>`
+        ? nativo.attiva && avvisiAttivi()
+          ? `<p class="muted small inc-avviso">${ICONE.campanella}<span>Il ${esc(core.formatData(s.prossima.data))} alle 9 ti mando un avviso sul telefono.</span></p>`
+          : `<button class="btn ghost block small" data-action="promemoria-scadenza">${ICONE.sveglia} ${nativo.attiva ? "Avvisami" : "Ricordami"} la scadenza del ${esc(core.formatData(s.prossima.data))}${nativo.attiva ? "" : " nel calendario"}</button>`
         : ""
     }
     ${
@@ -1850,6 +1859,9 @@ function htmlDate(prev) {
 function aggiornaDate() {
   const el = $("#sezione-date");
   if (el && state.corrente) el.innerHTML = htmlDate(state.corrente);
+  // la data di inizio compare anche nel riquadro "Firmato"
+  const riquadro = $("#riquadro-accettato");
+  if (riquadro && state.corrente) riquadro.innerHTML = htmlAccettato(state.corrente);
 }
 
 function foglioFissaData() {
@@ -2516,7 +2528,11 @@ function caricaPdfLib() {
   return pdfLib;
 }
 
-const BASE = () => new URL(".", location.href).href;
+// Indirizzo dei link per i clienti. Nell'app nativa le pagine stanno dentro il telefono: i link portano al sito.
+const BASE = () => (nativo.attiva ? nativo.basePubblica(CONFIG.sito) : new URL(".", location.href).href);
+// La pagina del cliente aperta qui, sul telefono dell'impresa (firma al tavolo, "come lo vede lui").
+const paginaClienteQui = (link, query = "") =>
+  new URL(`accetta.html${query}#${link.split("#")[1]}`, location.href).href;
 
 // Crea il link di accettazione e ne memorizza l'impronta, per riconoscere la conferma del cliente.
 async function preparaLink(prev) {
@@ -2585,6 +2601,11 @@ function verificaPronto(prev, riprova = null) {
 }
 
 function scaricaBlob(blob, nome) {
+  // Nell'app nativa non ci sono "download": il file va nel foglio Condividi (Salva in File, Drive, WhatsApp...).
+  if (nativo.attiva) {
+    nativo.condividiFile(blob, nome).catch(() => toast("Non riesco a preparare il file, riprova"));
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -2599,6 +2620,15 @@ function scaricaBlob(blob, nome) {
 async function anteprima() {
   const prev = state.corrente;
   if (!verificaPronto(prev, anteprima)) return;
+  // Nell'app nativa il PDF si apre nel lettore del telefono.
+  if (nativo.attiva) {
+    try {
+      await nativo.apriFile(await generaPdf(prev), core.nomeFilePdf(prev));
+    } catch (err) {
+      toast(err.message || "Errore nella creazione del PDF");
+    }
+    return;
+  }
   // La finestra si apre subito (prima delle operazioni asincrone) per evitare i blocchi popup.
   const finestra = window.open("", "_blank");
   try {
@@ -2683,7 +2713,7 @@ async function presenta(pulsante) {
     await salvaPreventivo(prev);
     registraEsportazione(prev);
     traccia("Firma al tavolo");
-    const destinazione = url.replace("accetta.html#", "accetta.html?presenta=1#");
+    const destinazione = paginaClienteQui(url, "?presenta=1");
     // L'anteprima pubblicata passa il codice in un altro modo: le basta annullare questo evento.
     if (!window.dispatchEvent(new CustomEvent("pl-presenta", { detail: destinazione, cancelable: true }))) return;
     location.href = destinazione;
@@ -2711,7 +2741,7 @@ async function invia(pulsante) {
   }
   const nomeFilePdf = core.nomeFilePdf(prev);
   const file = new File([blob], nomeFilePdf, { type: "application/pdf" });
-  const puoCondividere = Boolean(navigator.canShare && navigator.canShare({ files: [file] }));
+  const puoCondividere = nativo.attiva || Boolean(navigator.canShare && navigator.canShare({ files: [file] }));
   const testoPdf = core.testoWhatsApp(prev, state.azienda, totaliDi(prev));
   const testoLink = link ? testoConLink(prev, link) : "";
   const nome = (prev.cliente.nome || "").trim();
@@ -2750,7 +2780,7 @@ async function invia(pulsante) {
         </div>
       </details>
       <div class="grid2">
-        ${link ? `<a class="btn ghost" href="${esc(link)}" target="_blank" rel="noopener" data-action="guarda-cliente">${ICONE.occhio} Come lo vede lui</a>` : ""}
+        ${link ? `<a class="btn ghost" href="${esc(nativo.attiva ? paginaClienteQui(link) : link)}" ${nativo.attiva ? "" : 'target="_blank" rel="noopener"'} data-action="guarda-cliente">${ICONE.occhio} Come lo vede lui</a>` : ""}
         <button class="btn ghost ${link ? "" : "block"}" data-action="anteprima">${ICONE.documento} Il PDF</button>
       </div>
     </div>`,
@@ -2777,7 +2807,9 @@ async function invia(pulsante) {
   };
   azioni["invio-condividi"] = async () => {
     try {
-      await navigator.share({ files: [file], title: nomeFilePdf, text: testoPdf });
+      if (nativo.attiva) {
+        if (!(await nativo.condividiFile(blob, nomeFilePdf, { titolo: nomeFilePdf, testo: testoPdf }))) return;
+      } else await navigator.share({ files: [file], title: nomeFilePdf, text: testoPdf });
       await segnaInviato(prev);
       chiudiFoglio();
       toast("Preventivo inviato", "ok");
@@ -2823,7 +2855,8 @@ function dopoInvio() {
       <li><b>Ti arriva il suo messaggio</b><span>Tocca il link che contiene: il preventivo diventa Accettato con la sua firma</span></li>
       <li><b>L'app segue i pagamenti</b><span>Acconto, saldo e promemoria quando qualcuno è in ritardo</span></li>
     </ol>
-    <p class="muted small" style="margin:4px 0 14px">Se non risponde entro ${giorni} giorni te lo ricordo nella pagina iniziale.</p>
+    <p class="muted small" style="margin:4px 0 14px">Se non risponde entro ${giorni} giorni ${nativo.attiva && avvisiAttivi() ? "ti mando un avviso sul telefono" : "te lo ricordo nella pagina iniziale"}.</p>
+    ${nativo.attiva && !avvisiAttivi() ? `<button class="btn big block" data-action="attiva-avvisi" style="margin-bottom:10px">${ICONE.campanella} Avvisami anche sul telefono</button>` : ""}
     <button class="btn primary big block" data-action="chiudi-foglio">Ho capito</button>`,
     { classe: "piccolo" },
   );
@@ -3081,8 +3114,12 @@ function applicaAspetto() {
   else delete r.dataset.theme;
   if (preferenza.get("pl-sole") === "1") r.dataset.contrasto = "sole";
   else delete r.dataset.contrasto;
+  // Nell'app nativa ora e batteria in alto seguono il tema: chiare sul fondo scuro, scure su quello chiaro.
+  if (nativo.attiva)
+    nativo.barre(tema === "scuro" || (tema !== "chiaro" && matchMedia("(prefers-color-scheme: dark)").matches));
 }
 applicaAspetto();
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", applicaAspetto);
 
 // ------------------------------------------------------------------
 // Lista materiali per il fornitore
@@ -3201,7 +3238,7 @@ function apriDaTesto(testo) {
 
 async function incollaMessaggio() {
   try {
-    if (apriDaTesto(await navigator.clipboard.readText())) return;
+    if (apriDaTesto(nativo.attiva ? await nativo.incolla() : await navigator.clipboard.readText())) return;
   } catch {
     /* lettura degli appunti negata: si incolla a mano */
   }
@@ -3220,7 +3257,12 @@ async function incollaMessaggio() {
 
 function aiutoAltroDispositivo(numero) {
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const standalone = nativo.attiva || matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  // Sul telefono, nel browser: chi ha l'app la apre da qui con lo stesso link (preventivolampo://).
+  const telefono = !nativo.attiva && /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+  const nellApp = telefono
+    ? `<a class="btn primary block" href="preventivolampo://app.html${esc(location.hash)}">${ICONE.avanti} Apri nell'app PreventivoLampo</a>`
+    : "";
   const passi =
     ios && !standalone
       ? `<ol class="small" style="margin:8px 0 0;padding-left:20px;line-height:1.6"><li>Tocca <b>Copia il link</b> qui sotto</li><li>Apri PreventivoLampo dalla schermata Home</li><li>Tocca <b>Incolla il messaggio</b> nella pagina iniziale</li></ol>`
@@ -3230,6 +3272,7 @@ function aiutoAltroDispositivo(numero) {
       ? `Sei nel browser, non nell'app: per questo non trovo il preventivo n. ${esc(numero)}.`
       : `Il preventivo n. ${esc(numero)} non è su questo telefono. Apri il messaggio sul telefono dove l'hai creato.`
   }${passi}</div></div>
+  ${nellApp}
   ${ios && !standalone ? `<button class="btn block" data-action="copia-link-pagina">${ICONE.copia} Copia il link</button>` : ""}`;
 }
 
@@ -3260,12 +3303,95 @@ function paywall(motivo) {
     `${titoloFoglio(titoli[motivo] || "Passa a Pro")}
     <p class="muted" style="margin:-6px 0 14px">Basta <b>un lavoro in più all'anno</b> per ripagare l'abbonamento.</p>
     <ul class="vantaggi">${VANTAGGI_PRO.map((v) => `<li>${esc(v)}</li>`).join("")}</ul>
-    <a class="btn primary big block" href="#/pro" style="margin-top:18px">Vedi i piani da ${esc(CONFIG.prezzi.annuale.importo.replace(" €", ""))} €/anno</a>`,
+    <a class="btn primary big block" href="#/pro" style="margin-top:18px">${nativo.attiva ? "Vedi i piani" : `Vedi i piani da ${esc(CONFIG.prezzi.annuale.importo.replace(" €", ""))} €/anno`}</a>`,
   );
+}
+
+// ------------------------------------------------------------------
+// Acquisti nell'app nativa: App Store e Google Play (tramite RevenueCat), mai link a pagamenti esterni
+// ------------------------------------------------------------------
+const chiaveNegozio = () =>
+  (nativo.piattaforma === "ios"
+    ? CONFIG.app?.revenuecatIos
+    : nativo.piattaforma === "android"
+      ? CONFIG.app?.revenuecatAndroid
+      : "") || "";
+const acquistiNellApp = () => nativo.attiva && Boolean(chiaveNegozio());
+const nomeNegozio = () => (nativo.piattaforma === "ios" ? "App Store" : "Google Play");
+
+function applicaCliente(info) {
+  const diritto = info?.entitlements?.active?.[CONFIG.app?.entitlement || "pro"];
+  const prima = state.pro;
+  if (diritto) {
+    state.licenza = {
+      valida: true,
+      fonte: "negozio",
+      chiave: "",
+      email: "",
+      scadenza: diritto.expirationDate || null,
+      verificataIl: Date.now(),
+      gestione: urlSicuro(info.managementURL || "") || "",
+    };
+    db.set("licenza", state.licenza);
+  } else if (state.licenza?.fonte === "negozio") {
+    state.licenza = null;
+    db.set("licenza", null);
+  }
+  state.pro = isPro(state.licenza, CONFIG);
+  return prima !== state.pro;
+}
+
+async function aggiornaAcquisti() {
+  if (!acquistiNellApp()) return;
+  try {
+    const cliente = await nativo.negozioCliente(chiaveNegozio());
+    if (cliente && applicaCliente(cliente) && !state.corrente) render();
+  } catch {
+    /* senza rete resta lo stato salvato (con la tolleranza offline) */
+  }
+}
+
+async function caricaOfferte() {
+  state.offerte = "carico";
+  try {
+    const offerte = await nativo.negozioOfferte(chiaveNegozio());
+    const current = offerte?.current;
+    state.offerte = current ? [current.annual, current.monthly, current.lifetime].filter(Boolean) : [];
+  } catch {
+    state.offerte = "errore";
+  }
+  const el = $("#piani");
+  if (el && rotta().parti[0] === "pro") el.innerHTML = pianiNegozio();
+}
+
+function pianiNegozio() {
+  if (!acquistiNellApp())
+    return `<div class="banner info"><span class="ico">${ICONE.info}</span><div>Gli abbonamenti dall'app non sono ancora attivi. Se hai già Pro, attivalo con il tuo codice qui sotto.</div></div>`;
+  if (state.offerte === "errore")
+    return `<div class="banner warn"><span class="ico">${ICONE.attenzione}</span><div>Non riesco a caricare i prezzi da ${nomeNegozio()}: controlla la connessione.</div><button class="btn small" data-action="ricarica-offerte">Riprova</button></div>`;
+  if (!Array.isArray(state.offerte))
+    return `<div class="scheletro" style="height:84px"></div><div class="scheletro" style="height:84px"></div>`;
+  if (!state.offerte.length)
+    return `<div class="banner info"><span class="ico">${ICONE.info}</span><div>In questo momento non ci sono piani disponibili.</div></div>`;
+  const nomi = { ANNUAL: ["Annuale", "Consigliato"], MONTHLY: ["Mensile", ""], LIFETIME: ["A vita", "Una volta sola"] };
+  return state.offerte
+    .map((pac) => {
+      const [nome, etichetta] = nomi[pac.packageType] || [pac.product?.title || "Pro", ""];
+      const annuale = pac.packageType === "ANNUAL";
+      return `<div class="piano ${annuale ? "consigliato" : ""}" data-action="acquista" data-pacchetto="${esc(pac.identifier)}" role="button" tabindex="0">
+        ${etichetta ? `<span class="etichetta">${esc(etichetta)}</span>` : ""}
+        <div class="info"><div class="muted small" style="font-weight:700">${esc(nome)}</div>
+          <div><span class="prezzo">${esc(pac.product?.priceString || "")}</span></div></div>
+        <span class="btn small ${annuale ? "primary" : ""}">Scegli</span>
+      </div>`;
+    })
+    .join("");
 }
 
 function viewPro(q) {
   const lic = state.licenza;
+  const daNegozio = lic?.fonte === "negozio";
+  if (acquistiNellApp() && !state.pro && state.offerte == null) caricaOfferte();
   const piani = [
     ["annuale", "Annuale", "Consigliato"],
     ["mensile", "Mensile", ""],
@@ -3286,9 +3412,17 @@ function viewPro(q) {
     .join("");
 
   const statoLicenza = state.pro
-    ? `<div class="banner ok"><span class="ico">${ICONE.stella}</span><div><b>Pro attivo</b>${lic.email ? ` · ${esc(lic.email)}` : ""}${lic.scadenza ? `<br><span class="small">Rinnovo/scadenza: ${esc(new Date(lic.scadenza).toLocaleDateString("it-IT"))}</span>` : ""}</div></div>
-       ${CONFIG.portaleClienti ? `<a class="btn block" href="${esc(urlSicuro(CONFIG.portaleClienti))}" target="_blank" rel="noopener">Gestisci abbonamento e fatture</a>` : ""}
-       <button class="btn block danger" data-action="rimuovi-licenza">Rimuovi licenza da questo dispositivo</button>`
+    ? `<div class="banner ok"><span class="ico">${ICONE.stella}</span><div><b>Pro attivo</b>${daNegozio ? ` · ${nomeNegozio()}` : lic.email ? ` · ${esc(lic.email)}` : ""}${lic.scadenza ? `<br><span class="small">Rinnovo/scadenza: ${esc(new Date(lic.scadenza).toLocaleDateString("it-IT"))}</span>` : ""}</div></div>
+       ${
+         daNegozio
+           ? lic.gestione
+             ? `<a class="btn block" href="${esc(lic.gestione)}">Gestisci abbonamento</a>`
+             : ""
+           : CONFIG.portaleClienti && !nativo.attiva
+             ? `<a class="btn block" href="${esc(urlSicuro(CONFIG.portaleClienti))}" target="_blank" rel="noopener">Gestisci abbonamento e fatture</a>`
+             : ""
+       }
+       ${daNegozio ? "" : `<button class="btn block danger" data-action="rimuovi-licenza">Rimuovi licenza da questo dispositivo</button>`}`
     : "";
 
   app().innerHTML = `
@@ -3302,17 +3436,32 @@ function viewPro(q) {
           : `
       <section class="pro-hero"><div class="stellina">${ICONE.stella}</div><h2>Vinci più lavori</h2><p>Preventivi illimitati, il tuo logo, foto e firma del cliente.</p></section>
       <section class="card"><ul class="vantaggi">${VANTAGGI_PRO.map((v) => `<li>${esc(v)}</li>`).join("")}</ul></section>
-      <div class="piani">${htmlPiani}</div>
-      <p class="muted small" style="text-align:center;margin:0">Prezzi IVA inclusa · Pagamento sicuro · Disdici quando vuoi</p>`
+      <div class="piani" id="piani">${nativo.attiva ? pianiNegozio() : htmlPiani}</div>
+      ${
+        nativo.attiva
+          ? acquistiNellApp()
+            ? `<p class="muted small" style="text-align:center;margin:0">Paghi con il tuo account ${nomeNegozio()} · Disdici quando vuoi dalle impostazioni del telefono</p>
+      <button class="btn ghost block" data-action="ripristina-acquisti">Ripristina acquisti</button>`
+            : ""
+          : `<p class="muted small" style="text-align:center;margin:0">Prezzi IVA inclusa · Pagamento sicuro · Disdici quando vuoi</p>`
+      }`
       }
-      <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.lucchetto}</span><h2>Hai un codice licenza?</h2></div>
+      ${
+        daNegozio
+          ? ""
+          : `<section class="card stack">
+        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.lucchetto}</span><h2>${nativo.attiva ? "Hai già Pro dal sito?" : "Hai un codice licenza?"}</h2></div>
         <input id="chiave" placeholder="Incolla qui il codice ricevuto via email" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(lic && !state.pro ? lic.chiave : "")}" aria-label="Codice licenza">
         <button class="btn primary block" data-action="attiva-licenza">Attiva Pro</button>
         <div id="esito-licenza" class="small" role="status"></div>
-      </section>
+      </section>`
+      }
     </main>`;
 }
+
+// La verifica della licenza è sul sito: nell'app nativa l'indirizzo relativo porterebbe al telefono stesso.
+const configLicenza = () =>
+  nativo.attiva ? { ...CONFIG, apiLicenza: new URL(CONFIG.apiLicenza, BASE()).href } : CONFIG;
 
 async function attivaLicenza() {
   const chiave = $("#chiave").value.trim();
@@ -3323,7 +3472,7 @@ async function attivaLicenza() {
   }
   esito.textContent = "Verifica in corso...";
   try {
-    const lic = await verifica(chiave, CONFIG);
+    const lic = await verifica(chiave, configLicenza());
     if (lic.valida) {
       state.licenza = lic;
       state.pro = isPro(lic, CONFIG);
@@ -3565,7 +3714,7 @@ function viewImpostazioni() {
   const campo = (k, etichetta, ph = "", tipo = "text", extra = "") =>
     `<label class="campo">${etichetta}<input data-az="${k}" type="${tipo}" placeholder="${esc(ph)}" value="${esc(a[k])}" ${extra}></label>`;
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const standalone = nativo.attiva || matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   const rimasti = core.pdfRimasti(state.contatore, CONFIG.pdfGratisAlMese);
   const proBadge = state.pro ? "" : ` <span class="badge pro">PRO</span>`;
   const logo = immagineSicura(a.logo);
@@ -3724,13 +3873,23 @@ function viewImpostazioni() {
         <label class="check"><span class="switch"><input type="checkbox" id="pref-sole" ${preferenza.get("pl-sole") === "1" ? "checked" : ""}><span></span></span><span><b>Modalità sole</b><br><span class="small muted">Contrasto massimo e testi più grandi, per leggere bene all'aperto</span></span></label>`,
       )}
 
-      ${sezione(
-        "promemoria",
-        "Promemoria",
-        "Chi deve pagare, chi richiamare",
-        `<p class="muted small" style="margin:0">L'app non manda notifiche: per non dimenticarti di nessuno, mettiti un appuntamento fisso nel calendario del telefono.</p>
+      ${
+        nativo.attiva
+          ? sezione(
+              "promemoria",
+              "Avvisi sul telefono",
+              avvisiAttivi() ? "Attivi: ti avviso io" : "Spenti",
+              `<label class="check"><span class="switch"><input type="checkbox" id="pref-avvisi" ${avvisiAttivi() ? "checked" : ""}><span></span></span><span><b>Avvisami sul telefono</b><br><span class="small muted">Il giorno di una scadenza, la sera prima di un lavoro, quando un cliente non risponde o un preventivo sta per scadere</span></span></label>
+        <label class="check"><span class="switch"><input type="checkbox" id="pref-avvisi-conti" ${preferenza.get("pl-avvisi-conti") === "1" ? "checked" : ""}><span></span></span><span><b>Ogni venerdì alle 17:30</b><br><span class="small muted">5 minuti per i conti: chi deve pagare, chi richiamare</span></span></label>`,
+            )
+          : sezione(
+              "promemoria",
+              "Promemoria",
+              "Chi deve pagare, chi richiamare",
+              `<p class="muted small" style="margin:0">L'app non manda notifiche: per non dimenticarti di nessuno, mettiti un appuntamento fisso nel calendario del telefono.</p>
         <button class="btn block" data-action="promemoria-conti">${ICONE.sveglia} Ogni venerdì alle 17:30: 5 minuti per i conti</button>`,
-      )}
+            )
+      }
 
       ${sezione(
         "dati",
@@ -3740,7 +3899,7 @@ function viewImpostazioni() {
           : "Nessuna copia: i dati sono solo su questo telefono",
         `${state.installEvento ? `<button class="btn soft block" data-action="installa">${ICONE.scarica} Installa l'app sul telefono</button>` : ""}
         ${isIos && !standalone ? `<div class="banner info"><span class="ico">${ICONE.info}</span><div>Per installare l'app su iPhone: tocca <b>Condividi</b> e poi <b>Aggiungi alla schermata Home</b>.</div></div>` : ""}
-        <p class="muted small" style="margin:0">I preventivi restano solo su questo telefono. Salva una copia ogni tanto e prima di cambiare telefono: puoi mandarla a te stesso su WhatsApp o salvarla su Drive.</p>
+        <p class="muted small" style="margin:0">I preventivi restano solo su questo telefono${nativo.attiva ? " (l'app ne tiene anche una copia automatica nella sua memoria)" : ""}. Salva una copia ogni tanto e prima di cambiare telefono: puoi mandarla a te stesso su WhatsApp o salvarla su Drive.</p>
         <div class="grid2">
           <button class="btn" data-action="backup-esporta">${ICONE.scarica} Salva una copia</button>
           <label class="btn">Ripristina<input type="file" accept="application/json,.json" id="file-backup" hidden></label>
@@ -3750,7 +3909,7 @@ function viewImpostazioni() {
 
       <button class="btn soft block" data-action="consiglia">${ICONE.condividi} Consiglia l'app a un collega</button>
       <div class="row wrap small" style="justify-content:center;gap:16px;margin-top:4px">
-        <a href="privacy.html">Privacy</a><a href="termini.html">Termini</a><a href="mailto:${esc(CONFIG.emailSupporto)}">Assistenza</a>
+        <a href="${nativo.attiva ? esc(BASE()) : ""}privacy.html">Privacy</a><a href="${nativo.attiva ? esc(BASE()) : ""}termini.html">Termini</a><a href="mailto:${esc(CONFIG.emailSupporto)}">Assistenza</a>
       </div>
     </main>`;
   ombraTopbar();
@@ -3822,6 +3981,15 @@ function suInputImpostazioni(e) {
   if (el.id === "pref-sole") {
     preferenza.set("pl-sole", el.checked ? "1" : "");
     return applicaAspetto();
+  }
+  if (el.id === "pref-avvisi") {
+    if (e.type !== "change") return;
+    return el.checked ? attivaAvvisi() : spegniAvvisi();
+  }
+  if (el.id === "pref-avvisi-conti") {
+    if (e.type !== "change") return;
+    preferenza.set("pl-avvisi-conti", el.checked ? "1" : "");
+    return el.checked ? attivaAvvisi("Ogni venerdì alle 17:30 ti ricordo i conti") : aggiornaAvvisi();
   }
   const k = el.dataset.az;
   if (!k || !CAMPI_AZIENDA.has(k)) return;
@@ -4030,12 +4198,22 @@ const azioni = {
   "da-rubrica": async () => {
     const prev = state.corrente;
     try {
-      const [contatto] = await navigator.contacts.select(["name", "tel"], { multiple: false });
-      if (!contatto) return;
-      const nome = (contatto.name || [])[0] || "";
-      const tel = (contatto.tel || [])[0] || "";
+      let nome = "";
+      let tel = "";
+      let email = "";
+      if (nativo.attiva) {
+        const c = await nativo.scegliContatto();
+        if (!c) return;
+        ({ nome, telefono: tel, email } = c);
+      } else {
+        const [contatto] = await navigator.contacts.select(["name", "tel"], { multiple: false });
+        if (!contatto) return;
+        nome = (contatto.name || [])[0] || "";
+        tel = (contatto.tel || [])[0] || "";
+      }
       if (nome) prev.cliente.nome = nome;
       if (tel) prev.cliente.telefono = tel;
+      if (email && !prev.cliente.email) prev.cliente.email = email;
       prev.clienteId = null;
       salvaDopo(prev);
       viewEditor(prev.id);
@@ -4158,6 +4336,37 @@ const azioni = {
     window.open(url, "_blank", "noopener");
   },
   "attiva-licenza": () => attivaLicenza(),
+  acquista: async (el) => {
+    const pacchetto = Array.isArray(state.offerte) && state.offerte.find((x) => x.identifier === el.dataset.pacchetto);
+    if (!pacchetto) return;
+    traccia("Acquisto nell'app", { piano: pacchetto.packageType });
+    try {
+      const cliente = await nativo.negozioAcquista(chiaveNegozio(), pacchetto);
+      if (cliente) applicaCliente(cliente);
+      if (state.pro) {
+        vibra(VIBRA.successo);
+        toast("Pro attivato. Buon lavoro!", "ok");
+      }
+    } catch (err) {
+      if (!err?.userCancelled) toast(`Acquisto non riuscito con ${nomeNegozio()}: riprova tra poco`);
+    }
+    viewPro(new URLSearchParams());
+  },
+  "ripristina-acquisti": async () => {
+    try {
+      const cliente = await nativo.negozioRipristina(chiaveNegozio());
+      if (!cliente) return;
+      applicaCliente(cliente);
+      toast(
+        state.pro ? "Pro ripristinato" : `Nessun abbonamento Pro su questo account ${nomeNegozio()}`,
+        state.pro ? "ok" : "",
+      );
+    } catch {
+      toast(`Non riesco a contattare ${nomeNegozio()}, riprova tra poco`);
+    }
+    viewPro(new URLSearchParams());
+  },
+  "ricarica-offerte": () => caricaOfferte(),
   "rimuovi-licenza": async () => {
     if (
       !(await chiedi({
@@ -4188,7 +4397,14 @@ const azioni = {
     const nome = `preventivolampo-copia-${core.oggiISO()}.json`;
     const file = new File([JSON.stringify(dati)], nome, { type: "application/json" });
     let fatto = false;
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    if (nativo.attiva) {
+      try {
+        if (!(await nativo.condividiFile(file, nome, { titolo: "Copia dei miei preventivi" }))) return;
+        fatto = true;
+      } catch {
+        return toast("Non riesco a preparare la copia, riprova");
+      }
+    } else if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: "Copia dei miei preventivi" });
         fatto = true;
@@ -4203,7 +4419,9 @@ const azioni = {
   },
   consiglia: async () => {
     const testo = `Uso ${CONFIG.nomeProdotto} per fare i preventivi dal telefono in un minuto: il cliente li accetta e firma da WhatsApp. Provalo gratis:`;
-    if (navigator.share) {
+    if (nativo.attiva) {
+      await nativo.condividiTesto({ titolo: CONFIG.nomeProdotto, testo, url: CONFIG.sito }).catch(() => {});
+    } else if (navigator.share) {
       try {
         await navigator.share({ title: CONFIG.nomeProdotto, text: testo, url: CONFIG.sito });
       } catch {
@@ -4262,11 +4480,16 @@ const azioni = {
     await salvaIncasso(prev);
     foglioSollecito(0);
   },
-  // L'app non può mandare notifiche da sola (niente server): il promemoria lo fa il calendario del telefono.
-  "promemoria-scadenza": () => {
+  // Sul web l'app non può mandare notifiche da sola (niente server): il promemoria lo fa il calendario.
+  // Nell'app nativa invece gli avvisi li programma il telefono.
+  "promemoria-scadenza": async () => {
     const prev = state.corrente;
     const s = incassoDi(prev);
     if (!s.prossima || !s.prossima.data) return;
+    if (nativo.attiva) {
+      if (await attivaAvvisi(`Il ${core.formatData(s.prossima.data)} alle 9 ti avviso io`)) aggiornaIncassi();
+      return;
+    }
     const ics = inc.creaIcs({
       id: `${prev.id}-scadenza`,
       titolo: `Controlla il pagamento di ${core.nomeCliente(prev.cliente)}: ${core.formatEuro(s.prossima.importo)}`,
@@ -4319,6 +4542,10 @@ const azioni = {
     toast(n === 1 ? "1 pagamento esportato" : `${n} pagamenti esportati`, "ok");
   },
   "promemoria-conti": () => {
+    if (nativo.attiva) {
+      preferenza.set("pl-avvisi-conti", "1");
+      return attivaAvvisi("Ogni venerdì alle 17:30 ti ricordo i conti");
+    }
     // Il prossimo venerdì: 5 minuti per i conti, ogni settimana.
     const oggi = new Date();
     const giorni = (5 - oggi.getDay() + 7) % 7 || 7;
@@ -4337,6 +4564,12 @@ const azioni = {
   "copia-link-pagina": async () =>
     toast((await copiaTesto(location.href)) ? "Link copiato: ora aprilo nell'app" : "Copia non riuscita"),
   "incolla-messaggio": () => incollaMessaggio(),
+  "attiva-avvisi": async () => {
+    if (await attivaAvvisi()) {
+      chiudiFoglio();
+      if (state.corrente) aggiornaIncassi();
+    }
+  },
   "togli-pagamento": async (el) => {
     const prev = state.corrente;
     const i = incassoModificabile(prev);
@@ -4408,20 +4641,28 @@ const azioni = {
     await salvaPreventivo(prev);
     aggiornaDate();
   },
-  "appuntamento-ics": () => {
+  "appuntamento-ics": async () => {
     const prev = state.corrente;
     const a = inc.normalizzaAppuntamento(prev.appuntamento);
     if (!a) return;
     const c = prev.cliente;
-    const ics = inc.creaIcs({
+    const evento = {
       id: prev.id,
       titolo: inc.titoloAgenda(prev),
       data: a.data,
       fascia: a.fascia,
       luogo: prev.luogo || [c.indirizzo, c.citta].filter(Boolean).join(", "),
       descrizione: [`Preventivo n. ${prev.numero}`, c.telefono ? `Tel. ${c.telefono}` : ""].filter(Boolean).join("\n"),
-    });
-    scaricaBlob(new Blob([ics], { type: "text/calendar" }), nomeFile("Lavoro", prev, "ics"));
+    };
+    // Nell'app nativa si apre l'evento già compilato nel Calendario del telefono.
+    if (nativo.attiva) {
+      try {
+        if (await nativo.creaEvento({ ...evento, ...inc.orariEvento(a.data, a.fascia), avvisoMinuti: -720 })) return;
+      } catch {
+        /* calendario non disponibile: si passa al file */
+      }
+    }
+    scaricaBlob(new Blob([inc.creaIcs(evento)], { type: "text/calendar" }), nomeFile("Lavoro", prev, "ics"));
   },
   "clausola-pagamenti": async () => {
     const a = state.azienda;
@@ -4458,7 +4699,7 @@ document.addEventListener("change", (e) => {
   if (state.corrente) {
     if (e.target.tagName === "SELECT" || e.target.dataset.inc || e.target.dataset.disp) suInputEditor(e);
     suChangeEditor(e);
-  } else if (e.target.dataset.az || e.target.id === "pref-sole") suInputImpostazioni(e);
+  } else if (e.target.dataset.az || e.target.id?.startsWith("pref-")) suInputImpostazioni(e);
 });
 
 // Dopo aver cambiato la fine lavori la sezione Incassi si ridisegna quando il focus esce dalla
@@ -4507,12 +4748,138 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // ------------------------------------------------------------------
+// App nativa (iOS e Android): avvisi, copia di sicurezza, tasto Indietro, link che arrivano da fuori
+// ------------------------------------------------------------------
+const avvisiAttivi = () => preferenza.get("pl-avvisi") === "1";
+
+async function aggiornaAvvisi() {
+  if (!nativo.attiva) return;
+  const lista = avvisiAttivi()
+    ? pianificaAvvisi(state.preventivi, {
+        statoDi: incassoDi,
+        giorniRicontatto: state.azienda.giorniRicontatto,
+        conti: preferenza.get("pl-avvisi-conti") === "1",
+      })
+    : [];
+  await nativo.programmaAvvisi(lista).catch(() => {});
+}
+
+async function attivaAvvisi(messaggio = "Ti avviso io: scadenze, lavori di domani, clienti da richiamare") {
+  const permesso = await nativo.statoAvvisi(true).catch(() => "denied");
+  const inImpostazioni = !state.corrente && rotta().parti[0] === "impostazioni";
+  if (permesso !== "granted") {
+    preferenza.set("pl-avvisi", "");
+    toast("Le notifiche sono bloccate: attivale nelle impostazioni del telefono, alla voce PreventivoLampo");
+    if (inImpostazioni) viewImpostazioni();
+    return false;
+  }
+  preferenza.set("pl-avvisi", "1");
+  await aggiornaAvvisi();
+  vibra(VIBRA.successo);
+  toast(messaggio, "ok");
+  if (inImpostazioni) viewImpostazioni();
+  return true;
+}
+
+async function spegniAvvisi() {
+  preferenza.set("pl-avvisi", "");
+  await aggiornaAvvisi();
+  toast("Avvisi spenti");
+  if (!state.corrente && rotta().parti[0] === "impostazioni") viewImpostazioni();
+}
+
+// Ogni modifica ai dati (con un attimo di pausa) aggiorna la copia di sicurezza e gli avvisi.
+let timerCopia = null;
+function dopoModifica() {
+  clearTimeout(timerCopia);
+  timerCopia = setTimeout(async () => {
+    try {
+      const dati = await db.esporta();
+      dati.licenza = await db.get("licenza", null);
+      await nativo.salvaCopia(dati);
+    } catch {
+      /* ci riprova alla prossima modifica */
+    }
+    aggiornaAvvisi();
+  }, 2500);
+}
+
+function osservaModifiche() {
+  for (const metodo of ["salva", "elimina", "svuota", "set"]) {
+    const originale = db[metodo];
+    db[metodo] = async function (...argomenti) {
+      const esito = await originale.apply(this, argomenti);
+      dopoModifica();
+      return esito;
+    };
+  }
+}
+
+// iOS e Android possono svuotare la memoria della WebView: se l'archivio è vuoto si riparte dalla copia.
+async function recuperaDaCopia() {
+  const [azienda, preventivi] = await Promise.all([db.get("azienda", null), db.tutti("preventivi")]);
+  if (azienda || preventivi.length) return false;
+  const copia = await nativo.leggiCopia();
+  if (!copia) return false;
+  try {
+    await db.importa(copia);
+    const lic = copia.licenza;
+    if (lic && typeof lic === "object" && typeof lic.valida === "boolean") await db.set("licenza", lic);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Tasto Indietro di Android: prima si chiude il foglio aperto, poi si torna indietro, dalla home si esce.
+function tastoIndietro(puoTornare) {
+  if ($("#foglio")) return chiudiFoglio();
+  const pagina = rotta().parti[0] || "";
+  if (pagina === "benvenuto" && (state.passoOnb || 1) > 1) {
+    state.passoOnb -= 1;
+    return transizione(viewBenvenuto);
+  }
+  if (pagina === "" || pagina === "benvenuto") return nativo.riduci();
+  if (puoTornare) history.back();
+  else vai("#/");
+}
+
+// Conferma firmata o avviso di pagamento toccato in WhatsApp (link del sito o preventivolampo://).
+function apriLinkDaFuori(url) {
+  chiudiFoglio(true);
+  if (!apriDaTesto(url)) vai("#/");
+}
+
+function avviaNativa() {
+  nativo.pronto();
+  nativo.alTastoIndietro(tastoIndietro);
+  nativo.alLinkAperto(apriLinkDaFuori);
+  nativo.alToccoAvviso((r) => {
+    chiudiFoglio(true);
+    vai(r);
+  });
+  nativo.alTornoInPrimoPiano(() => {
+    aggiornaAvvisi();
+    aggiornaAcquisti();
+  });
+  aggiornaAvvisi();
+  aggiornaAcquisti();
+  if (state.recuperato) toast("Ho ripreso i tuoi preventivi dalla copia di sicurezza", "ok");
+}
+
+// ------------------------------------------------------------------
 // Avvio
 // ------------------------------------------------------------------
 async function avvio() {
+  if (nativo.attiva) {
+    nativo.installa();
+    osservaModifiche();
+    state.recuperato = await recuperaDaCopia().catch(() => false);
+  }
   try {
     await caricaTutto();
   } catch {
+    nativo.pronto();
     app().innerHTML = `<main class="pagina"><div class="card vuoto"><h3>Impossibile aprire l'archivio</h3><p class="muted">Il browser blocca il salvataggio dei dati (forse sei in navigazione privata). Apri l'app in una finestra normale.</p></div></main>`;
     return;
   }
@@ -4544,9 +4911,10 @@ async function avvio() {
   }
 
   render();
+  if (nativo.attiva) avviaNativa();
 
   if (state.licenza) {
-    rivalidaSeServe(state.licenza, CONFIG, (l) => db.set("licenza", l)).then((lic) => {
+    rivalidaSeServe(state.licenza, configLicenza(), (l) => db.set("licenza", l)).then((lic) => {
       const prima = state.pro;
       state.licenza = lic;
       state.pro = isPro(lic, CONFIG);
@@ -4554,7 +4922,12 @@ async function avvio() {
     });
   }
 
-  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+  // Nell'app nativa i file sono già sul telefono: il service worker serve solo sul web.
+  if (
+    !nativo.attiva &&
+    "serviceWorker" in navigator &&
+    (location.protocol === "https:" || location.hostname === "localhost")
+  ) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   }
 }

@@ -30,6 +30,7 @@ const browser = [
   "MutationObserver",
   "requestAnimationFrame",
   "CustomEvent",
+  "sessionStorage",
   "performance",
   "Element",
   "HTMLAnchorElement",
@@ -44,7 +45,16 @@ const browser = [
 const node = ["process"];
 
 export default [
-  { ignores: ["public/vendor/**", "public/modelli/**"] },
+  {
+    ignores: [
+      "public/vendor/**",
+      "public/modelli/**",
+      "mobile/node_modules/**",
+      "mobile/www/**",
+      "mobile/android/**",
+      "mobile/ios/**",
+    ],
+  },
   {
     files: ["**/*.js", "**/*.mjs"],
     languageOptions: {

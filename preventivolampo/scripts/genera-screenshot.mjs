@@ -37,7 +37,8 @@ await new Promise((r) => server.listen(0, r));
 const BASE = `http://localhost:${server.address().port}/`;
 
 const oggi = new Date();
-const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const iso = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const prev = {
   id: "esempio-og",
   numero: `${oggi.getFullYear()}-004`,
