@@ -3,7 +3,7 @@ import { db } from "./store.js";
 import * as core from "./core.js";
 import { MESTIERI, trovaMestiere, vociListino } from "./mestieri.js";
 import { isPro, verifica, rivalidaSeServe } from "./licenza.js";
-import { ICONE } from "./icone.js";
+import { ICONE, ICONE_MESTIERI } from "./icone.js";
 import {
   $,
   $$,
@@ -16,6 +16,7 @@ import {
   titoloFoglio,
   chiedi,
   avatar,
+  VIBRA,
   transizione,
   copiaTesto,
 } from "./ui.js";
@@ -57,6 +58,7 @@ const AZIENDA_DEFAULT = {
   intestatarioIban: "",
   linkPagamento: "",
   tipoAnticipo: "acconto", // "caparra" = caparra confirmatoria (art. 1385 c.c.)
+  accontoDefault: 30, // % chiesta all'accettazione nei nuovi preventivi
   giorniSaldo: 0, // giorni dalla fine lavori per pagare il saldo (0 = a fine lavori)
   tassoMoraPrivati: "", // tasso legale (art. 1284 c.c.), facoltativo
   tassoMoraImprese: "", // tasso del D.Lgs. 231/2002 per clienti con partita IVA, facoltativo
@@ -68,7 +70,7 @@ const AZIENDA_DEFAULT = {
   prefisso: "",
   validitaGiorni: 30,
   giorniRicontatto: 3,
-  pagamento: "Acconto del 30% all'accettazione, saldo tramite bonifico bancario.",
+  pagamento: "Bonifico bancario.",
   condizioni:
     "Il preventivo comprende esclusivamente le voci indicate. Eventuali lavori aggiuntivi o imprevisti saranno concordati e preventivati a parte.",
   colore: "#1d4ed8",
@@ -82,6 +84,7 @@ const state = {
   listino: [],
   licenza: null,
   contatore: null,
+  provaPresenta: false,
   pro: false,
   corrente: null, // preventivo aperto nell'editor
   filtro: "tutti",
@@ -91,6 +94,14 @@ const state = {
   mestiereScelto: "",
   mestiereSuggerito: "",
   apriModello: false,
+  compitiTutti: false,
+  festa: null, // preventivo appena firmato: si festeggia all'apertura
+  righeAperte: new Set(), // voci con i dettagli aperti
+  altreAperte: new Set(), // preventivi con "Altre opzioni" aperte
+  accontoAltro: new Set(), // preventivi con l'anticipo personalizzato in modifica
+  sbloccati: new Set(), // preventivi firmati sbloccati apposta per modificarli
+  senzaPrezzoOk: new Set(), // preventivi da mandare anche con voci a 0 €
+  impAperte: new Set(), // sezioni aperte nelle impostazioni
 };
 
 const app = () => $("#app");
@@ -201,13 +212,14 @@ function caricaStatistiche() {
 // Persistenza
 // ------------------------------------------------------------------
 async function caricaTutto() {
-  const [azienda, preventivi, clienti, listino, licenza, contatore] = await Promise.all([
+  const [azienda, preventivi, clienti, listino, licenza, contatore, provaPresenta] = await Promise.all([
     db.get("azienda", null),
     db.tutti("preventivi"),
     db.tutti("clienti"),
     db.tutti("listino"),
     db.get("licenza", null),
     db.get("contatore", null),
+    db.get("prova-presenta", false),
   ]);
   state.azienda = { ...AZIENDA_DEFAULT, ...(azienda || {}) };
   // Preventivi accettati prima del registro incassi: "da aggiornare", senza falsi scaduti.
@@ -224,6 +236,7 @@ async function caricaTutto() {
   state.listino = listino;
   state.licenza = licenza;
   state.contatore = contatore;
+  state.provaPresenta = provaPresenta === true;
   state.pro = isPro(licenza, CONFIG);
 }
 
@@ -419,6 +432,11 @@ async function eseguiRender() {
     vai("#/benvenuto");
     return;
   }
+  // Un preventivo aperto per sbaglio e lasciato vuoto non resta in lista (e libera il suo numero).
+  const lasciato = state.corrente;
+  if (lasciato && vuotoDaButtare(lasciato) && !(pagina === "p" && parti[1] === lasciato.id)) {
+    await eliminaPreventivo(lasciato);
+  }
   state.corrente = null;
   const senzaTab = ["p", "benvenuto", "accettazione", "pagamento", "pro"].includes(pagina);
   document.body.classList.toggle("no-tabbar", senzaTab);
@@ -440,6 +458,32 @@ async function eseguiRender() {
   });
 }
 
+function vuotoDaButtare(p) {
+  const c = p.cliente || {};
+  return (
+    p.stato === "bozza" &&
+    !p.righe.length &&
+    !String(c.nome || "").trim() &&
+    !String(c.telefono || "").trim() &&
+    !String(c.email || "").trim() &&
+    !String(p.oggetto || "").trim() &&
+    !(p.foto || []).length &&
+    !(p.disponibilita || []).length &&
+    !p.firma &&
+    !p.inviatoIl
+  );
+}
+
+async function eliminaPreventivo(prev) {
+  clearTimeout(timerSalva);
+  daSalvare.delete(prev.id);
+  await db.elimina("preventivi", prev.id);
+  nelArchivio.delete(prev.id);
+  canale?.postMessage({ id: prev.id });
+  state.preventivi = state.preventivi.filter((p) => p.id !== prev.id);
+  if (state.corrente === prev) state.corrente = null;
+}
+
 function ombraTopbar() {
   const t = $(".topbar");
   if (t) t.classList.toggle("ombra", window.scrollY > 4);
@@ -454,98 +498,173 @@ function nomeMese(chiave, lungo = false) {
   return new Date(a, m - 1, 1).toLocaleDateString("it-IT", { month: lungo ? "long" : "short" }).replace(".", "");
 }
 
-function htmlHero() {
-  const mese = core.meseCorrente();
-  const delMese = state.preventivi.filter((p) => (p.data || "").startsWith(mese));
-  const totaleMese = delMese.reduce((s, p) => s + totaliDi(p).totale, 0);
-  const accettati = delMese.filter((p) => p.stato === "accettato");
-  const valoreAccettati = accettati.reduce((s, p) => s + totaliDi(p).totale, 0);
-  const inAttesa = state.preventivi.filter((p) => p.stato === "inviato").length;
-  const st = core.statistiche(state.preventivi, (p) => totaliDi(p).totale);
-  const max = Math.max(1, ...st.mesi.map((m) => m.preventivato));
-  return `<section class="hero">
-    <div class="etic">Preventivato a ${esc(nomeMese(mese, true))}</div>
-    <div class="valore">${esc(euroCorto(totaleMese))}</div>
-    <div class="metriche">
-      <div class="metrica"><div class="v">${esc(euroCorto(valoreAccettati))}</div><div class="l">Accettati (${accettati.length})</div></div>
-      <div class="metrica"><div class="v">${st.tassoAccettazione === null ? "–" : st.tassoAccettazione + "%"}</div><div class="l">Tasso di sì</div></div>
-      <div class="metrica"><div class="v">${inAttesa}</div><div class="l">In attesa</div></div>
-    </div>
-    <div class="grafico" aria-label="Valore preventivato negli ultimi 6 mesi">
-      ${st.mesi
-        .map(
-          (
-            m,
-          ) => `<div class="col" title="${esc(nomeMese(m.mese, true))}: ${esc(euroCorto(m.preventivato))} preventivati, ${esc(euroCorto(m.accettato))} accettati">
-        <div class="barra" style="height:${Math.max(6, Math.round((m.preventivato / max) * 100))}%"><i style="height:${m.preventivato ? Math.round((m.accettato / m.preventivato) * 100) : 0}%"></i></div>
-        <span class="mese">${esc(nomeMese(m.mese))}</span></div>`,
-        )
-        .join("")}
-    </div>
-  </section>`;
+function quando(ms) {
+  if (!ms) return "";
+  const giorni = inc.giorniTra(core.oggiISO(new Date(ms)), core.oggiISO());
+  if (giorni <= 0) return "modificato oggi";
+  if (giorni === 1) return "modificato ieri";
+  return `modificato ${giorni} giorni fa`;
 }
 
-function htmlRicontatti() {
-  const lista = core
-    .daRicontattare(state.preventivi, Date.now(), Number(state.azienda.giorniRicontatto) || 3)
-    .slice(0, 5);
-  if (!lista.length) return "";
-  return `<section class="card">
-    <div class="sezione-titolo"><span class="ico" style="background:var(--warn-soft);color:var(--warn)">${ICONE.sveglia}</span>
-      <div><h2>Da ricontattare</h2><div class="muted xsmall">Un messaggio di promemoria fa vincere più lavori</div></div></div>
-    ${lista
-      .map(
-        (x) => `<div class="ricontatto">
-        ${avatar(core.nomeCliente(x.prev.cliente), "small")}
-        <div class="corpo"><div class="t">${esc(core.nomeCliente(x.prev.cliente))} · ${esc(euroCorto(totaliDi(x.prev).totale))}</div>
-          <div class="s">Inviato ${x.giorniDaInvio === 1 ? "ieri" : `${x.giorniDaInvio} giorni fa`}${x.scadenza ? ` · scade il ${esc(core.formatData(x.scadenza))}` : ""}</div></div>
-        <button class="btn wa small" data-action="ricontatta" data-id="${esc(x.prev.id)}">${ICONE.whatsapp} Scrivi</button>
-      </div>`,
-      )
-      .join("")}
-  </section>`;
-}
+const piuGiorni = (n) => `${n} ${n === 1 ? "giorno" : "giorni"}`;
 
-function descriviIncasso(prev, s) {
-  if (s.segnalazioniAttesa.length) return `Dice di aver pagato ${core.formatEuro(s.daVerificare)}: da verificare`;
-  if (!s.accettato) return "Pagamento su un preventivo non ancora accettato";
-  if (s.fase === "scaduto") return `Scaduti ${inc.riassuntoScaduto(s)}`;
-  if (s.fase === "attesa-acconto")
-    return s.scadenzaAcconto
-      ? `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} entro il ${core.formatData(s.scadenzaAcconto)}`
-      : `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} da ricevere`;
-  if (s.fase === "da-saldare") return `Saldo entro il ${core.formatData(s.scadenzaSaldo)}`;
-  return "Lavori in corso · saldo a fine lavori";
-}
-
-function htmlDaIncassare() {
+// La home risponde a "cosa devo fare adesso?": tutto ciò che chiede un'azione, in ordine di urgenza,
+// con un solo verbo per riga.
+function compitiOggi() {
+  const oggi = core.oggiISO();
+  const lista = [];
   const r = inc.daIncassare(state.preventivi, totaliDi, opzioniIncasso());
-  if (!r.voci.length) return "";
-  const tutti = state.incassiTutti;
-  return `<section class="card" id="da-incassare">
-    <div class="sezione-titolo"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.euro}</span>
-      <div><h2>Da incassare <span class="tnum">${esc(euroCorto(r.totale))}</span></h2>
-      <div class="muted xsmall">${r.nScaduti ? `<b class="testo-bad">${esc(euroCorto(r.scaduto))} scaduti</b> · ` : ""}${r.voci.length} ${r.voci.length === 1 ? "lavoro" : "lavori"} da pagare${r.daVerificare ? ` · ${esc(euroCorto(r.daVerificare))} da verificare` : ""}</div></div></div>
-    ${r.voci
-      .slice(0, tutti ? r.voci.length : 4)
-      .map(
-        ({ prev, stato }) => `<a class="ricontatto" href="#/p/${esc(prev.id)}?sez=incassi">
-        ${avatar(core.nomeCliente(prev.cliente), "small")}
-        <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))} · ${esc(euroCorto(stato.residuo))}</div>
-          <div class="s">${esc(descriviIncasso(prev, stato))}</div></div>
-        <span class="badge ${esc(stato.segnalazioniAttesa.length ? "attesa-acconto" : stato.fase)}">${esc(stato.segnalazioniAttesa.length ? "Da verificare" : inc.FASI[stato.fase])}</span>
-      </a>`,
-      )
-      .join("")}
-    ${r.voci.length > 4 ? `<button class="btn ghost block small" data-action="incassi-tutti" style="margin-top:8px">${tutti ? "Mostra meno" : `Mostra tutti (altri ${r.voci.length - 4})`}</button>` : ""}
-  </section>`;
+  for (const { prev, stato: s } of r.voci) {
+    const nome = core.nomeCliente(prev.cliente);
+    const id = esc(prev.id);
+    if (s.segnalazioniAttesa.length) {
+      lista.push({
+        peso: 100,
+        segno: "warn",
+        icona: ICONE.campanella,
+        titolo: `${nome} dice di aver pagato ${core.formatEuro(s.daVerificare)}`,
+        sotto: "Controlla sul conto, poi conferma",
+        azione: `<a class="btn small" href="#/p/${id}?sez=incassi">Controlla</a>`,
+      });
+    } else if (s.fase === "scaduto") {
+      lista.push({
+        peso: 90 + Math.min(s.giorniRitardo, 9),
+        segno: "bad",
+        icona: ICONE.attenzione,
+        titolo: `${nome} ti deve ${core.formatEuro(s.importoScaduto)}`,
+        sotto: `In ritardo da ${piuGiorni(s.giorniRitardo)}`,
+        azione: `<a class="btn wa small" href="#/p/${id}?sez=incassi&azione=sollecito">Sollecita</a>`,
+      });
+    } else if (s.fase === "attesa-acconto" && s.accettato && s.prossima) {
+      lista.push({
+        peso: 60,
+        segno: "warn",
+        icona: ICONE.pagamento,
+        titolo: `${nomeAnticipo(prev)} di ${nome}: ${core.formatEuro(s.prossima.importo)}`,
+        sotto: s.scadenzaAcconto
+          ? `Da ricevere entro il ${core.formatData(s.scadenzaAcconto)}`
+          : "Da ricevere prima di iniziare",
+        azione: `<a class="btn small" href="#/p/${id}?sez=incassi&azione=chiedi">Chiedi</a>`,
+      });
+    } else if (
+      s.fase === "da-saldare" &&
+      s.scadenzaSaldo &&
+      inc.giorniTra(oggi, s.scadenzaSaldo) <= 3 &&
+      s.residuo > 0.005
+    ) {
+      lista.push({
+        peso: 55,
+        segno: "penna",
+        icona: ICONE.calendario,
+        titolo: `Saldo di ${nome}: ${core.formatEuro(s.residuo)}`,
+        sotto: `Scade il ${core.formatData(s.scadenzaSaldo)}`,
+        azione: `<a class="btn small" href="#/p/${id}?sez=incassi&azione=chiedi">Chiedi</a>`,
+      });
+    }
+  }
+  for (const { prev, app: a } of inc.prossimiLavori(state.preventivi, { oggi, giorni: 1 })) {
+    lista.push({
+      peso: 80,
+      segno: "ok",
+      icona: ICONE.calendario,
+      titolo: `${a.data === oggi ? "Oggi" : "Domani"}: ${core.nomeCliente(prev.cliente)}`,
+      sotto: [inc.FASCE[a.fascia], prev.oggetto].filter(Boolean).join(" · "),
+      azione: `<a class="btn small" href="#/p/${esc(prev.id)}">Apri</a>`,
+    });
+  }
+  const bozze = state.preventivi
+    .filter((p) => p.stato === "bozza" && (p.righe.length || (p.cliente?.nome || "").trim()))
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, 3);
+  for (const p of bozze) {
+    const nome = (p.cliente?.nome || "").trim();
+    lista.push({
+      peso: 70,
+      segno: "",
+      icona: ICONE.matita,
+      titolo: nome ? `Finisci il preventivo per ${nome}` : "Finisci il preventivo",
+      sotto: [p.oggetto || `N° ${p.numero}`, quando(p.updatedAt)].filter(Boolean).join(" · "),
+      azione: `<a class="btn small" href="#/p/${esc(p.id)}">Continua</a>`,
+    });
+  }
+  for (const x of core.daRicontattare(state.preventivi, Date.now(), Number(state.azienda.giorniRicontatto) || 3)) {
+    const traGiorni = x.scadenza && !x.scaduto ? inc.giorniTra(oggi, x.scadenza) : null;
+    const inScadenza = traGiorni !== null && traGiorni <= 3;
+    lista.push({
+      peso: (inScadenza ? 65 : 40) + Math.min(x.giorniDaInvio, 9),
+      segno: inScadenza ? "warn" : "penna",
+      icona: inScadenza ? ICONE.orologio : ICONE.telefono,
+      titolo: inScadenza
+        ? `Il preventivo di ${core.nomeCliente(x.prev.cliente)} scade ${traGiorni === 0 ? "oggi" : traGiorni === 1 ? "domani" : `fra ${traGiorni} giorni`}`
+        : `${core.nomeCliente(x.prev.cliente)} non ha ancora risposto`,
+      sotto: inScadenza
+        ? `Ricordagli che i prezzi valgono fino al ${core.formatData(x.scadenza)} · ${euroCorto(totaliDi(x.prev).totale)}`
+        : `Inviato ${x.giorniDaInvio === 1 ? "ieri" : `${x.giorniDaInvio} giorni fa`} · ${euroCorto(totaliDi(x.prev).totale)}`,
+      azione: `<button class="btn wa small" data-action="ricontatta" data-id="${esc(x.prev.id)}">Scrivi</button>`,
+    });
+  }
+  const link = urlSicuro(state.azienda.linkRecensioni);
+  for (const { prev } of inc.daRecensire(state.preventivi, totaliDi, { oggi }).slice(0, 2)) {
+    lista.push({
+      peso: 20,
+      segno: "ok",
+      icona: ICONE.stella,
+      titolo: `${core.nomeCliente(prev.cliente)} ha pagato tutto`,
+      sotto: "È il momento giusto per chiedere una recensione",
+      azione: link
+        ? `<a class="btn wa small" href="${esc(waLink(prev.cliente.telefono, inc.messaggioRecensione(prev, state.azienda, link)))}" target="_blank" rel="noopener" data-action="recensione-chiesta" data-id="${esc(prev.id)}">Chiedi</a>`
+        : `<a class="btn small" href="#/impostazioni">Imposta</a>`,
+    });
+  }
+  const ultimaCopia = Number(preferenza.get("pl-ultima-copia")) || 0;
+  if (state.preventivi.length >= 3 && Date.now() - ultimaCopia > 30 * 864e5) {
+    lista.push({
+      peso: 10,
+      segno: "",
+      icona: ICONE.scudo,
+      titolo: "Salva una copia dei tuoi preventivi",
+      sotto: ultimaCopia
+        ? `Ultima copia il ${core.formatData(core.oggiISO(new Date(ultimaCopia)))}`
+        : "Stanno solo su questo telefono: mettili al sicuro",
+      azione: `<button class="btn small" data-action="backup-esporta">Salva</button>`,
+    });
+  }
+  return lista.sort((a, b) => b.peso - a.peso);
+}
+
+function htmlCompito(c) {
+  return `<div class="compito">
+      <span class="segno ${c.segno}" aria-hidden="true">${c.icona}</span>
+      <div class="corpo"><div class="t">${esc(c.titolo)}</div><div class="s">${esc(c.sotto)}</div></div>
+      ${c.azione}
+    </div>`;
+}
+
+function htmlDaFare(compiti) {
+  const tutti = state.compitiTutti;
+  const visibili = tutti ? compiti : compiti.slice(0, 5);
+  return `<section class="card" id="da-fare">
+      <div class="sezione-titolo"><h2>Da fare</h2>${compiti.length ? `<span class="badge nodot dx">${compiti.length}</span>` : ""}</div>
+      ${
+        compiti.length
+          ? `<div class="compiti">${visibili.map(htmlCompito).join("")}</div>
+             ${compiti.length > 5 ? `<button class="btn ghost block small" data-action="compiti-tutti">${tutti ? "Mostra meno" : `Mostra tutto (altre ${compiti.length - 5})`}</button>` : ""}`
+          : `<div class="compito-vuoto">${ICONE.fatto}<span>Tutto in ordine: nessun pagamento in ritardo e nessun cliente da richiamare.</span></div>`
+      }
+      <button class="btn ghost block incolla" data-action="incolla-messaggio">${ICONE.casella}<span>Ti è arrivata una firma o un "ho pagato"? Incolla il messaggio</span></button>
+    </section>`;
 }
 
 function htmlAgenda() {
-  const lista = inc.prossimiLavori(state.preventivi, { oggi: core.oggiISO(), giorni: 21 }).slice(0, 4);
+  const oggi = core.oggiISO();
+  const domani = core.aggiungiGiorni(oggi, 1);
+  const lista = inc
+    .prossimiLavori(state.preventivi, { oggi, giorni: 21 })
+    .filter(({ app: a }) => a.data > domani)
+    .slice(0, 3);
   if (!lista.length) return "";
   return `<section class="card">
-    <div class="sezione-titolo"><span class="ico">${ICONE.orologio}</span><div><h2>Prossimi lavori</h2><div class="muted xsmall">Date concordate con i clienti</div></div></div>
+    <div class="sezione-titolo"><h2>In agenda</h2></div>
     ${lista
       .map(({ prev, app: a }) => {
         const { giorno, mese } = giornoMese(a.data);
@@ -560,58 +679,99 @@ function htmlAgenda() {
   </section>`;
 }
 
-function htmlRecensioni() {
-  const lista = inc.daRecensire(state.preventivi, totaliDi, { oggi: core.oggiISO() }).slice(0, 3);
-  if (!lista.length) return "";
-  const link = urlSicuro(state.azienda.linkRecensioni);
-  return `<section class="card">
-    <div class="sezione-titolo"><span class="ico" style="background:var(--warn-soft);color:var(--warn)">${ICONE.stella}</span>
-      <div><h2>Chiedi una recensione</h2><div class="muted xsmall">Lavori appena pagati: il cliente è contento, è il momento giusto</div></div></div>
-    ${lista
-      .map(
-        ({ prev }) => `<div class="ricontatto">
-        ${avatar(core.nomeCliente(prev.cliente), "small")}
-        <div class="corpo"><div class="t">${esc(core.nomeCliente(prev.cliente))}</div><div class="s">${esc(prev.oggetto || "Lavoro pagato")}</div></div>
-        ${
-          link
-            ? `<a class="btn wa small" href="${esc(waLink(prev.cliente.telefono, inc.messaggioRecensione(prev, state.azienda, link)))}" target="_blank" rel="noopener" data-action="recensione-chiesta" data-id="${esc(prev.id)}">${ICONE.whatsapp} Chiedi</a>`
-            : `<a class="btn small" href="#/impostazioni">Imposta link</a>`
-        }
-      </div>`,
-      )
-      .join("")}
-  </section>`;
-}
-
+// Il piano gratuito si nota solo quando serve: con l'ultimo preventivo gratis del mese.
 function htmlPiano() {
   if (state.pro) return "";
   const rimasti = core.pdfRimasti(state.contatore, CONFIG.pdfGratisAlMese);
-  const usati = CONFIG.pdfGratisAlMese - rimasti;
-  return `<div class="banner ${rimasti === 0 ? "warn" : "info"}">
-    <div style="flex:1"><b>${rimasti === 0 ? "Preventivi gratuiti finiti" : `Piano gratuito · ${usati} di ${CONFIG.pdfGratisAlMese} usati`}</b>
-      <div class="muted xsmall">${rimasti === 0 ? "Passa a Pro per continuare a inviare questo mese" : "Si rinnovano ogni mese"}</div>
-      <div class="barra-limite"><i style="width:${Math.round((usati / CONFIG.pdfGratisAlMese) * 100)}%"></i></div></div>
-    <a class="btn small primary" href="#/pro">Pro</a>
+  if (rimasti > 1) return "";
+  const mese = new Date().toLocaleDateString("it-IT", { month: "long" });
+  return `<div class="banner ${rimasti === 0 ? "warn" : "info"}"><span class="ico">${ICONE.info}</span>
+    <div style="flex:1;min-width:0"><b>${rimasti === 0 ? `Hai usato i preventivi gratuiti di ${mese}` : `Ti resta 1 preventivo gratuito a ${mese}`}</b>
+      <div class="small">Con Pro sono illimitati.</div></div>
+    <a class="btn small" href="#/pro">Vedi Pro</a>
   </div>`;
+}
+
+function htmlMese() {
+  const mese = core.meseCorrente();
+  const delMese = state.preventivi.filter((p) => (p.data || "").startsWith(mese));
+  const preventivato = delMese.reduce((s, p) => s + totaliDi(p).totale, 0);
+  const accettati = delMese.filter((p) => p.stato === "accettato");
+  const valoreAccettati = accettati.reduce((s, p) => s + totaliDi(p).totale, 0);
+  const incassato = state.preventivi.reduce(
+    (s, p) =>
+      s +
+      inc
+        .normalizzaIncasso(p.incasso)
+        .pagamenti.filter((x) => (x.data || "").startsWith(mese))
+        .reduce((t, x) => t + x.importo, 0),
+    0,
+  );
+  return `<section class="card">
+    <div class="sezione-titolo"><h2>${esc(nomeMese(mese, true).replace(/^./, (c) => c.toUpperCase()))} in breve</h2>
+      <button class="btn ghost small dx" data-action="andamento">Andamento</button></div>
+    <div class="mese-riassunto">
+      <div><b class="tnum">${esc(euroCorto(preventivato))}</b><span>${delMese.length === 1 ? "1 preventivo" : `${delMese.length} preventivi`}</span></div>
+      <div><b class="tnum">${esc(euroCorto(valoreAccettati))}</b><span>${accettati.length === 1 ? "1 accettato" : `${accettati.length} accettati`}</span></div>
+      <div><b class="tnum">${esc(euroCorto(incassato))}</b><span>incassati</span></div>
+    </div>
+  </section>`;
+}
+
+function foglioAndamento() {
+  const st = core.statistiche(state.preventivi, (p) => totaliDi(p).totale);
+  const max = Math.max(1, ...st.mesi.map((m) => m.preventivato));
+  apriFoglio(
+    `${titoloFoglio("Andamento degli ultimi 6 mesi", st.tassoAccettazione === null ? "" : `${st.tassoAccettazione}% dei preventivi decisi è stato accettato`)}
+    <div class="grafico" style="height:150px" aria-label="Valore preventivato e accettato negli ultimi 6 mesi">
+      ${st.mesi
+        .map(
+          (m) => `<div class="col">
+        <span class="xsmall tnum" style="font-weight:650">${esc(euroCorto(m.preventivato))}</span>
+        <div class="barra" style="height:${Math.max(4, Math.round((m.preventivato / max) * 100))}%"><i style="height:${m.preventivato ? Math.round((m.accettato / m.preventivato) * 100) : 0}%"></i></div>
+        <span class="mese">${esc(nomeMese(m.mese))}</span></div>`,
+        )
+        .join("")}
+    </div>
+    <div class="row" style="gap:16px;margin-top:14px"><span class="row small" style="gap:6px"><i style="width:12px;height:12px;border-radius:3px;background:var(--surface-3)"></i>Preventivato</span><span class="row small" style="gap:6px"><i style="width:12px;height:12px;border-radius:3px;background:var(--ink)"></i>Accettato</span></div>`,
+  );
+}
+
+const FILTRI = {
+  tutti: "Tutti",
+  bozza: "Da inviare",
+  inviato: "In attesa",
+  "da-incassare": "Da incassare",
+  accettato: "Accettati",
+  rifiutato: "Rifiutati",
+};
+
+function passaFiltro(p, f) {
+  if (f === "tutti") return true;
+  if (f === "da-incassare") return p.stato === "accettato" && incassoDi(p).residuo > 0.005;
+  return p.stato === f;
 }
 
 function filtraLista() {
   const cerca = state.cerca.trim().toLowerCase();
   return state.preventivi
-    .filter((p) => state.filtro === "tutti" || p.stato === state.filtro)
+    .filter((p) => passaFiltro(p, state.filtro))
     .filter((p) => !cerca || [p.numero, p.oggetto, p.cliente && p.cliente.nome].join(" ").toLowerCase().includes(cerca))
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
+const BADGE_INCASSO = {
+  scaduto: "In ritardo",
+  "attesa-acconto": "Acconto da ricevere",
+  "da-saldare": "Da saldare",
+  "in-corso": "Lavori in corso",
+  pagato: "Pagato",
+};
+
 function htmlVoci() {
   const lista = filtraLista();
-  if (!lista.length) return `<div class="vuoto muted">Nessun preventivo trovato.</div>`;
-  const BADGE_INCASSO = {
-    scaduto: "Scaduto",
-    "attesa-acconto": "Attesa acconto",
-    "da-saldare": "Da saldare",
-    pagato: "Pagato",
-  };
+  if (!lista.length)
+    return `<div class="vuoto muted">${state.cerca.trim() ? "Nessun preventivo con queste parole." : "Nessun preventivo qui."}</div>`;
   return lista
     .map((p) => {
       const t = totaliDi(p);
@@ -620,8 +780,8 @@ function htmlVoci() {
         ${avatar(core.nomeCliente(p.cliente))}
         <div class="corpo">
           <div class="t">${esc(core.nomeCliente(p.cliente))}</div>
-          <div class="s">${esc(p.oggetto || "Senza oggetto")}</div>
-          <div class="s xsmall">N. ${esc(p.numero)} · ${esc(core.formatData(p.data))}${p.accettazioneOnline ? " · firmato online" : ""}</div>
+          <div class="s">${esc(p.oggetto || "Senza titolo")}</div>
+          <div class="s xsmall">N° ${esc(p.numero)} · ${esc(core.formatData(p.data))}${p.accettazioneOnline ? " · firmato online" : ""}</div>
         </div>
         <div class="dx"><span class="importo">${esc(core.formatEuro(t.totale))}</span>${
           BADGE_INCASSO[fase]
@@ -633,46 +793,61 @@ function htmlVoci() {
     .join("");
 }
 
+function saluto() {
+  const h = new Date().getHours();
+  return h < 13 ? "Buongiorno" : h < 18 ? "Buon pomeriggio" : "Buonasera";
+}
+
 function viewLista() {
-  const conta = { tutti: state.preventivi.length };
-  for (const p of state.preventivi) conta[p.stato] = (conta[p.stato] || 0) + 1;
-  const filtri = ["tutti", ...Object.keys(core.STATI)]
+  const conta = {};
+  for (const f of Object.keys(FILTRI)) conta[f] = state.preventivi.filter((p) => passaFiltro(p, f)).length;
+  if (!FILTRI[state.filtro]) state.filtro = "tutti";
+  const filtri = Object.entries(FILTRI)
+    .filter(([f]) => f === "tutti" || conta[f] || state.filtro === f)
     .map(
-      (f) =>
-        `<button class="chip ${state.filtro === f ? "on" : ""}" data-action="filtro" data-f="${f}">${f === "tutti" ? "Tutti" : core.STATI[f]}<span class="n">${conta[f] || 0}</span></button>`,
+      ([f, nome]) =>
+        `<button class="chip ${state.filtro === f ? "on" : ""}" data-action="filtro" data-f="${f}">${esc(nome)}<span class="n">${conta[f] || 0}</span></button>`,
     )
     .join("");
   const bannerInstalla =
     state.installEvento && !preferenza.get("pl-installa-no")
-      ? `<div class="banner info"><span class="ico">📲</span><div>Installa l'app: si apre con un tocco e funziona anche senza rete.</div><button class="btn small primary" data-action="installa">Installa</button></div>`
+      ? `<div class="banner info"><span class="ico">${ICONE.scarica}</span><div style="flex:1;min-width:0">Installa l'app: si apre con un tocco e funziona anche senza rete.</div><button class="btn small" data-action="installa">Installa</button></div>`
       : "";
-
-  const vuoto = `<div class="card vuoto">
-      <div class="illustrazione">${ICONE.fulmine}</div>
-      <h3>Il primo preventivo in 60 secondi</h3>
-      <p class="muted">Scegli le voci dal listino o dettale a voce, poi mandalo su WhatsApp: il cliente può accettare e firmare dal suo telefono.</p>
-      <a class="btn primary big" href="#/nuovo">${ICONE.piu} Crea preventivo</a></div>`;
+  const ci = state.preventivi.length > 0;
+  const compiti = ci ? compitiOggi() : [];
+  const oggi = new Date().toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
+  const sottotitolo = compiti.length
+    ? `${compiti.length === 1 ? "Oggi hai 1 cosa da fare" : `Oggi hai ${compiti.length} cose da fare`}`
+    : "Niente di urgente";
+  const comeFunziona = `<section class="card">
+      <div class="sezione-titolo"><h2>Come funziona</h2></div>
+      <div class="compiti">
+        <div class="compito"><span class="segno" aria-hidden="true">${ICONE.matita}</span><div class="corpo"><div class="t">Prepari il preventivo</div><div class="s">Dettalo a voce o scegli dai tuoi prezzi: ci vuole un minuto</div></div></div>
+        <div class="compito"><span class="segno" aria-hidden="true">${ICONE.whatsapp}</span><div class="corpo"><div class="t">Lo mandi su WhatsApp</div><div class="s">Il cliente lo apre dal suo telefono, senza installare niente</div></div></div>
+        <div class="compito"><span class="segno" aria-hidden="true">${ICONE.firma}</span><div class="corpo"><div class="t">Il cliente firma e paga l'acconto</div><div class="s">Ti arriva la conferma e l'app segue i pagamenti al posto tuo</div></div></div>
+      </div>
+    </section>`;
 
   app().innerHTML = `
     <header class="topbar">
-      <div class="brand">${ICONE.logo}<span>${esc(CONFIG.nomeProdotto)}</span></div>
-      ${state.pro ? `<span class="badge pro">PRO</span>` : `<a class="btn small soft" href="#/pro">${ICONE.stella} Pro</a>`}
+      <div class="brand">${ICONE.logo}<span>${esc(state.azienda.ragioneSociale || CONFIG.nomeProdotto)}</span></div>
+      ${state.pro ? `<span class="badge pro">PRO</span>` : `<a class="btn small ghost" href="#/pro">${ICONE.stella} Pro</a>`}
     </header>
     <main class="pagina">
       ${bannerInstalla}
-      ${state.preventivi.length ? htmlHero() : ""}
-      ${htmlDaIncassare()}
+      <div class="saluto"><h1>${esc(saluto())}</h1><p>${esc(oggi.replace(/^./, (c) => c.toUpperCase()))}${ci ? ` · ${esc(sottotitolo)}` : ""}</p></div>
+      <a class="cta-nuovo" href="#/nuovo"><span class="ico">${ICONE.piu}</span><div><b>Nuovo preventivo</b><span>Dettalo a voce o scegli dai tuoi prezzi</span></div><span class="freccia" aria-hidden="true">${ICONE.avanti}</span></a>
+      ${ci ? htmlDaFare(compiti) : comeFunziona}
       ${htmlAgenda()}
-      ${htmlRicontatti()}
-      ${htmlRecensioni()}
       ${htmlPiano()}
       ${
-        state.preventivi.length
+        ci
           ? `<div class="etichetta-sez">I tuoi preventivi</div>
-             <input type="search" placeholder="Cerca cliente, oggetto o numero" value="${esc(state.cerca)}" id="cerca-prev" aria-label="Cerca preventivi">
+             <input type="search" placeholder="Cerca per cliente, lavoro o numero" value="${esc(state.cerca)}" id="cerca-prev" aria-label="Cerca preventivi">
              <div class="chips">${filtri}</div>
-             <div class="lista" id="lista-prev">${htmlVoci()}</div>`
-          : vuoto
+             <div class="lista" id="lista-prev">${htmlVoci()}</div>
+             ${htmlMese()}`
+          : ""
       }
     </main>`;
   ombraTopbar();
@@ -680,6 +855,17 @@ function viewLista() {
     state.cerca = e.target.value;
     $("#lista-prev").innerHTML = htmlVoci();
   });
+  aggiornaBadgeApp(compiti.length);
+}
+
+// Il numero sull'icona dell'app (come WhatsApp) ricorda che c'è qualcosa da fare.
+function aggiornaBadgeApp(n) {
+  try {
+    if (n > 0) navigator.setAppBadge?.(n)?.catch?.(() => {});
+    else navigator.clearAppBadge?.()?.catch?.(() => {});
+  } catch {
+    /* non supportato */
+  }
 }
 
 // ------------------------------------------------------------------
@@ -719,35 +905,56 @@ async function nuovoPreventivo(q) {
 // ------------------------------------------------------------------
 // Editor
 // ------------------------------------------------------------------
+// Una riga: descrizione, quantità, unità e prezzo sempre in vista; il resto (tipo, IVA, extra,
+// sconto, costo) in "Dettagli", con un segnale sulla riga quando non è quello di base.
 function htmlRiga(r, i) {
   const forf = forfettario(state.corrente);
   const um = core.UNITA.includes(r.um) ? core.UNITA : [r.um, ...core.UNITA];
+  const ivaBase = ivaRiga(state.corrente);
+  const segni = [
+    r.opzionale ? `<span class="badge warn nodot">Extra a scelta</span>` : "",
+    r.tipo === "mat" ? `<span class="badge nodot bozza">Materiale</span>` : "",
+    !forf && Number(r.iva) !== ivaBase ? `<span class="badge nodot bozza">IVA ${esc(r.iva)}%</span>` : "",
+    r.sconto > 0 ? `<span class="badge nodot bozza">Sconto ${esc(core.formatQta(r.sconto))}%</span>` : "",
+    !(core.parseNumero(r.prezzo) > 0) && String(r.descrizione || "").trim()
+      ? `<span class="badge scaduto nodot">Manca il prezzo</span>`
+      : "",
+  ].join("");
+  const aperta = state.righeAperte.has(r.id);
   return `<div class="riga ${r.opzionale ? "facoltativa" : ""}" data-i="${i}">
     <div class="riga-top">
-      <textarea data-r="descrizione" rows="1" placeholder="Descrizione del lavoro o del materiale" aria-label="Descrizione">${esc(r.descrizione)}</textarea>
-      <button class="icon-btn" data-action="menu-riga" data-i="${i}" aria-label="Opzioni voce">${ICONE.altro}</button>
+      <textarea data-r="descrizione" rows="1" placeholder="Cosa fai o cosa fornisci" aria-label="Descrizione" enterkeyhint="next">${esc(r.descrizione)}</textarea>
+      <button class="icon-btn" data-action="menu-riga" data-i="${i}" aria-label="Sposta, duplica o elimina la voce">${ICONE.altro}</button>
     </div>
     <div class="riga-grid">
-      <label>Quantità<span class="qta-wrap"><input data-r="qta" inputmode="decimal" value="${numIn(r.qta)}">${
+      <label>Quantità<span class="qta-wrap"><input data-r="qta" inputmode="decimal" value="${numIn(r.qta)}" enterkeyhint="next">${
         r.um === "mq"
-          ? `<button type="button" class="calc" data-action="calcolatore" data-i="${i}" aria-label="Calcola metri quadri">${ICONE.righello}</button>`
+          ? `<button type="button" class="calc" data-action="calcolatore" data-i="${i}" aria-label="Calcola i metri quadri">${ICONE.righello}</button>`
           : ""
       }</span></label>
       <label>Unità<select data-r="um">${um.map((u) => `<option ${u === r.um ? "selected" : ""}>${esc(u)}</option>`).join("")}</select></label>
-      <label>Prezzo €<input data-r="prezzo" inputmode="decimal" placeholder="0,00" value="${numIn(r.prezzo, true)}"></label>
-    </div>
-    <div class="riga-extra">
-      <div class="seg" role="group" aria-label="Tipo voce">
-        <button type="button" data-action="tipo-riga" data-i="${i}" data-tipo="man" class="${r.tipo === "man" ? "on" : ""}">Manodopera</button>
-        <button type="button" data-action="tipo-riga" data-i="${i}" data-tipo="mat" class="${r.tipo === "mat" ? "on" : ""}">Materiale</button>
-      </div>
-      ${forf ? "" : `<select data-r="iva" aria-label="IVA">${core.ALIQUOTE_IVA.map((a) => `<option value="${a}" ${Number(r.iva) === a ? "selected" : ""}>IVA ${a}%</option>`).join("")}</select>`}
+      <label>Prezzo €<input data-r="prezzo" inputmode="decimal" value="${numIn(r.prezzo, true)}" enterkeyhint="done"></label>
     </div>
     <div class="riga-piede">
-      <button type="button" class="pill-opz ${r.opzionale ? "on" : ""}" data-action="opzionale" data-i="${i}" aria-pressed="${r.opzionale ? "true" : "false"}"><span class="pallino"></span>Facoltativa</button>
-      <label class="mini">Sconto %<input data-r="sconto" inputmode="decimal" placeholder="0" value="${numIn(r.sconto, true)}"></label>
-      ${r.tipo === "mat" ? `<label class="mini" title="Quanto lo paghi tu: serve a calcolare il guadagno, non compare al cliente">${ICONE.lucchetto.replace("<svg", '<svg width="14" height="14"')}Costo<input data-r="costo" inputmode="decimal" placeholder="0" value="${numIn(r.costo, true)}"></label>` : ""}
-      <span class="riga-importo" data-importo="${i}">${core.formatEuro(core.importoRiga(r))}</span>
+    <details class="riga-dettagli" data-riga="${esc(r.id)}" ${aperta ? "open" : ""}>
+      <summary>Dettagli</summary>
+      <div class="stack">
+        <div class="riga-extra">
+          <div class="seg" role="group" aria-label="Tipo di voce">
+            <button type="button" data-action="tipo-riga" data-i="${i}" data-tipo="man" class="${r.tipo === "man" ? "on" : ""}">Manodopera</button>
+            <button type="button" data-action="tipo-riga" data-i="${i}" data-tipo="mat" class="${r.tipo === "mat" ? "on" : ""}">Materiale</button>
+          </div>
+          ${forf ? "" : `<select data-r="iva" aria-label="IVA">${core.ALIQUOTE_IVA.map((a) => `<option value="${a}" ${Number(r.iva) === a ? "selected" : ""}>IVA ${a}%</option>`).join("")}</select>`}
+        </div>
+        <button type="button" class="pill-opz ${r.opzionale ? "on" : ""}" data-action="opzionale" data-i="${i}" aria-pressed="${r.opzionale ? "true" : "false"}"><span class="pallino"></span>Extra a scelta del cliente</button>
+        <div class="muted xsmall" style="margin-top:-4px">Non entra nel totale: il cliente può aggiungerlo quando firma.</div>
+        <div class="row wrap">
+          <label class="mini">Sconto %<input data-r="sconto" inputmode="decimal" placeholder="0" value="${numIn(r.sconto, true)}"></label>
+          ${r.tipo === "mat" ? `<label class="mini" title="Quanto lo paghi tu: serve a calcolare il guadagno, il cliente non lo vede">${ICONE.lucchetto.replace("<svg", '<svg width="16" height="16"')}Il tuo costo €<input data-r="costo" inputmode="decimal" placeholder="0" value="${numIn(r.costo, true)}"></label>` : ""}
+        </div>
+      </div>
+    </details>
+    ${segni}<span class="riga-importo" data-importo="${i}">${core.formatEuro(core.importoRiga(r))}</span>
     </div>
   </div>`;
 }
@@ -756,27 +963,54 @@ const Riconoscimento = globalThis.SpeechRecognition || globalThis.webkitSpeechRe
 
 function micBtn(target) {
   if (!Riconoscimento) return "";
-  return `<button type="button" class="mic" data-action="detta-campo" data-target="${target}" aria-label="Detta">${ICONE.mic}</button>`;
+  return `<button type="button" class="mic" data-action="detta-campo" data-target="${target}" aria-label="Detta a voce">${ICONE.mic}</button>`;
 }
 
 function htmlRighe(prev) {
   return (
     prev.righe.map((r, i) => htmlRiga(r, i)).join("") ||
-    `<p class="muted small" style="margin:0">Nessuna voce. Aggiungila dal listino, a mano o a voce: puoi dettare più voci insieme.</p>`
+    `<p class="muted" style="margin:4px 0 0">Nessuna voce: aggiungile con i pulsanti qui sotto, anche dettandole tutte insieme.</p>`
   );
+}
+
+const testoNumeroVoci = (n) => (n === 1 ? "1 voce" : `${n} voci`);
+
+// Le voci del listino usate più spesso, a un tocco.
+function htmlPiuUsate() {
+  if (!state.listino.length) return "";
+  const uso = new Map();
+  for (const p of state.preventivi)
+    for (const r of p.righe || []) {
+      const k = String(r.descrizione || "")
+        .trim()
+        .toLowerCase();
+      if (k) uso.set(k, (uso.get(k) || 0) + 1);
+    }
+  const voci = state.listino
+    .map((v) => ({ v, n: uso.get(v.descrizione.trim().toLowerCase()) || 0 }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 6);
+  if (!voci.length) return "";
+  return `<div class="piu-usate"><div class="muted xsmall">Le più usate</div><div class="row wrap" style="gap:8px">${voci
+    .map(
+      ({ v }) =>
+        `<button type="button" class="chip" data-action="usa-voce" data-id="${esc(v.id)}">${ICONE.piu.replace("<svg", '<svg width="16" height="16" style="margin-right:4px"')}${esc(v.descrizione.length > 28 ? v.descrizione.slice(0, 26) + "…" : v.descrizione)}</button>`,
+    )
+    .join("")}</div></div>`;
 }
 
 function htmlFoto(prev) {
   const foto = (prev.foto || []).filter((f) => immagineSicura(f.img));
   const badge = state.pro ? "" : `<span class="badge pro dx">PRO</span>`;
-  return `<div class="sezione-titolo"><span class="ico">${ICONE.foto}</span><div><h2>Foto del lavoro</h2><div class="muted xsmall">Finiscono in una pagina del PDF</div></div>${badge}</div>
+  return `<div class="sezione-titolo"><div><h2>Foto del lavoro</h2><div class="muted xsmall">Finiscono in una pagina del PDF</div></div>${badge}</div>
     <div class="foto-griglia">
       ${foto
         .map(
           (
             f,
           ) => `<figure><img src="${immagineSicura(f.img)}" alt="${esc(f.didascalia || "Foto del lavoro")}" loading="lazy">
-          <button class="togli" data-action="togli-foto" data-id="${esc(f.id)}" aria-label="Togli foto">${ICONE.chiudi}</button></figure>`,
+          <button class="togli" data-action="togli-foto" data-id="${esc(f.id)}" aria-label="Togli la foto">${ICONE.chiudi}</button></figure>`,
         )
         .join("")}
       ${
@@ -789,6 +1023,152 @@ function htmlFoto(prev) {
     </div>`;
 }
 
+const SCELTE_ACCONTO = [0, 20, 30, 50];
+
+function htmlAcconto(prev) {
+  const t = totaliDi(prev);
+  const a = prev.acconto || { tipo: "perc", valore: 0 };
+  const perc = a.tipo !== "importo" ? Number(a.valore) || 0 : null;
+  const altro = perc === null || !SCELTE_ACCONTO.includes(perc) || state.accontoAltro.has(prev.id);
+  const nome = prev.caparra ? "caparra" : "acconto";
+  const senzaIncasso = t.acconto > 0 && !inc.ibanValido(state.azienda.iban) && !urlSicuro(state.azienda.linkPagamento);
+  return `<div class="sezione-titolo" style="margin:0"><h2>Anticipo quando accetta</h2></div>
+    <div class="seg seg-pieno" role="group" aria-label="Anticipo all'accettazione">
+      ${SCELTE_ACCONTO.map((v) => `<button type="button" data-action="acconto" data-v="${v}" class="${!altro && perc === v ? "on" : ""}" aria-pressed="${!altro && perc === v}">${v ? `${v}%` : "Nessuno"}</button>`).join("")}
+      <button type="button" data-action="acconto" data-v="altro" class="${altro ? "on" : ""}" aria-pressed="${altro}">Altro</button>
+    </div>
+    ${
+      altro
+        ? `<div class="grid2">
+        <label class="campo">Come<select data-campo="acconto.tipo">
+          <option value="perc" ${a.tipo !== "importo" ? "selected" : ""}>Percentuale</option>
+          <option value="importo" ${a.tipo === "importo" ? "selected" : ""}>Importo fisso €</option>
+        </select></label>
+        <label class="campo">${a.tipo === "importo" ? "Importo €" : "Percentuale %"}<input data-campo="acconto.valore" inputmode="decimal" placeholder="0" value="${numIn(a.valore, true)}"></label>
+      </div>`
+        : ""
+    }
+    <div class="small" id="acconto-testo">${
+      t.acconto > 0
+        ? `Il cliente paga <b class="tnum">${esc(core.formatEuro(t.acconto))}</b> di ${nome} quando accetta e <b class="tnum">${esc(core.formatEuro(t.saldo))}</b> a fine lavori.`
+        : "Nessun anticipo: il cliente paga tutto a fine lavori."
+    }</div>
+    ${senzaIncasso ? `<a class="btn ghost small" href="#/impostazioni" style="align-self:flex-start;padding-inline:0">${ICONE.pagamento} Aggiungi il tuo IBAN: il cliente paga l'anticipo con un tocco</a>` : ""}`;
+}
+
+function riassuntoOpzioni(prev) {
+  const parti = [`valido ${Number(prev.validitaGiorni) || 0} giorni`];
+  const date = inc.normalizzaDisponibilita(prev.disponibilita).length;
+  if (prev.appuntamento) parti.push("inizio fissato");
+  else if (date) parti.push(date === 1 ? "1 data proposta" : `${date} date proposte`);
+  const foto = (prev.foto || []).length;
+  if (foto) parti.push(foto === 1 ? "1 foto" : `${foto} foto`);
+  if (prev.caparra) parti.push("caparra");
+  if (Number(prev.scontoGlobale) > 0) parti.push(`sconto ${core.formatQta(prev.scontoGlobale)}%`);
+  if (prev.firma) parti.push("firmato");
+  return parti.join(" · ");
+}
+
+function htmlCondizioni(prev) {
+  return `<div class="sezione-titolo" style="margin:0"><h2>Condizioni</h2></div>
+    <div class="grid2">
+      <label class="campo">Sconto sul totale %<input data-campo="scontoGlobale" inputmode="decimal" placeholder="0" value="${numIn(prev.scontoGlobale, true)}"></label>
+      <label class="campo">Valido per (giorni)<input data-campo="validitaGiorni" inputmode="numeric" value="${numIn(prev.validitaGiorni)}"></label>
+    </div>
+    <label class="campo">L'anticipo vale come
+      <select data-campo="caparra">
+        <option value="0" ${prev.caparra ? "" : "selected"}>Acconto: si scala dal prezzo</option>
+        <option value="1" ${prev.caparra ? "selected" : ""}>Caparra confirmatoria: se il cliente si tira indietro la trattieni</option>
+      </select>
+    </label>
+    <label class="campo">Tempi di esecuzione<input data-campo="tempi" placeholder="es. 3 giorni lavorativi dall'accettazione" value="${esc(prev.tempi)}"></label>
+    <label class="campo">Come ti paga<textarea data-campo="pagamento" rows="2" placeholder="es. Bonifico bancario">${esc(prev.pagamento)}</textarea></label>
+    <label class="campo">Note e condizioni<textarea data-campo="note" rows="3">${esc(prev.note)}</textarea></label>`;
+}
+
+const titoloEditor = (prev) => (prev.cliente.nome || "").trim() || prev.oggetto || "Nuovo preventivo";
+
+// Firmato dal cliente: voci e prezzi non si cambiano per sbaglio.
+const bloccato = (prev) =>
+  prev.stato === "accettato" && Boolean(prev.firma || prev.accettazioneOnline) && !state.sbloccati.has(prev.id);
+
+function htmlBarra(prev) {
+  const forf = forfettario(prev);
+  const t = totaliDi(prev);
+  const s = prev.stato === "accettato" ? incassoDi(prev) : null;
+  if (s && s.fase !== "storico" && s.residuo > 0.005) {
+    return `<footer class="barra-totale">
+      <div class="tot"><div class="xsmall">Da incassare</div><div class="big ${s.fase === "scaduto" ? "testo-bad" : ""}">${esc(core.formatEuro(s.residuo))}</div></div>
+      <button class="btn primary" data-action="registra-pagamento">${ICONE.pagamento}<span>Pagamento ricevuto</span></button>
+    </footer>`;
+  }
+  if (s && s.fase === "pagato") {
+    return `<footer class="barra-totale">
+      <div class="tot"><div class="xsmall" style="color:var(--ok);font-weight:650">Pagato tutto</div><div class="big" id="tot-valore">${core.formatEuro(t.totale)}</div></div>
+      <button class="btn" data-action="anteprima">${ICONE.occhio}<span>Vedi PDF</span></button>
+    </footer>`;
+  }
+  return `<footer class="barra-totale">
+      <div class="tot"><div class="xsmall">${forf ? "Totale" : "Totale IVA incl."}</div><div class="big" id="tot-valore">${core.formatEuro(t.totale)}</div></div>
+      <button class="btn" data-action="anteprima" aria-label="Guarda il PDF">${ICONE.occhio}<span>Vedi</span></button>
+      <button class="btn primary" data-action="invia">${ICONE.invia}<span>${prev.stato === "bozza" ? "Invia" : "Rimanda"}</span></button>
+    </footer>`;
+}
+
+function htmlStatoBtn(prev) {
+  const nome = core.STATI[prev.stato];
+  return `<button class="stato-btn ${esc(prev.stato)}" data-action="stato" aria-label="Stato: ${esc(nome)}. Tocca per cambiarlo">${esc(nome)}${ICONE.giu}</button>`;
+}
+
+// Dopo un invio lo stato cambia senza ridisegnare l'editor (il foglio di invio può essere ancora aperto).
+function aggiornaStatoEditor(prev) {
+  if (state.corrente?.id !== prev.id) return;
+  const btn = $(".topbar .stato-btn");
+  if (btn) btn.outerHTML = htmlStatoBtn(prev);
+  const striscia = $("#striscia-stato");
+  if (striscia) striscia.innerHTML = htmlStrisciaStato(prev);
+  const barra = $(".barra-totale");
+  if (barra) barra.outerHTML = htmlBarra(prev);
+}
+
+function htmlStrisciaStato(prev) {
+  const nome = (prev.cliente.nome || "").trim() || "Il cliente";
+  if (prev.stato === "inviato") {
+    return `<div class="banner info"><span class="ico">${ICONE.campanella}</span><div style="flex:1;min-width:0"><b>${esc(nome)} ha accettato?</b>
+      <div class="small">Se firma online ti arriva un suo messaggio con un link: toccalo e qui si aggiorna tutto. Se ti ha detto di sì di persona o al telefono, segnalo tu.</div>
+      <div class="row wrap" style="margin-top:10px"><button class="btn small" data-action="imposta-stato" data-stato="accettato">${ICONE.check} Sì, ha accettato</button><button class="btn small ghost" data-action="imposta-stato" data-stato="rifiutato">No, ha rifiutato</button></div></div></div>`;
+  }
+  if (prev.stato === "rifiutato") {
+    return `<div class="banner bad"><span class="ico">${ICONE.info}</span><div style="flex:1;min-width:0"><b>Il cliente ha rifiutato</b><div class="small">Puoi rimandarlo con prezzi diversi o riaprirlo.</div>
+      <div class="row wrap" style="margin-top:10px"><button class="btn small" data-action="imposta-stato" data-stato="inviato">Riapri</button></div></div></div>`;
+  }
+  return "";
+}
+
+function htmlAccettato(prev) {
+  if (prev.stato !== "accettato") return "";
+  const chi = prev.firma?.nome || prev.cliente.nome || "il cliente";
+  const quando = prev.firma?.data
+    ? core.formatData(core.oggiISO(new Date(prev.firma.data)))
+    : prev.accettatoIl
+      ? core.formatData(prev.accettatoIl)
+      : "";
+  const aggiunte = prev.accettazioneOnline?.facoltativeAggiunte || [];
+  const firmato = prev.firma || prev.accettazioneOnline;
+  return `<div class="banner ok"><span class="ico">${ICONE.fatto}</span><div style="flex:1;min-width:0">
+    <b>${firmato ? `${prev.firma?.sulPosto ? "Firmato sul posto" : prev.accettazioneOnline ? "Firmato online" : "Firmato"} da ${esc(chi)}` : "Accettato"}${quando ? ` il ${esc(quando)}` : ""}</b>
+    ${aggiunte.length ? `<div class="small">Ha aggiunto: ${esc(aggiunte.join(", "))}</div>` : ""}
+    ${(() => {
+      // La data di inizio resta sempre a portata (il resto del preventivo firmato è bloccato).
+      const app = inc.normalizzaAppuntamento(prev.appuntamento);
+      return app
+        ? `<div class="small accettato-data">${ICONE.calendario}<span>Inizio: <b>${esc(inc.testoAppuntamento(app))}</b></span><button class="btn small ghost" data-action="appuntamento-ics">Metti in calendario</button></div>`
+        : "";
+    })()}
+    ${bloccato(prev) ? `<div class="small">Voci e prezzi sono bloccati, così non cambi per sbaglio quello che ha firmato.</div><button class="btn small ghost" data-action="sblocca" style="padding-inline:0;margin-top:4px">${ICONE.matita} Modifica comunque</button>` : ""}
+  </div></div>`;
+}
+
 function viewEditor(id, q = new URLSearchParams()) {
   const prev = state.preventivi.find((p) => p.id === id);
   if (!prev) {
@@ -799,102 +1179,184 @@ function viewEditor(id, q = new URLSearchParams()) {
   state.corrente = prev;
   document.body.classList.add("no-tabbar");
   const c = prev.cliente;
-  const forf = forfettario(prev);
+  const fermo = bloccato(prev);
   caricaPdfLib().catch(() => {});
   import("./pdf.js").catch(() => {});
+  const rubrica = "contacts" in navigator && "select" in (navigator.contacts || {});
 
   app().innerHTML = `
     <header class="topbar">
-      <a class="back" href="#/" aria-label="Indietro">${ICONE.indietro}</a>
-      <div class="titolo"><div class="sopra">Preventivo</div><strong>N. ${esc(prev.numero)}</strong></div>
-      <select data-campo="stato" style="width:auto;min-height:40px;padding:6px 32px 6px 12px;font-weight:650" aria-label="Stato">
-        ${Object.entries(core.STATI)
-          .map(([k, v]) => `<option value="${k}" ${prev.stato === k ? "selected" : ""}>${v}</option>`)
-          .join("")}
-      </select>
+      <a class="back" href="#/" aria-label="Torna ai preventivi">${ICONE.indietro}</a>
+      <div class="titolo"><strong id="titolo-editor">${esc(titoloEditor(prev))}</strong><div class="sopra">N° ${esc(prev.numero)}</div></div>
+      ${htmlStatoBtn(prev)}
       <button class="icon-btn" data-action="menu-preventivo" aria-label="Altre azioni">${ICONE.altro}</button>
     </header>
     <main class="pagina">
-      ${prev.accettazioneOnline ? `<div class="banner ok"><span class="ico">✅</span><div><b>Accettato online</b> da ${esc(prev.firma?.nome || "il cliente")}${prev.accettazioneOnline.facoltativeAggiunte?.length ? ` · aggiunte: ${esc(prev.accettazioneOnline.facoltativeAggiunte.join(", "))}` : ""}</div></div>` : ""}
+      ${htmlBannerVariante(prev)}
+      ${htmlAccettato(prev)}
+      <div id="striscia-stato">${htmlStrisciaStato(prev)}</div>
       <section class="card stack" id="sezione-incassi" ${mostraIncassi(prev) ? "" : "hidden"}>${mostraIncassi(prev) ? htmlIncassi(prev) : ""}</section>
+      ${htmlVariantiDi(prev)}
+      <fieldset class="blocco-modifica" ${fermo ? "disabled" : ""}>
       <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.utente}</span><h2>Cliente</h2></div>
-        <input data-campo="cliente.nome" list="lista-clienti" autocomplete="off" placeholder="Nome e cognome o ragione sociale" value="${esc(c.nome)}" aria-label="Nome cliente">
+        <div class="sezione-titolo" style="margin:0"><h2>Per chi è</h2>${rubrica ? `<button type="button" class="btn ghost small dx" data-action="da-rubrica">${ICONE.clienti} Dalla rubrica</button>` : ""}</div>
+        <label class="campo">Nome del cliente<input data-campo="cliente.nome" list="lista-clienti" autocomplete="off" placeholder="es. Mario Bianchi" value="${esc(c.nome)}" enterkeyhint="next"></label>
         <datalist id="lista-clienti">${state.clienti.map((x) => `<option value="${esc(x.nome)}"></option>`).join("")}</datalist>
         <div class="grid2 stack-mobile">
-          <input data-campo="cliente.telefono" type="tel" placeholder="Telefono (per WhatsApp)" value="${esc(c.telefono)}" aria-label="Telefono cliente">
-          <input data-campo="cliente.email" type="email" placeholder="Email" value="${esc(c.email)}" aria-label="Email cliente">
+          <label class="campo">Cellulare (WhatsApp)<input data-campo="cliente.telefono" type="tel" inputmode="tel" placeholder="es. 333 123 4567" value="${esc(c.telefono)}" enterkeyhint="next"></label>
+          <label class="campo"><span>Email <span class="aiuto">facoltativa</span></span><input data-campo="cliente.email" type="email" placeholder="es. mario@email.it" value="${esc(c.email)}"></label>
         </div>
         <details ${c.indirizzo || c.cfpiva ? "open" : ""}>
           <summary>Indirizzo e dati fiscali</summary>
           <div class="stack">
-            <input data-campo="cliente.indirizzo" placeholder="Via e numero civico" value="${esc(c.indirizzo)}" aria-label="Indirizzo">
-            <input data-campo="cliente.citta" placeholder="CAP, città e provincia" value="${esc(c.citta)}" aria-label="Città">
-            <input data-campo="cliente.cfpiva" placeholder="Codice fiscale o Partita IVA" value="${esc(c.cfpiva)}" aria-label="Codice fiscale o partita IVA">
-            <label class="check small"><input type="checkbox" data-campo="cliente.impresa" ${inc.clienteImpresa(c) ? "checked" : ""}> <span>È un'impresa o un ente pubblico (per gli interessi di mora; condomini e privati no)</span></label>
+            <label class="campo">Indirizzo<input data-campo="cliente.indirizzo" placeholder="es. Via Roma 12" value="${esc(c.indirizzo)}"></label>
+            <label class="campo">CAP, città e provincia<input data-campo="cliente.citta" placeholder="es. 24121 Bergamo BG" value="${esc(c.citta)}"></label>
+            <label class="campo">Codice fiscale o partita IVA<input data-campo="cliente.cfpiva" autocapitalize="characters" spellcheck="false" value="${esc(c.cfpiva)}"></label>
+            <label class="check small"><input type="checkbox" data-campo="cliente.impresa" ${inc.clienteImpresa(c) ? "checked" : ""}> <span>È un'impresa o un ente pubblico (cambia il tasso degli interessi di mora; condomini e privati no)</span></label>
           </div>
         </details>
       </section>
 
       <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.lavoro}</span><h2>Lavoro</h2></div>
-        <div class="con-mic"><input data-campo="oggetto" placeholder="Oggetto, es. Rifacimento bagno" value="${esc(prev.oggetto)}" aria-label="Oggetto">${micBtn("oggetto")}</div>
-        <input data-campo="luogo" placeholder="Indirizzo del cantiere (se diverso)" value="${esc(prev.luogo)}" aria-label="Luogo dell'intervento">
-      </section>
-
-      <section class="card stack" id="sezione-date">${htmlDate(prev)}</section>
-
-      <section class="card">
-        <div class="sezione-titolo"><span class="ico">${ICONE.listino}</span><h2>Voci <span class="muted" id="n-righe">(${prev.righe.length})</span></h2></div>
+        <div class="sezione-titolo" style="margin:0"><h2>Cosa c'è da fare</h2><span class="muted small dx" id="n-righe">${testoNumeroVoci(prev.righe.length)}</span></div>
+        <label class="campo">Titolo del lavoro<span class="con-mic"><input data-campo="oggetto" placeholder="es. Rifacimento bagno" value="${esc(prev.oggetto)}">${micBtn("oggetto")}</span></label>
         <div id="righe">${htmlRighe(prev)}</div>
+        <div id="parti-da">${htmlPartiDa(prev)}</div>
         <div class="azioni-righe">
-          <button class="btn soft" data-action="dal-listino">${ICONE.listino}Listino</button>
-          <button class="btn soft" data-action="aggiungi-riga">${ICONE.piu}Voce</button>
-          ${Riconoscimento ? `<button class="btn soft" data-action="detta-righe">${ICONE.mic}Detta</button>` : `<button class="btn soft" data-action="aggiungi-riga" data-tipo="mat">${ICONE.piu}Materiale</button>`}
+          <button class="btn soft" data-action="dal-listino">${ICONE.listino}Dai miei prezzi</button>
+          ${Riconoscimento ? `<button class="btn soft" data-action="detta-righe">${ICONE.mic}Detta a voce</button>` : `<button class="btn soft" data-action="aggiungi-riga" data-tipo="mat">${ICONE.piu}Materiale</button>`}
+          <button class="btn soft" data-action="aggiungi-riga">${ICONE.matita}Scrivi a mano</button>
         </div>
+        <div id="piu-usate">${htmlPiuUsate()}</div>
+        <div class="riepilogo" id="riepilogo">${htmlRiepilogo(prev)}</div>
       </section>
 
-      <section class="card" id="sezione-foto">${htmlFoto(prev)}</section>
+      <section class="card stack" id="sezione-acconto">${htmlAcconto(prev)}</section>
 
-      <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.condizioni}</span><h2>Condizioni</h2></div>
-        <div class="grid2">
-          <label class="campo">Sconto totale %<input data-campo="scontoGlobale" inputmode="decimal" placeholder="0" value="${numIn(prev.scontoGlobale, true)}"></label>
-          <label class="campo">Validità (giorni)<input data-campo="validitaGiorni" inputmode="numeric" value="${numIn(prev.validitaGiorni)}"></label>
+      <details class="card altre-opzioni" id="altre-opzioni" ${state.altreAperte.has(prev.id) ? "open" : ""}>
+        <summary><span class="corpo"><b>Altre opzioni</b><span class="small" id="riassunto-opzioni">${esc(riassuntoOpzioni(prev))}</span></span></summary>
+        <div class="blocchi">
+          <div class="blocco stack"><label class="campo"><span>Indirizzo del cantiere <span class="aiuto">se diverso da quello del cliente</span></span><input data-campo="luogo" placeholder="es. Via Verdi 3, Bergamo" value="${esc(prev.luogo)}"></label></div>
+          <div class="blocco stack" id="sezione-date">${htmlDate(prev)}</div>
+          <div class="blocco" id="sezione-foto">${htmlFoto(prev)}</div>
+          <div class="blocco stack">${htmlCondizioni(prev)}</div>
+          <div class="blocco stack" id="sezione-firma">${htmlFirma(prev)}</div>
         </div>
-        <div class="grid2">
-          <label class="campo">Acconto
-            <select data-campo="acconto.tipo">
-              <option value="perc" ${prev.acconto.tipo !== "importo" ? "selected" : ""}>in percentuale</option>
-              <option value="importo" ${prev.acconto.tipo === "importo" ? "selected" : ""}>importo fisso €</option>
-            </select>
-          </label>
-          <label class="campo">Valore acconto<input data-campo="acconto.valore" inputmode="decimal" placeholder="0" value="${numIn(prev.acconto.valore, true)}"></label>
-        </div>
-        <label class="campo">L'anticipo vale come
-          <select data-campo="caparra">
-            <option value="0" ${prev.caparra ? "" : "selected"}>Acconto (anticipo sul prezzo)</option>
-            <option value="1" ${prev.caparra ? "selected" : ""}>Caparra confirmatoria (art. 1385 c.c.)</option>
-          </select>
-        </label>
-        <label class="campo">Tempi di esecuzione<input data-campo="tempi" placeholder="es. 3 giorni lavorativi dall'accettazione" value="${esc(prev.tempi)}"></label>
-        <label class="campo">Modalità di pagamento<textarea data-campo="pagamento" rows="2">${esc(prev.pagamento)}</textarea></label>
-        <label class="campo">Note e condizioni<textarea data-campo="note" rows="3">${esc(prev.note)}</textarea></label>
-      </section>
-
-      <section class="card stack" id="sezione-firma">${htmlFirma(prev)}</section>
-      <section class="card riepilogo" id="riepilogo">${htmlRiepilogo(prev)}</section>
+      </details>
+      </fieldset>
     </main>
-    <footer class="barra-totale">
-      <div class="tot"><div class="muted xsmall">${forf ? "Totale" : "Totale IVA inclusa"}</div><div class="big" id="tot-valore">${core.formatEuro(totaliDi(prev).totale)}</div></div>
-      <button class="btn" data-action="anteprima" aria-label="Anteprima PDF">${ICONE.occhio}<span>Anteprima</span></button>
-      <button class="btn primary" data-action="invia">${ICONE.invia}<span>Invia</span></button>
-    </footer>`;
+    ${htmlBarra(prev)}`;
 
   $$("textarea", app()).forEach(autoAltezza);
   collegaInputFoto();
   ombraTopbar();
+  $("#altre-opzioni").addEventListener("toggle", (e) => {
+    if (e.target.open) state.altreAperte.add(prev.id);
+    else state.altreAperte.delete(prev.id);
+  });
   if (q.get("sez") === "incassi") $("#sezione-incassi")?.scrollIntoView({ block: "start" });
+  // Dalla home: "Sollecita" o "Chiedi" aprono subito il messaggio pronto.
+  const azione = q.get("azione");
+  if (azione === "sollecito" || azione === "chiedi") {
+    history.replaceState(null, "", `#/p/${prev.id}?sez=incassi`);
+    const s = incassoDi(prev);
+    foglioSollecito(azione === "sollecito" ? inc.sollecitoSuggerito(s).livello : 0);
+  }
+  if (state.festa === prev.id) {
+    state.festa = null;
+    foglioFesta(prev);
+  }
+}
+
+// Lavoro saldato: il secondo timbro, e il momento giusto per chiedere una recensione.
+function foglioPagato(prev) {
+  const t = totaliDi(prev);
+  const link = urlSicuro(state.azienda.linkRecensioni);
+  apriFoglio(
+    `<div class="festa">
+      <div class="timbro anima" aria-hidden="true">Pagato<small>${esc(core.formatData(core.oggiISO()))}</small></div>
+      <h3>Lavoro pagato tutto</h3>
+      <p class="muted" style="margin:0">${esc(core.nomeCliente(prev.cliente))} · <span class="tnum">${esc(core.formatEuro(t.totale))}</span></p>
+      <div class="stack" style="width:100%;margin-top:8px">
+        ${
+          link
+            ? `<a class="btn wa big block" href="${esc(waLink(prev.cliente.telefono, inc.messaggioRecensione(prev, state.azienda, link)))}" target="_blank" rel="noopener" data-action="recensione-chiesta" data-id="${esc(prev.id)}">${ICONE.stella} Chiedi una recensione</a>`
+            : `<a class="btn big block" href="#/impostazioni">${ICONE.stella} Imposta il link per le recensioni</a>`
+        }
+        <button class="btn ghost block" data-action="chiudi-foglio">Fatto</button>
+      </div>
+    </div>`,
+    { classe: "piccolo" },
+  );
+  vibra(VIBRA.successo);
+}
+
+// Il momento più bello: il cliente ha firmato. Un timbro, una vibrazione e il passo successivo.
+function foglioFesta(prev) {
+  const t = totaliDi(prev);
+  const s = incassoDi(prev);
+  const nome = prev.firma?.nome || core.nomeCliente(prev.cliente);
+  const acconto = s.prossima && s.prossima.tipo === "acconto" && s.prossima.importo > 0 ? s.prossima : null;
+  apriFoglio(
+    `<div class="festa">
+      <div class="timbro anima" aria-hidden="true">Accettato<small>${esc(core.formatData(core.oggiISO()))}</small></div>
+      <h3>${esc(nome)} ha firmato!</h3>
+      <p class="muted" style="margin:0">Preventivo n. ${esc(prev.numero)} · <span class="tnum">${esc(core.formatEuro(t.totale))}</span></p>
+      <div class="stack" style="width:100%;margin-top:8px">
+        ${
+          acconto && prev.firma?.sulPosto && inc.ibanValido(state.azienda.iban)
+            ? `<button class="btn primary big block" data-action="mostra-qr">${ICONE.qr} Fagli pagare ${prev.caparra ? "la caparra" : "l'acconto"} adesso</button>
+               <p class="muted small" style="margin:-4px 0 4px;text-align:center">Inquadra il QR con l'app della banca: ${esc(core.formatEuro(acconto.importo))}, bonifico già compilato</p>`
+            : acconto
+              ? `<button class="btn wa big block" data-action="sollecito" data-livello="0">${ICONE.whatsapp} Chiedi ${prev.caparra ? "la caparra" : "l'acconto"} di ${esc(core.formatEuro(acconto.importo))}</button>`
+              : ""
+        }
+        ${prev.appuntamento ? "" : `<button class="btn big block ${acconto ? "" : "primary"}" data-action="fissa-data">${ICONE.calendario} Fissa l'inizio dei lavori</button>`}
+        <button class="btn ghost block" data-action="chiudi-foglio">Fatto</button>
+      </div>
+    </div>`,
+    { classe: "piccolo" },
+  );
+  vibra(VIBRA.successo);
+}
+
+function foglioStato(prev) {
+  const opzioni = [
+    ["bozza", "Da inviare", "Lo stai ancora preparando"],
+    ["inviato", "In attesa di risposta", "L'hai mandato al cliente"],
+    ["accettato", "Accettato", "Ha detto sì: online, a voce o di persona"],
+    ["rifiutato", "Rifiutato", "Ha detto no"],
+  ];
+  apriFoglio(
+    `${titoloFoglio("A che punto è?", `Preventivo n. ${esc(prev.numero)}`)}
+    <div class="lista-azioni">${opzioni
+      .map(
+        ([k, t, sotto]) =>
+          `<button data-action="imposta-stato" data-stato="${k}" class="${prev.stato === k ? "principale" : ""}" aria-pressed="${prev.stato === k}"><span class="ico">${prev.stato === k ? ICONE.check : ""}</span><span class="corpo">${esc(t)}<small>${esc(sotto)}</small></span></button>`,
+      )
+      .join("")}</div>`,
+    { classe: "piccolo" },
+  );
+}
+
+async function impostaStato(prev, valore) {
+  if (!core.STATI[valore]) return;
+  chiudiFoglio(true);
+  if (prev.stato === valore) return;
+  prev.stato = valore;
+  if (valore === "accettato") {
+    if (!prev.accettatoIl) prev.accettatoIl = core.oggiISO();
+    fissaAccordo(prev);
+  } else if (prev.incasso) {
+    prev.incasso.accontoPattuito = null;
+  }
+  if (valore === "inviato" && !prev.inviatoIl) prev.inviatoIl = Date.now();
+  await salvaPreventivo(prev);
+  viewEditor(prev.id);
+  if (valore === "accettato") {
+    toast("Accettato: ora qui segui i pagamenti", "ok");
+    $("#sezione-incassi")?.scrollIntoView({ block: "start" });
+  }
 }
 
 // ------------------------------------------------------------------
@@ -921,8 +1383,8 @@ function htmlIncassi(prev) {
   const sug = inc.sollecitoSuggerito(s);
   const recensioni = urlSicuro(a.linkRecensioni);
   const scad = s.fase === "scaduto";
-  const giaSollecitato = s.solleciti.length > 0;
   const pro = state.pro ? "" : ` <span class="badge pro">PRO</span>`;
+  const daIncassare = s.residuo > 0.005 && s.accettato && s.fase !== "storico";
   // Giorni di sollecito una volta sola (anche se generati più volte nello stesso giorno).
   const registroSolleciti = [
     ...new Map(
@@ -934,8 +1396,12 @@ function htmlIncassi(prev) {
       }),
     ).values(),
   ];
-  return `<div class="sezione-titolo" style="margin:0"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.euro}</span>
-      <div><h2>Incassi</h2><div class="muted xsmall">${esc(sottotitoloIncasso(prev, s))}</div></div><span class="badge ${esc(s.fase)} dx">${esc(inc.FASI[s.fase])}</span></div>
+  const livello = scad ? sug.livello : 0;
+  const finitiILavori = !s.fineLavori && s.accettato && ["in-corso", "attesa-acconto"].includes(s.fase);
+  const testoDate = s.fineLavori
+    ? `Fine lavori ${core.formatData(s.fineLavori)} · saldo ${s.giorniSaldo ? `entro ${s.giorniSaldo} giorni` : "a fine lavori"}`
+    : `Saldo ${s.giorniSaldo ? `entro ${s.giorniSaldo} giorni dalla fine dei lavori` : "a fine lavori"}`;
+  return `<div class="sezione-titolo" style="margin:0"><div><h2>Pagamenti</h2><div class="muted xsmall">${esc(sottotitoloIncasso(prev, s))}</div></div><span class="badge ${esc(s.fase)} dx">${esc(inc.FASI[s.fase])}</span></div>
     <div class="inc-totali">
       <div><div class="muted xsmall">Incassato</div><b class="tnum">${esc(core.formatEuro(s.incassato))}</b></div>
       <div><div class="muted xsmall">Da incassare</div><b class="tnum ${scad ? "testo-bad" : ""}">${esc(core.formatEuro(s.residuo))}</b></div>
@@ -945,18 +1411,32 @@ function htmlIncassi(prev) {
       .map(
         (
           x,
-        ) => `<div class="banner info"><span class="ico">🔔</span><div style="flex:1;min-width:0"><b>Il cliente dice di aver pagato ${esc(core.formatEuro(x.importo))}</b>
+        ) => `<div class="banner info"><span class="ico">${ICONE.campanella}</span><div style="flex:1;min-width:0"><b>Il cliente dice di aver pagato ${esc(core.formatEuro(x.importo))}</b>
         <div class="small">${esc(inc.METODI[x.metodo])}${x.data ? ` · ${esc(core.formatData(x.data))}` : ""}${x.nota ? ` · ${esc(x.nota)}` : ""}. Controlla sul conto prima di confermare.</div>
-        <div class="row wrap" style="margin-top:8px"><button class="btn small primary" data-action="segnalazione-ok" data-rif="${esc(x.rif)}" data-il="${x.il}">${ICONE.check} È arrivato</button><button class="btn small" data-action="segnalazione-no" data-rif="${esc(x.rif)}" data-il="${x.il}">Non è arrivato</button></div></div></div>`,
+        <div class="stack" style="margin-top:10px"><button class="btn primary block" data-action="segnalazione-ok" data-rif="${esc(x.rif)}" data-il="${x.il}">${ICONE.check} Sì, è arrivato: registra</button><button class="btn ghost block" data-action="segnalazione-no" data-rif="${esc(x.rif)}" data-il="${x.il}">Non è arrivato</button></div></div></div>`,
       )
       .join("")}
-    ${scad ? `<div class="banner bad"><span class="ico">⏰</span><div><b>${esc(core.formatEuro(s.importoScaduto))} scaduti</b>${esc(inc.descriviScadenza(s))}. Manda un sollecito: il primo è gentile, poi il tono sale.</div></div>` : ""}
-    ${s.fase === "attesa-acconto" && s.accettato ? `<div class="banner warn"><span class="ico">🛡️</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
-    ${!s.accettato ? `<div class="banner info"><span class="ico">ℹ️</span><div>Pagamento registrato su un preventivo non accettato: se il cliente ha accettato, registra l'accettazione o cambia lo stato in "Accettato" per seguire le scadenze.</div></div>` : ""}
-    ${s.fase === "storico" ? `<div class="banner info"><span class="ico">🗂️</span><div>Questo lavoro è stato accettato prima del registro incassi: registra i pagamenti già ricevuti o la data di fine lavori e l'app seguirà le scadenze.</div></div>` : ""}
-    <div class="grid2">
-      <button class="btn primary" data-action="registra-pagamento">${ICONE.piu} Pagamento</button>
-      <button class="btn" data-action="mostra-qr" aria-label="Mostra il QR da far inquadrare al cliente">${ICONE.euro} Mostra QR</button>
+    ${scad ? `<div class="banner bad"><span class="ico">${ICONE.attenzione}</span><div><b>${esc(core.formatEuro(s.importoScaduto))} in ritardo</b>${esc(inc.descriviScadenza(s))}. Il primo messaggio è gentile, poi il tono sale.</div></div>` : ""}
+    ${s.fase === "attesa-acconto" && s.accettato ? `<div class="banner warn"><span class="ico">${ICONE.scudo}</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
+    ${!s.accettato ? `<div class="banner info"><span class="ico">${ICONE.info}</span><div>C'è un pagamento su un preventivo non ancora accettato: se il cliente ha accettato, segnalo dallo stato in alto e l'app seguirà le scadenze.</div></div>` : ""}
+    ${s.fase === "storico" ? `<div class="banner info"><span class="ico">${ICONE.storico}</span><div>Accettato prima del registro dei pagamenti: segna quelli già ricevuti o la data di fine lavori e l'app seguirà le scadenze.</div></div>` : ""}
+    <div class="prossimo-passo">
+      ${
+        finitiILavori && s.fase === "in-corso"
+          ? `<button class="btn wa big block" data-action="lavori-finiti">${ICONE.whatsapp} Ho finito: chiedi il saldo</button>`
+          : daIncassare && s.fase !== "in-corso"
+            ? `<button class="btn wa big block" data-action="sollecito" data-livello="${livello}">${ICONE.whatsapp} ${esc(inc.AZIONI_SOLLECITO[livello])}</button>`
+            : ""
+      }
+      ${finitiILavori && s.fase !== "in-corso" ? `<button class="btn block" data-action="lavori-finiti">${ICONE.fatto} Ho finito i lavori: chiedi il saldo</button>` : ""}
+      ${
+        daIncassare
+          ? `<button class="btn block" data-action="mostra-qr" aria-label="Mostra il QR da far inquadrare al cliente">${ICONE.qr} Mostra il QR per pagare</button>`
+          : `<div class="grid2">
+        <button class="btn" data-action="registra-pagamento">${ICONE.pagamento} Pagamento ricevuto</button>
+        <button class="btn" data-action="mostra-qr" aria-label="Mostra il QR da far inquadrare al cliente">${ICONE.qr} QR per il cliente</button>
+      </div>`
+      }
     </div>
     ${
       s.accettato && s.prossima && s.prossima.data && s.prossima.data >= core.oggiISO()
@@ -965,41 +1445,44 @@ function htmlIncassi(prev) {
     }
     ${
       s.pagamenti.length
-        ? `<div class="inc-lista">${s.pagamenti
+        ? `<div><div class="muted xsmall">Pagamenti ricevuti</div><div class="inc-lista">${s.pagamenti
             .map(
               (
                 x,
               ) => `<div class="inc-riga"><div class="corpo"><b class="tnum">${esc(core.formatEuro(x.importo))}</b> <span class="muted small">${esc(inc.METODI[x.metodo])} · ${esc(core.formatData(x.data))}</span>${x.nota ? `<div class="muted xsmall">${esc(x.nota)}</div>` : ""}</div>
               <button class="icon-btn" data-action="togli-pagamento" data-id="${esc(x.id)}" aria-label="Elimina pagamento di ${esc(core.formatEuro(x.importo))}">${ICONE.cestino}</button></div>`,
             )
-            .join("")}</div>`
+            .join("")}</div></div>`
         : ""
     }
-    <div class="grid2 stack-mobile">
-      <label class="campo">Fine lavori<input type="date" data-inc="fineLavori" value="${esc(s.fineLavori)}" max="${core.aggiungiGiorni(core.oggiISO(), 730)}"></label>
-      <label class="campo">Saldo entro<select data-inc="giorniSaldo">${[0, 7, 15, 30, 60, 90]
-        .map(
-          (n) =>
-            `<option value="${n}" ${s.giorniSaldo === n ? "selected" : ""}>${n === 0 ? "fine lavori" : `${n} giorni`}</option>`,
-        )
-        .join("")}</select></label>
-    </div>
-    ${
-      s.residuo > 0.005 && s.accettato && s.fase !== "storico"
-        ? `<div class="stack inc-recupero">
-      <button class="btn wa block" data-action="sollecito" data-livello="${scad ? sug.livello : 0}">${ICONE.whatsapp} ${scad ? `Sollecita: ${esc(inc.LIVELLI_SOLLECITO[sug.livello].toLowerCase())}` : "Chiedi il pagamento"}</button>
-      ${giaSollecitato ? `<div class="muted xsmall">Solleciti: ${esc(registroSolleciti.join(" · "))}</div>` : ""}
-      <div class="grid2">
-        ${scad ? `<button class="btn small" data-action="pdf-diffida">${ICONE.documento} Messa in mora${pro}</button>` : ""}
-        <button class="btn small" data-action="pdf-fascicolo">${ICONE.documento} Fascicolo${pro}</button>
+    <details class="date-incasso" ${s.fase === "storico" ? "open" : ""}>
+      <summary>${esc(testoDate)} · cambia</summary>
+      <div class="grid2 stack-mobile">
+        <label class="campo">Fine lavori<input type="date" data-inc="fineLavori" value="${esc(s.fineLavori)}" max="${core.aggiungiGiorni(core.oggiISO(), 730)}"></label>
+        <label class="campo">Saldo entro<select data-inc="giorniSaldo">${[0, 7, 15, 30, 60, 90]
+          .map(
+            (n) =>
+              `<option value="${n}" ${s.giorniSaldo === n ? "selected" : ""}>${n === 0 ? "fine lavori" : `${n} giorni`}</option>`,
+          )
+          .join("")}</select></label>
       </div>
-      <div class="muted xsmall">${esc(AVVISO_LEGALE)}</div>
-    </div>`
+    </details>
+    ${
+      daIncassare && (scad || s.solleciti.length)
+        ? `<details class="inc-recupero">
+      <summary>Se non paga: lettera e dossier${pro}</summary>
+      <div class="stack">
+        ${registroSolleciti.length ? `<div class="muted xsmall">Solleciti mandati: ${esc(registroSolleciti.join(" · "))}</div>` : ""}
+        ${scad ? `<button class="btn block" data-action="pdf-diffida">${ICONE.documento} Lettera di messa in mora (PDF)</button>` : ""}
+        <button class="btn block" data-action="pdf-fascicolo">${ICONE.documento} Dossier del credito per l'avvocato (PDF)</button>
+        <div class="muted xsmall">${esc(AVVISO_LEGALE)}</div>
+      </div>
+    </details>`
         : ""
     }
     ${
       s.fase === "pagato"
-        ? `<div class="banner ok"><span class="ico">🎉</span><div><b>Pagato tutto.</b>${s.eccedenza > 0 ? ` Hai registrato ${esc(core.formatEuro(s.eccedenza))} in più del totale: controlla i pagamenti.` : ""}</div></div>
+        ? `<div class="banner ok"><span class="ico">${ICONE.fatto}</span><div><b>Pagato tutto.</b>${s.eccedenza > 0 ? ` Hai registrato ${esc(core.formatEuro(s.eccedenza))} in più del totale: controlla i pagamenti.` : ""}</div></div>
       ${
         recensioni
           ? `<a class="btn wa block" href="${esc(waLink(prev.cliente.telefono, inc.messaggioRecensione(prev, a, recensioni)))}" target="_blank" rel="noopener" data-action="recensione-chiesta" data-id="${esc(prev.id)}">${ICONE.stella} ${s.recensioneChiestaIl ? "Chiedi di nuovo la recensione" : "Chiedi una recensione su WhatsApp"}</a>`
@@ -1016,7 +1499,12 @@ function aggiornaIncassi() {
   if (!prev || !el) return;
   const mostra = mostraIncassi(prev);
   el.hidden = !mostra;
+  // Le parti aperte a mano (date, "Se non paga") restano aperte dopo il ridisegno.
+  const aperte = [...el.querySelectorAll("details[open]")].map((d) => d.className);
   el.innerHTML = mostra ? htmlIncassi(prev) : "";
+  for (const d of el.querySelectorAll("details")) if (aperte.includes(d.className)) d.open = true;
+  const barra = $(".barra-totale");
+  if (barra) barra.outerHTML = htmlBarra(prev);
 }
 
 async function salvaIncasso(prev, messaggio, tipo = "ok") {
@@ -1030,11 +1518,12 @@ function foglioPagamento() {
   const prev = state.corrente;
   const s = incassoDi(prev);
   const proposta = s.prossima ? s.prossima.importo : 0;
+  const metodi = Object.entries(inc.METODI);
   const f = apriFoglio(
-    `${titoloFoglio("Registra un pagamento", `Da incassare ${esc(core.formatEuro(s.residuo))}`)}
+    `${titoloFoglio("Quanto hai ricevuto?", `Da incassare ${esc(core.formatEuro(s.residuo))}`)}
     <div class="stack">
       <div class="grid2">
-        <label class="campo">Importo €<input id="pag-importo" inputmode="decimal" placeholder="0,00" value="${numIn(proposta, true)}"></label>
+        <label class="campo">Importo €<input id="pag-importo" inputmode="decimal" placeholder="0,00" value="${numIn(proposta, true)}" enterkeyhint="done"></label>
         <label class="campo">Data<input id="pag-data" type="date" value="${core.oggiISO()}"></label>
       </div>
       ${
@@ -1042,19 +1531,42 @@ function foglioPagamento() {
           ? `<div class="row wrap"><button type="button" class="chip" data-action="pag-importo" data-v="${s.prossima.importo}">${esc(s.prossima.tipo === "acconto" ? nomeAnticipo(prev) : "Saldo")} ${esc(core.formatEuro(s.prossima.importo))}</button><button type="button" class="chip" data-action="pag-importo" data-v="${s.residuo}">Tutto ${esc(core.formatEuro(s.residuo))}</button></div>`
           : ""
       }
-      <label class="campo">Metodo<select id="pag-metodo">${Object.entries(inc.METODI)
-        .map(([k, v]) => `<option value="${k}">${esc(v)}</option>`)
-        .join("")}</select></label>
-      <input id="pag-nota" maxlength="300" placeholder="Nota facoltativa, es. CRO del bonifico" aria-label="Nota" data-no-focus="1">
-      <button class="btn primary big block" data-action="pag-salva">${ICONE.check} Registra</button>
+      <div class="seg seg-pieno" role="radiogroup" aria-label="Come ti ha pagato">${metodi
+        .map(
+          ([k, v], n) =>
+            `<button type="button" role="radio" data-action="pag-metodo" data-m="${k}" class="${n === 0 ? "on" : ""}" aria-checked="${n === 0}">${esc(v)}</button>`,
+        )
+        .join("")}</div>
+      <input id="pag-nota" maxlength="300" placeholder="Nota facoltativa, es. numero CRO del bonifico" aria-label="Nota" data-no-focus="1">
+      <button class="btn primary big block" data-action="pag-salva" id="pag-salva">${ICONE.check} Registra</button>
     </div>`,
   );
+  let metodo = metodi[0][0];
+  const aggiornaPulsante = () => {
+    const v = inc.importoValido($("#pag-importo", f).value);
+    $("#pag-salva", f).innerHTML = `${ICONE.check} ${v > 0 ? `Registra ${esc(core.formatEuro(v))}` : "Registra"}`;
+  };
+  aggiornaPulsante();
+  $("#pag-importo", f).addEventListener("input", aggiornaPulsante);
+  $("#pag-importo", f).addEventListener("keydown", (e) => {
+    if (e.key === "Enter") azioni["pag-salva"]();
+  });
   let registrato = false; // un doppio tocco non registra due volte lo stesso pagamento
-  azioni["pag-importo"] = (el) => ($("#pag-importo", f).value = numIn(Number(el.dataset.v)));
+  azioni["pag-importo"] = (el) => {
+    $("#pag-importo", f).value = numIn(Number(el.dataset.v));
+    aggiornaPulsante();
+  };
+  azioni["pag-metodo"] = (el) => {
+    metodo = el.dataset.m;
+    $$("[data-action=pag-metodo]", f).forEach((b) => {
+      b.classList.toggle("on", b === el);
+      b.setAttribute("aria-checked", String(b === el));
+    });
+  };
   azioni["pag-salva"] = async () => {
     if (registrato) return;
     const importo = inc.importoValido($("#pag-importo", f).value);
-    if (!(importo > 0)) return toast("Inserisci l'importo ricevuto");
+    if (!(importo > 0)) return toast("Scrivi quanto hai ricevuto");
     registrato = true;
     const data = $("#pag-data", f).value;
     const i = incassoModificabile(prev);
@@ -1063,15 +1575,16 @@ function foglioPagamento() {
       id: core.uid(),
       importo,
       data: inc.dataValida(data) ? data : core.oggiISO(),
-      metodo: $("#pag-metodo", f).value,
+      metodo: Object.hasOwn(inc.METODI, metodo) ? metodo : "altro",
       nota: $("#pag-nota", f).value.trim(),
     });
     chiudiFoglio();
-    vibra(30);
     traccia("Pagamento registrato");
     await salvaIncasso(prev);
     const dopo = incassoDi(prev);
-    toast(dopo.fase === "pagato" ? "Pagato tutto! 🎉" : `Registrato · restano ${core.formatEuro(dopo.residuo)}`, "ok");
+    if (dopo.fase === "pagato") return foglioPagato(prev);
+    vibra();
+    toast(`Registrato · restano ${core.formatEuro(dopo.residuo)}`, "ok");
   };
 }
 
@@ -1128,6 +1641,7 @@ async function confermaSegnalazione(rif, il, arrivato) {
   }
   registraDaAvviso(i, seg, collega);
   await salvaIncasso(prev, collega ? "Avviso collegato al pagamento già registrato" : "Pagamento registrato");
+  if (incassoDi(prev).fase === "pagato") foglioPagato(prev);
 }
 
 const daChiedere = (prev, s) => inc.daChiedere(prev, s);
@@ -1145,9 +1659,9 @@ function foglioQr() {
   const payload = inc.payloadEpc({ nome: a.intestatarioIban || a.ragioneSociale, iban: a.iban, importo, causale });
   if (!payload) return toast("Controlla nome e IBAN nelle impostazioni");
   apriFoglio(
-    `${titoloFoglio("Fai inquadrare il QR", `${esc(core.formatEuro(importo))} · ${esc(causale)}`)}
+    `${titoloFoglio("Fai inquadrare il QR al cliente", `${esc(core.formatEuro(importo))} · ${esc(causale)}`)}
     <div class="qr-grande">${svgQr(payload, { etichetta: `QR per pagare ${core.formatEuro(importo)} con bonifico` })}</div>
-    <p class="muted small" style="text-align:center;margin:12px 0">Il cliente lo inquadra con l'app della sua banca e il bonifico si compila da solo: importo, IBAN e causale. Funziona con le app che leggono i QR SEPA.</p>
+    <p class="muted small" style="text-align:center;margin:12px 0">Il cliente lo inquadra con l'app della sua banca e il bonifico si compila da solo. Funziona con le app che leggono i QR SEPA; con le altre basta l'IBAN.</p>
     <button class="btn primary big block" data-action="registra-pagamento">${ICONE.check} Ha pagato: registra</button>`,
   );
 }
@@ -1180,18 +1694,19 @@ async function foglioSollecito(livelloRichiesto) {
   if (!scaduto) livello = Math.min(livello, 1);
   const f = apriFoglio(
     `${titoloFoglio(livello ? "Sollecita il pagamento" : "Chiedi il pagamento", `${esc(core.nomeCliente(prev.cliente))} · ${esc(core.formatEuro(richiesta.importo))}`)}
+    <div class="muted xsmall" style="margin:-6px 0 8px">Scegli il tono: il messaggio qui sotto si aggiorna e puoi cambiarlo.</div>
     <div class="stack">
       <div class="seg seg-pieno" role="group" aria-label="Tono del messaggio">${[0, 1, 2, 3]
         .map(
           (l) =>
-            `<button type="button" data-action="tono" data-l="${l}" class="${l === livello ? "on" : ""}" aria-pressed="${l === livello}" ${l >= 2 && !scaduto ? 'disabled title="Solo per importi scaduti"' : ""}>${esc(inc.TONI_MESSAGGIO[l])}${l >= 2 && !state.pro && scaduto ? " ★" : ""}</button>`,
+            `<button type="button" data-action="tono" data-l="${l}" class="${l === livello ? "on" : ""}" aria-pressed="${l === livello}" ${l >= 2 && !scaduto ? 'disabled title="Solo per importi scaduti"' : ""}>${esc(inc.TONI_MESSAGGIO[l])}${l >= 2 && !state.pro && scaduto ? ` <span class="badge pro" style="padding:1px 5px;font-size:10px">PRO</span>` : ""}</button>`,
         )
         .join("")}</div>
-      ${sug.troppoPresto ? `<div class="banner warn"><span class="ico">⏳</span><div>Hai già sollecitato il ${esc(core.formatData(core.oggiISO(new Date(sug.ultimo))))}: di solito conviene aspettare una settimana tra un messaggio e l'altro.</div></div>` : ""}
+      ${sug.troppoPresto ? `<div class="banner warn"><span class="ico">${ICONE.orologio}</span><div>Hai già sollecitato il ${esc(core.formatData(core.oggiISO(new Date(sug.ultimo))))}: di solito conviene aspettare una settimana tra un messaggio e l'altro.</div></div>` : ""}
       <textarea id="sol-testo" rows="9" aria-label="Messaggio da inviare">${esc(testo(livello))}</textarea>
       ${link ? `<p class="muted xsmall" style="margin:0">Il messaggio contiene un link dove il cliente trova importo, IBAN, QR del bonifico e il pulsante "Ho pagato".</p>` : ""}
       <div class="lista-azioni">
-        <a href="#" id="sol-wa" target="_blank" rel="noopener" data-action="sol-inviato" data-canale="whatsapp"><span class="ico wa">${ICONE.whatsapp}</span><span class="corpo">Invia su WhatsApp<small>${esc(prev.cliente.telefono || "Scegli il contatto")}</small></span></a>
+        <a href="#" id="sol-wa" class="principale" target="_blank" rel="noopener" data-action="sol-inviato" data-canale="whatsapp"><span class="ico wa">${ICONE.whatsapp}</span><span class="corpo">Manda su WhatsApp<small>${esc(prev.cliente.telefono || "Scegli il contatto")}</small></span></a>
         <button data-action="sol-copia"><span class="ico">${ICONE.copia}</span><span class="corpo">Copia il messaggio<small>Per SMS, Telegram...</small></span></button>
         <a href="#" id="sol-mail" data-action="sol-inviato" data-canale="email"><span class="ico">${ICONE.mail}</span><span class="corpo">Email<small>${esc(email || "Scegli il destinatario")}</small></span></a>
       </div>
@@ -1306,7 +1821,7 @@ async function pdfFascicolo() {
 function htmlDate(prev) {
   const app = inc.normalizzaAppuntamento(prev.appuntamento);
   const lista = Array.isArray(prev.disponibilita) ? prev.disponibilita : [];
-  const titolo = `<div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.orologio}</span><div><h2>Inizio lavori</h2><div class="muted xsmall">${app ? "Data concordata con il cliente" : "Proponi fino a 3 date: il cliente ne sceglie una quando firma"}</div></div></div>`;
+  const titolo = `<div class="sezione-titolo" style="margin:0"><div><h2>Inizio lavori</h2><div class="muted xsmall">${app ? "Data concordata con il cliente" : "Proponi fino a 3 date: il cliente ne sceglie una quando firma"}</div></div></div>`;
   if (app) {
     const { giorno, mese } = giornoMese(app.data);
     return `${titolo}
@@ -1327,8 +1842,8 @@ function htmlDate(prev) {
       .join("")}
     ${lista.some((d) => inc.dataValida(d.data) && d.data < core.oggiISO()) ? `<div class="muted xsmall testo-bad">Le date già passate non vengono proposte al cliente.</div>` : ""}
     <div class="grid2">
-      ${lista.length < inc.MAX_DISPONIBILITA ? `<button class="btn soft" data-action="data-aggiungi">${ICONE.piu} Proponi data</button>` : ""}
-      <button class="btn" data-action="fissa-data">${ICONE.check} Fissa data</button>
+      ${lista.length < inc.MAX_DISPONIBILITA ? `<button class="btn soft" data-action="data-aggiungi">${ICONE.piu} Proponi</button>` : ""}
+      <button class="btn" data-action="fissa-data">${ICONE.check} Già decisa</button>
     </div>`;
 }
 
@@ -1366,14 +1881,14 @@ function foglioFissaData() {
 function htmlFirma(prev) {
   const img = immagineSicura(prev.firma && prev.firma.img);
   if (img) {
-    return `<div class="sezione-titolo" style="margin:0"><span class="ico" style="background:var(--ok-soft);color:var(--ok)">${ICONE.firma}</span><h2>Firma del cliente</h2><span class="badge accettato dx">Firmato</span></div>
+    return `<div class="sezione-titolo" style="margin:0"><h2>Firma del cliente</h2><span class="badge accettato dx">Firmato</span></div>
       <div class="firma-box"><img src="${img}" alt="Firma del cliente"></div>
-      <div class="muted small">Firmato ${prev.firma.online ? "online " : ""}da ${esc(prev.firma.nome)} il ${esc(core.formatData(core.oggiISO(new Date(prev.firma.data))))}</div>
+      <div class="muted small">Firmato ${prev.firma.sulPosto ? "sul posto " : prev.firma.online ? "online " : ""}da ${esc(prev.firma.nome)} il ${esc(core.formatData(core.oggiISO(new Date(prev.firma.data))))}</div>
       <button class="btn small danger" data-action="rimuovi-firma" style="align-self:flex-start">${ICONE.cestino} Rimuovi firma</button>`;
   }
-  return `<div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.firma}</span><div><h2>Firma del cliente</h2><div class="muted xsmall">Sul posto, sul tuo telefono${state.pro ? "" : " · Pro"}</div></div></div>
-    <p class="muted small" style="margin:0">Sei dal cliente? Fallo firmare qui. Se invece mandi il <b>link di accettazione</b>, firma lui dal suo telefono.</p>
-    <button class="btn block" data-action="firma">${ICONE.firma} Fai firmare il cliente ora</button>`;
+  return `<div class="sezione-titolo" style="margin:0"><div><h2>Firma al tavolo</h2><div class="muted xsmall">${esc(notaPresenta())}</div></div></div>
+    <p class="muted small" style="margin:0">Sei dal cliente? Gli passi il telefono: vede il preventivo come lo vedrebbe lui, sceglie gli extra e firma col dito. Se invece glielo mandi, firma dal suo telefono.</p>
+    <button class="btn block" data-action="presenta">${ICONE.firma} Fallo firmare qui</button>`;
 }
 
 function htmlRiepilogo(prev) {
@@ -1393,7 +1908,7 @@ function htmlRiepilogo(prev) {
   if (t.acconto > 0) html += r("Acconto", core.formatEuro(t.acconto)) + r("Saldo", core.formatEuro(t.saldo));
   if (t.opzionali.length) {
     const extra = t.opzionali.reduce((s, x) => s + x.importo, 0);
-    html += `<div class="banner warn" style="margin-top:10px"><span class="ico">✨</span><div>${t.opzionali.length} ${t.opzionali.length === 1 ? "voce facoltativa" : "voci facoltative"} proposte (+ ${esc(core.formatEuro(extra))} imponibile): il cliente può aggiungerle accettando online.</div></div>`;
+    html += `<div class="banner warn" style="margin-top:10px"><span class="ico">${ICONE.scintille}</span><div>${t.opzionali.length === 1 ? `1 extra proposto (+ ${esc(core.formatEuro(extra))} senza IVA): il cliente può aggiungerlo quando firma.` : `${t.opzionali.length} extra proposti (+ ${esc(core.formatEuro(extra))} senza IVA): il cliente può aggiungerli quando firma.`}</div></div>`;
   }
   if (t.costi > 0) {
     html += `<div class="margine" id="margine">${ICONE.lucchetto}<div>Guadagno stimato <b>${esc(core.formatEuro(t.margine))}</b> (${esc(core.formatQta(t.marginePerc))}%)<div class="muted xsmall">Imponibile meno costo dei materiali · lo vedi solo tu</div></div></div>`;
@@ -1405,19 +1920,30 @@ function aggiornaTotali() {
   const prev = state.corrente;
   if (!prev) return;
   const t = totaliDi(prev);
-  $("#tot-valore").textContent = core.formatEuro(t.totale);
+  const totale = $("#tot-valore");
+  if (totale) totale.textContent = core.formatEuro(t.totale);
   prev.righe.forEach((r, i) => {
     const el = $(`[data-importo="${i}"]`);
     if (el) el.textContent = core.formatEuro(core.importoRiga(r));
   });
   $("#riepilogo").innerHTML = htmlRiepilogo(prev);
+  const acc = $("#acconto-testo");
+  if (acc) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = htmlAcconto(prev);
+    acc.innerHTML = $("#acconto-testo", tmp).innerHTML;
+  }
+  const ro = $("#riassunto-opzioni");
+  if (ro) ro.textContent = riassuntoOpzioni(prev);
   if (!$("#sezione-incassi")?.hidden) aggiornaIncassi();
 }
 
 function rerenderRighe() {
   const prev = state.corrente;
   $("#righe").innerHTML = htmlRighe(prev);
-  $("#n-righe").textContent = `(${prev.righe.length})`;
+  $("#n-righe").textContent = testoNumeroVoci(prev.righe.length);
+  const pd = $("#parti-da");
+  if (pd) pd.innerHTML = htmlPartiDa(prev);
   $$("#righe textarea").forEach(autoAltezza);
   aggiornaTotali();
 }
@@ -1477,6 +2003,21 @@ function suInputEditor(e) {
   } else if (campo && CAMPI_EDITOR.has(campo)) {
     const valore = CAMPI_NUMERICI.has(campo) ? core.parseNumero(el.value) : el.value;
     impostaPercorso(prev, campo, valore);
+    if (campo === "cliente.nome" || campo === "oggetto") {
+      const t = $("#titolo-editor");
+      if (t) t.textContent = titoloEditor(prev);
+    }
+    // Un altro nome sullo stesso cliente (per esempio in un preventivo duplicato): è un altro cliente,
+    // non si rinomina quello salvato.
+    if (campo === "cliente.nome" && prev.clienteId) {
+      const rec = state.clienti.find((x) => x.id === prev.clienteId);
+      const norm = (x) =>
+        String(x || "")
+          .trim()
+          .toLowerCase();
+      const altri = state.preventivi.some((p) => p.id !== prev.id && p.clienteId === prev.clienteId);
+      if (rec && altri && norm(rec.nome) !== norm(valore)) prev.clienteId = null;
+    }
     if (campo === "stato") {
       if (valore === "accettato") {
         if (!prev.accettatoIl) prev.accettatoIl = core.oggiISO();
@@ -1561,7 +2102,7 @@ function menuRiga(i) {
       ${i > 0 ? voce("su", ICONE.su, "Sposta su") : ""}
       ${i < prev.righe.length - 1 ? voce("giu", ICONE.giu, "Sposta giù") : ""}
       ${voce("duplica", ICONE.copia, "Duplica voce")}
-      ${voce("listino", ICONE.listino, "Salva nel mio listino")}
+      ${voce("listino", ICONE.listino, "Salva tra i miei prezzi")}
       ${voce("elimina", ICONE.cestino, "Elimina voce", "danger")}
     </div>`,
   );
@@ -1575,7 +2116,18 @@ async function opRiga(op, i) {
   if (op === "su" && i > 0) [righe[i - 1], righe[i]] = [righe[i], righe[i - 1]];
   if (op === "giu" && i < righe.length - 1) [righe[i + 1], righe[i]] = [righe[i], righe[i + 1]];
   if (op === "duplica") righe.splice(i + 1, 0, { ...righe[i], id: core.uid() });
-  if (op === "elimina") righe.splice(i, 1);
+  if (op === "elimina") {
+    const [tolta] = righe.splice(i, 1);
+    toast("Voce eliminata", "", {
+      azione: "Annulla",
+      suAzione: () => {
+        if (state.corrente !== prev) return;
+        prev.righe.splice(Math.min(i, prev.righe.length), 0, tolta);
+        rerenderRighe();
+        salvaDopo(prev);
+      },
+    });
+  }
   if (op === "listino") {
     const r = righe[i];
     if (!r.descrizione.trim()) return toast("Scrivi prima la descrizione");
@@ -1590,7 +2142,7 @@ async function opRiga(op, i) {
     };
     await db.salva("listino", voce);
     state.listino.push(voce);
-    return toast("Salvata nel listino", "ok");
+    return toast("Salvata tra i tuoi prezzi", "ok");
   }
   rerenderRighe();
   salvaDopo(prev);
@@ -1603,15 +2155,15 @@ function foglioListino() {
     const f = filtro.trim().toLowerCase();
     const trovate = voci.filter((v) => !f || v.descrizione.toLowerCase().includes(f));
     if (!voci.length) {
-      return `<p class="muted">Il tuo listino è vuoto.</p>
+      return `<p class="muted">Non hai ancora salvato prezzi.</p>
         ${m ? `<button class="btn soft block" data-action="carica-esempi" data-m="${m.id}">Carica i prezzi tipici da ${esc(m.nome.toLowerCase())}</button>` : ""}
-        <a class="btn block" href="#/listino" style="margin-top:8px">Vai al listino</a>`;
+        <a class="btn block" href="#/listino" style="margin-top:8px">Vai ai miei prezzi</a>`;
     }
     return (
       trovate
         .map(
           (v) => `<button class="voce-listino" data-action="usa-voce" data-id="${esc(v.id)}">
-            <span class="tipo" aria-hidden="true">${v.tipo === "mat" ? "📦" : "🛠️"}</span>
+            <span class="tipo" aria-hidden="true">${v.tipo === "mat" ? ICONE.carrello : ICONE.lavoro}</span>
             <div class="corpo"><div>${esc(v.descrizione)}</div><div class="muted xsmall">${v.tipo === "mat" ? "Materiale" : "Manodopera"} · ${esc(v.um)}</div></div>
             <div class="prezzo">${core.formatEuro(v.prezzo)}</div></button>`,
         )
@@ -1619,8 +2171,8 @@ function foglioListino() {
     );
   };
   apriFoglio(
-    `${titoloFoglio("Aggiungi dal listino", "Tocca una voce per aggiungerla")}
-    <input type="search" id="cerca-listino" placeholder="Cerca nel listino" aria-label="Cerca nel listino">
+    `${titoloFoglio("Dai miei prezzi", "Tocca una voce per aggiungerla al preventivo")}
+    <input type="search" id="cerca-listino" placeholder="Cerca tra i tuoi prezzi" aria-label="Cerca tra i tuoi prezzi">
     <div id="voci-listino" style="margin-top:6px">${htmlVociListino()}</div>`,
     {
       alMontaggio: (f) => {
@@ -1645,16 +2197,72 @@ async function caricaEsempi(idMestiere) {
 }
 
 function menuPreventivo() {
-  const voce = (azione, ico, testo, cls = "") =>
-    `<button class="${cls}" data-action="${azione}"><span class="ico">${ico}</span><span class="corpo">${testo}</span></button>`;
+  const prev = state.corrente;
+  const voce = (azione, ico, testo, sotto = "", cls = "") =>
+    `<button class="${cls}" data-action="${azione}"><span class="ico">${ico}</span><span class="corpo">${testo}${sotto ? `<small>${sotto}</small>` : ""}</span></button>`;
   apriFoglio(
-    `${titoloFoglio("Azioni")}
+    `${titoloFoglio("Altre azioni", `Preventivo n. ${esc(prev.numero)}`)}
     <div class="lista-azioni">
-      ${voce("scarica-pdf", ICONE.scarica, "Scarica PDF")}
-      ${voce("duplica-preventivo", ICONE.copia, "Duplica preventivo")}
-      ${voce("elimina-preventivo", ICONE.cestino, "Elimina preventivo", "danger")}
+      ${prev.stato === "accettato" ? voce("invia", ICONE.invia, "Manda di nuovo al cliente", "Il PDF o il link aggiornato") : ""}
+      ${voce("scarica-pdf", ICONE.scarica, "Scarica il PDF")}
+      ${prev.stato === "accettato" ? voce("crea-variante", ICONE.variante, "Lavori extra da far firmare", "Una variante con le sole voci in più") : ""}
+      ${voce("lista-materiali", ICONE.carrello, "Lista materiali per il fornitore", "I materiali del preventivo in un messaggio")}
+      ${voce("duplica-preventivo", ICONE.duplica, "Rifai un preventivo simile", "Stesse voci e prezzi, per lo stesso cliente o un altro")}
+      ${voce("elimina-preventivo", ICONE.cestino, "Elimina preventivo", "", "danger")}
     </div>`,
   );
+}
+
+// Duplicare un preventivo per un altro cliente non deve portarsi dietro i dati del primo.
+function foglioDuplica() {
+  const orig = state.corrente;
+  const nome = (orig.cliente.nome || "").trim();
+  apriFoglio(
+    `${titoloFoglio("Per chi è il nuovo preventivo?", "Voci, prezzi e condizioni restano uguali")}
+    <div class="lista-azioni">
+      <button data-action="duplica-per" data-chi="altro" class="principale"><span class="ico">${ICONE.persona_piu}</span><span class="corpo">Per un altro cliente<small>Parti con i dati del cliente vuoti</small></span></button>
+      ${nome ? `<button data-action="duplica-per" data-chi="stesso"><span class="ico">${ICONE.utente}</span><span class="corpo">Di nuovo per ${esc(nome)}<small>Per esempio per un altro lavoro o una variante</small></span></button>` : ""}
+    </div>`,
+    { classe: "piccolo" },
+  );
+}
+
+async function duplica(stessoCliente) {
+  const orig = state.corrente;
+  const numerazione = core.prossimoNumero(state.preventivi, new Date().getFullYear(), state.azienda.prefisso);
+  const copia = {
+    ...structuredClone(orig),
+    ...numerazione,
+    id: core.uid(),
+    data: core.oggiISO(),
+    stato: "bozza",
+    firma: null,
+    link: null,
+    linkPrecedenti: [],
+    accettazioneOnline: null,
+    accettatoIl: "",
+    incasso: null,
+    appuntamento: null,
+    disponibilita: [],
+    inviatoIl: null,
+    ricontattatoIl: null,
+    variante: null,
+    regime: state.azienda.regime,
+    addebitaBollo: state.azienda.addebitaBollo,
+    createdAt: Date.now(),
+  };
+  if (!stessoCliente) {
+    copia.cliente = { nome: "", indirizzo: "", citta: "", cfpiva: "", telefono: "", email: "" };
+    copia.clienteId = null;
+  }
+  copia.righe = copia.righe.map((r) => ({ ...r, id: core.uid() }));
+  chiudiFoglio(true);
+  await salvaPreventivo(copia);
+  toast(
+    stessoCliente ? `Nuovo preventivo n. ${copia.numero}` : "Copiato: scrivi il nuovo cliente e controlla i prezzi",
+    "ok",
+  );
+  vai(`#/p/${copia.id}`);
 }
 
 // ------------------------------------------------------------------
@@ -1809,7 +2417,7 @@ function aggiungiDaDettatura(testo) {
       ? voci[0].prezzo
         ? "Voce aggiunta"
         : "Voce aggiunta: inserisci il prezzo"
-      : `${voci.length} voci aggiunte${dalListino ? ` (${dalListino} dal listino)` : ""}`,
+      : `${voci.length} voci aggiunte${dalListino ? ` (${dalListino} con i tuoi prezzi)` : ""}`,
     "ok",
   );
   traccia("Dettatura", { voci: voci.length });
@@ -1875,12 +2483,9 @@ function foglioFirma() {
     fissaAccordo(prev);
     await salvaPreventivo(prev);
     traccia("Firma cliente");
-    chiudiFoglio();
-    vibra(30);
-    $("#sezione-firma").innerHTML = htmlFirma(prev);
-    $('[data-campo="stato"]').value = "accettato";
-    aggiornaIncassi();
-    toast("Firmato! Preventivo accettato", "ok");
+    chiudiFoglio(true);
+    state.festa = prev.id;
+    viewEditor(prev.id);
   };
 }
 
@@ -1954,9 +2559,25 @@ function registraEsportazione(prev) {
   db.set("contatore", state.contatore);
 }
 
-function verificaPronto(prev) {
+// riprova: cosa rifare se l'utente conferma di voler mandare comunque le voci senza prezzo.
+function verificaPronto(prev, riprova = null) {
   if (!prev.righe.length) {
-    toast("Aggiungi almeno una voce al preventivo");
+    toast("Aggiungi almeno un lavoro o un materiale");
+    return false;
+  }
+  const senzaPrezzo = prev.righe.filter((r) => !r.opzionale && !(core.parseNumero(r.prezzo) > 0)).length;
+  if (senzaPrezzo && !state.senzaPrezzoOk.has(prev.id)) {
+    chiedi({
+      titolo: senzaPrezzo === 1 ? "Una voce è senza prezzo" : `${senzaPrezzo} voci sono senza prezzo`,
+      testo: "Nel preventivo comparirebbero a 0 €.",
+      ok: "Mandalo lo stesso",
+      annulla: "Inserisco i prezzi",
+    }).then((ok) => {
+      if (ok) {
+        state.senzaPrezzoOk.add(prev.id);
+        riprova?.();
+      } else $(`.riga [data-r="prezzo"]`)?.closest(".riga")?.scrollIntoView({ block: "center" });
+    });
     return false;
   }
   return true;
@@ -1973,12 +2594,12 @@ function scaricaBlob(blob, nome) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+// Guardare il PDF non consuma i preventivi gratuiti: conta solo quello che si manda o si scarica.
 async function anteprima() {
   const prev = state.corrente;
-  if (!verificaPronto(prev) || !entroLimite(prev)) return;
+  if (!verificaPronto(prev, anteprima)) return;
   // La finestra si apre subito (prima delle operazioni asincrone) per evitare i blocchi popup.
   const finestra = window.open("", "_blank");
-  registraEsportazione(prev);
   try {
     const blob = await generaPdf(prev);
     const url = URL.createObjectURL(blob);
@@ -1993,27 +2614,41 @@ async function anteprima() {
 async function scaricaPdf() {
   const prev = state.corrente;
   chiudiFoglio();
-  if (!verificaPronto(prev) || !entroLimite(prev)) return;
+  if (!verificaPronto(prev, scaricaPdf) || !entroLimite(prev)) return;
   registraEsportazione(prev);
-  scaricaBlob(await generaPdf(prev), core.nomeFilePdf(prev));
+  toast("Preparo il PDF…");
+  try {
+    scaricaBlob(await generaPdf(prev), core.nomeFilePdf(prev));
+  } catch (err) {
+    toast(err.message || "Errore nella creazione del PDF");
+  }
 }
 
 async function segnaInviato(prev) {
   traccia("Preventivo inviato");
-  if (prev.stato === "bozza") {
-    prev.stato = "inviato";
-    const sel = $('[data-campo="stato"]');
-    if (sel) sel.value = "inviato";
-  }
+  if (prev.stato === "bozza") prev.stato = "inviato";
   // Il primo invio fa partire il conteggio per il promemoria; un nuovo invio vale come ricontatto.
   if (!prev.inviatoIl) prev.inviatoIl = Date.now();
   else prev.ricontattatoIl = Date.now();
   await salvaPreventivo(prev);
+  aggiornaStatoEditor(prev);
 }
 
 function testoConLink(prev, link) {
   const t = totaliDi(prev);
   const saluto = prev.cliente.nome ? `Buongiorno ${prev.cliente.nome},` : "Buongiorno,";
+  if (prev.variante)
+    return (
+      `${saluto} come d'accordo le mando i lavori extra al preventivo n. ${prev.variante.numero}: ${core.formatEuro(t.totale)}${t.forfettario ? "" : " IVA inclusa"}.
+` +
+      `Può vederli e accettarli con la firma direttamente dal telefono:
+${link}` +
+      (state.azienda.ragioneSociale
+        ? `
+
+${state.azienda.ragioneSociale}`
+        : "")
+    );
   return (
     `${saluto} ecco il preventivo n. ${prev.numero}${prev.oggetto ? ` per "${prev.oggetto}"` : ""}: ${core.formatEuro(t.totale)}${t.forfettario ? "" : " IVA inclusa"}.\n` +
     (t.opzionali.length
@@ -2024,55 +2659,124 @@ function testoConLink(prev, link) {
   );
 }
 
+// Firma al tavolo: il cliente vede la sua pagina vera sul telefono dell'impresa, sceglie gli extra e firma.
+// Poi ridà il telefono e l'impresa registra la firma. Senza Pro la prima volta è in prova.
+function notaPresenta() {
+  if (state.pro) return "Il cliente firma sul tuo telefono";
+  return state.provaPresenta ? "Funzione Pro" : "La prima volta è gratis";
+}
+
+async function presenta(pulsante) {
+  const prev = state.corrente;
+  if (!prev) return;
+  if (!state.pro && state.provaPresenta) return paywall("firma");
+  if (!verificaPronto(prev, () => presenta(pulsante)) || !entroLimite(prev)) return;
+  occupato(pulsante, "Preparo la pagina…");
+  try {
+    await salvaClienteDa(prev);
+    const url = await preparaLink(prev);
+    if (!url) {
+      libero(pulsante);
+      return foglioFirma(); // preventivo troppo grande per il link: resta il riquadro della firma
+    }
+    await salvaPreventivo(prev);
+    registraEsportazione(prev);
+    traccia("Firma al tavolo");
+    const destinazione = url.replace("accetta.html#", "accetta.html?presenta=1#");
+    // L'anteprima pubblicata passa il codice in un altro modo: le basta annullare questo evento.
+    if (!window.dispatchEvent(new CustomEvent("pl-presenta", { detail: destinazione, cancelable: true }))) return;
+    location.href = destinazione;
+  } catch (err) {
+    libero(pulsante);
+    toast(err.message || "Non riesco a preparare la pagina del cliente");
+  }
+}
+
 // Il foglio di invio prepara PDF e link PRIMA di mostrarsi: così i pulsanti aprono WhatsApp
 // e la condivisione subito, senza attese che farebbero bloccare il popup dal browser.
-async function invia() {
+async function invia(pulsante) {
   const prev = state.corrente;
-  if (!verificaPronto(prev) || !entroLimite(prev)) return;
-  await salvaClienteDa(prev);
+  if (!verificaPronto(prev, () => invia(pulsante)) || !entroLimite(prev)) return;
+  occupato(pulsante, "Preparo il preventivo…");
   let blob, link;
   try {
+    await salvaClienteDa(prev);
     link = await preparaLink(prev).catch(() => null);
     blob = await generaPdf(prev, { link });
   } catch (err) {
     return toast(err.message || "Errore nella creazione del PDF");
+  } finally {
+    libero(pulsante);
   }
-  const nome = core.nomeFilePdf(prev);
-  const file = new File([blob], nome, { type: "application/pdf" });
+  const nomeFilePdf = core.nomeFilePdf(prev);
+  const file = new File([blob], nomeFilePdf, { type: "application/pdf" });
   const puoCondividere = Boolean(navigator.canShare && navigator.canShare({ files: [file] }));
-  const tel = core.telefonoWhatsApp(prev.cliente.telefono);
   const testoPdf = core.testoWhatsApp(prev, state.azienda, totaliDi(prev));
   const testoLink = link ? testoConLink(prev, link) : "";
+  const nome = (prev.cliente.nome || "").trim();
   const voce = (attr, ico, titolo, sotto, extra = "") =>
     `<${attr}><span class="ico ${extra}">${ico}</span><span class="corpo">${titolo}<small>${sotto}</small></span>`;
+  const hrefWa = (tel) => waLink(tel, link ? testoLink : testoPdf);
 
   const f = apriFoglio(
-    `${titoloFoglio("Invia il preventivo", `${esc(core.nomeCliente(prev.cliente))} · ${esc(core.formatEuro(totaliDi(prev).totale))}`)}
-    <div class="lista-azioni">
+    `${titoloFoglio("Manda il preventivo", `${esc(core.nomeCliente(prev.cliente))} · ${esc(core.formatEuro(totaliDi(prev).totale))}`)}
+    <div class="stack">
       ${
-        link
-          ? `${voce(`a href="https://wa.me/${tel}?text=${encodeURIComponent(testoLink)}" target="_blank" rel="noopener" data-action="invio-link"`, ICONE.whatsapp, "WhatsApp con link di accettazione", "Il cliente lo apre, sceglie le facoltative e firma dal suo telefono", "wa")}<span class="nuovo">NUOVO</span></a>
-             ${voce('button data-action="invio-copia-link"', ICONE.link, "Copia il link di accettazione", "Da incollare in SMS, Telegram, email...")}</button>`
+        core.telefonoWhatsApp(prev.cliente.telefono)
+          ? ""
+          : `<label class="campo">Numero WhatsApp${nome ? ` di ${esc(nome)}` : " del cliente"}<input id="invio-tel" type="tel" inputmode="tel" placeholder="es. 333 123 4567" value="${esc(prev.cliente.telefono)}"></label>`
+      }
+      <div class="invio-principale">
+        <a class="btn wa big block" id="invio-wa" href="${esc(hrefWa(prev.cliente.telefono))}" target="_blank" rel="noopener" data-action="invio-link">${ICONE.whatsapp} Manda su WhatsApp</a>
+        <p class="muted small" style="margin:8px 2px 0">${nome ? `A <b>${esc(nome)}</b>. ` : ""}${
+          link
+            ? "Lo apre dal telefono, sceglie gli extra e firma col dito. Poi ti torna un suo messaggio di conferma."
+            : "Gli arriva il riepilogo con il totale: allega il PDF con «Altri modi»."
+        }</p>
+      </div>
+      ${
+        link && !prev.firma
+          ? `<button class="btn block invio-tavolo" data-action="presenta">${ICONE.firma}<span>Sei dal cliente? <b>Fallo firmare qui</b><small>${esc(notaPresenta())}</small></span></button>`
           : ""
       }
-      ${puoCondividere ? `${voce('button data-action="invio-condividi"', ICONE.condividi, "Condividi il PDF", "WhatsApp, email o altre app", "grad")}</button>` : ""}
-      ${voce('button data-action="invio-scarica"', ICONE.scarica, "Scarica il PDF", "Da allegare dove vuoi")}</button>
-      ${voce(`a href="mailto:${encodeURIComponent(prev.cliente.email || "")}?subject=${encodeURIComponent(`Preventivo n. ${prev.numero}`)}&body=${encodeURIComponent((link ? testoLink : testoPdf) + "\n\n(In allegato il PDF)")}" data-action="invio-segna"`, ICONE.mail, "Email", prev.cliente.email ? esc(prev.cliente.email) : "Scegli il destinatario")}</a>
+      <details class="altri-modi">
+        <summary>Altri modi per mandarlo</summary>
+        <div class="lista-azioni">
+          ${link ? `${voce('button data-action="invio-copia-link"', ICONE.link, "Copia il messaggio con il link", "Da incollare in un SMS, Telegram o email")}</button>` : ""}
+          ${puoCondividere ? `${voce('button data-action="invio-condividi"', ICONE.condividi, "Condividi il PDF", "WhatsApp, email o altre app")}</button>` : ""}
+          ${voce('button data-action="invio-scarica"', ICONE.scarica, "Scarica il PDF", "Da allegare dove vuoi")}</button>
+          ${voce(`a href="mailto:${encodeURIComponent(prev.cliente.email || "")}?subject=${encodeURIComponent(`Preventivo n. ${prev.numero}`)}&body=${encodeURIComponent((link ? testoLink : testoPdf) + "\n\n(In allegato il PDF)")}" data-action="invio-segna"`, ICONE.mail, "Email", prev.cliente.email ? esc(prev.cliente.email) : "Scegli il destinatario")}</a>
+        </div>
+      </details>
+      <div class="grid2">
+        ${link ? `<a class="btn ghost" href="${esc(link)}" target="_blank" rel="noopener" data-action="guarda-cliente">${ICONE.occhio} Come lo vede lui</a>` : ""}
+        <button class="btn ghost ${link ? "" : "block"}" data-action="anteprima">${ICONE.documento} Il PDF</button>
+      </div>
     </div>`,
   );
   f.dataset.link = link || "";
   registraEsportazione(prev);
+  const tel = $("#invio-tel", f);
+  tel?.addEventListener("input", () => {
+    prev.cliente.telefono = tel.value;
+    $("#invio-wa", f).href = hrefWa(tel.value);
+    salvaDopo(prev);
+  });
   azioni["invio-link"] = () => {
     segnaInviato(prev);
     traccia("Link accettazione inviato");
+    attendiRitorno(prev);
   };
   azioni["invio-copia-link"] = async () => {
-    toast((await copiaTesto(testoLink)) ? "Messaggio con link copiato" : "Copia non riuscita");
-    segnaInviato(prev);
+    const ok = await copiaTesto(testoLink);
+    if (!ok) return toast("Copia non riuscita");
+    await segnaInviato(prev);
+    chiudiFoglio();
+    toast("Messaggio copiato: incollalo dove vuoi", "ok");
   };
   azioni["invio-condividi"] = async () => {
     try {
-      await navigator.share({ files: [file], title: nome, text: testoPdf });
+      await navigator.share({ files: [file], title: nomeFilePdf, text: testoPdf });
       await segnaInviato(prev);
       chiudiFoglio();
       toast("Preventivo inviato", "ok");
@@ -2081,10 +2785,63 @@ async function invia() {
     }
   };
   azioni["invio-scarica"] = async () => {
-    scaricaBlob(blob, nome);
+    scaricaBlob(blob, nomeFilePdf);
     await segnaInviato(prev);
   };
   azioni["invio-segna"] = () => segnaInviato(prev);
+}
+
+// Dopo WhatsApp si torna nell'app: il foglio di invio si chiude e si spiega cosa succede adesso.
+let ritornoDaInvio = null;
+function attendiRitorno(prev) {
+  ritornoDaInvio = prev.id;
+  // Se WhatsApp non porta via la pagina (computer, anteprima), si mostra comunque.
+  setTimeout(() => {
+    if (ritornoDaInvio === prev.id && document.visibilityState === "visible") dopoInvio();
+  }, 1500);
+}
+
+function dopoInvio() {
+  const prev = state.preventivi.find((p) => p.id === ritornoDaInvio);
+  ritornoDaInvio = null;
+  if (!prev || !state.corrente || state.corrente.id !== prev.id) return;
+  aggiornaStatoEditor(prev);
+  const nome = (prev.cliente.nome || "").trim() || "il cliente";
+  const viste = Number(preferenza.get("pl-spiegato-invio")) || 0;
+  if (viste >= 2) {
+    chiudiFoglio();
+    return toast(`Inviato a ${nome}`, "ok");
+  }
+  preferenza.set("pl-spiegato-invio", String(viste + 1));
+  const giorni = Number(state.azienda.giorniRicontatto) || 3;
+  apriFoglio(
+    `${titoloFoglio(`Inviato a ${esc(nome)}`, "Ecco cosa succede adesso")}
+    <ol class="percorso">
+      <li class="fatto"><b>Preventivo inviato</b><span>Gli arriva su WhatsApp con il link</span></li>
+      <li><b>${esc(nome.charAt(0).toUpperCase() + nome.slice(1))} lo firma dal telefono</b><span>Sceglie gli extra e la data di inizio, poi firma col dito</span></li>
+      <li><b>Ti arriva il suo messaggio</b><span>Tocca il link che contiene: il preventivo diventa Accettato con la sua firma</span></li>
+      <li><b>L'app segue i pagamenti</b><span>Acconto, saldo e promemoria quando qualcuno è in ritardo</span></li>
+    </ol>
+    <p class="muted small" style="margin:4px 0 14px">Se non risponde entro ${giorni} giorni te lo ricordo nella pagina iniziale.</p>
+    <button class="btn primary big block" data-action="chiudi-foglio">Ho capito</button>`,
+    { classe: "piccolo" },
+  );
+}
+
+// Le operazioni lente (PDF, link) mostrano subito che il tocco è arrivato.
+function occupato(pulsante, testo) {
+  if (!pulsante || pulsante.dataset.testo) return;
+  pulsante.dataset.testo = pulsante.innerHTML;
+  pulsante.setAttribute("aria-busy", "true");
+  pulsante.disabled = true;
+  pulsante.innerHTML = `<span class="gira" aria-hidden="true"></span><span>${esc(testo)}</span>`;
+}
+function libero(pulsante) {
+  if (!pulsante || !pulsante.dataset.testo) return;
+  pulsante.innerHTML = pulsante.dataset.testo;
+  delete pulsante.dataset.testo;
+  pulsante.removeAttribute("aria-busy");
+  pulsante.disabled = false;
 }
 
 // ------------------------------------------------------------------
@@ -2093,7 +2850,7 @@ async function invia() {
 async function viewAccettazione(q) {
   const codice = q.get("d") || "";
   const pagina = (corpo) => {
-    app().innerHTML = `<header class="topbar"><a class="back" href="#/" aria-label="Chiudi">${ICONE.indietro}</a><div class="titolo"><div class="sopra">Accettazione online</div><strong>Conferma del cliente</strong></div></header>
+    app().innerHTML = `<header class="topbar"><a class="back" href="#/" aria-label="Chiudi">${ICONE.indietro}</a><div class="titolo"><strong>Conferma del cliente</strong><div class="sopra">Firma online</div></div></header>
       <main class="pagina">${corpo}</main>`;
   };
   let conferma;
@@ -2109,20 +2866,18 @@ async function viewAccettazione(q) {
   const dettaglio = `<div class="firma-box"><img src="${immagineSicura(firma)}" alt="Firma del cliente"></div>
     <div class="muted small">Firmato da <b>${esc(conferma.nome)}</b> il ${esc(core.formatData(core.oggiISO(new Date(conferma.data))))}</div>`;
   if (!prev) {
-    return pagina(
-      `<div class="card stack"><div class="banner warn"><span class="ico">📱</span><div>Il preventivo n. ${esc(conferma.numero)} non è su questo dispositivo. Apri il link sul telefono dove l'hai creato.</div></div>${dettaglio}</div>`,
-    );
+    return pagina(`<div class="card stack">${aiutoAltroDispositivo(conferma.numero)}${dettaglio}</div>`);
   }
   if (prev.accettazioneOnline && prev.accettazioneOnline.hash === conferma.hash && prev.stato === "accettato") {
     return pagina(
-      `<div class="card stack"><div class="banner ok"><span class="ico">✅</span><div>Accettazione già registrata.</div></div>${dettaglio}<a class="btn primary block" href="#/p/${esc(prev.id)}">Apri il preventivo</a></div>`,
+      `<div class="card stack"><div class="banner ok"><span class="ico">${ICONE.fatto}</span><div>Questa conferma è già registrata.</div></div>${dettaglio}<a class="btn primary block" href="#/p/${esc(prev.id)}">Apri il preventivo</a></div>`,
     );
   }
   const verifica = verificaImpronta(prev, conferma.hash);
   const avviso = {
-    ok: `<div class="banner ok"><span class="ico">🔒</span><div>Il cliente ha accettato <b>esattamente</b> la versione che hai inviato.</div></div>`,
-    precedente: `<div class="banner warn"><span class="ico">⚠️</span><div>Il cliente ha accettato una <b>versione precedente</b> del preventivo: dopo l'invio l'hai modificato. Controlla prima di procedere.</div></div>`,
-    diversa: `<div class="banner bad"><span class="ico">⛔</span><div><b>Attenzione:</b> i dati accettati non corrispondono a nessun link che hai inviato da questo telefono. Potrebbero essere stati modificati: verifica prezzi e voci con il cliente.</div></div>`,
+    ok: `<div class="banner ok"><span class="ico">${ICONE.scudo}</span><div>Ha accettato <b>esattamente</b> la versione che gli hai mandato.</div></div>`,
+    precedente: `<div class="banner warn"><span class="ico">${ICONE.attenzione}</span><div>Il cliente ha accettato una <b>versione precedente</b> del preventivo: dopo l'invio l'hai modificato. Controlla prima di procedere.</div></div>`,
+    diversa: `<div class="banner bad"><span class="ico">${ICONE.attenzione}</span><div><b>Attenzione:</b> i dati accettati non corrispondono a nessun link che hai inviato da questo telefono. Potrebbero essere stati modificati: verifica prezzi e voci con il cliente.</div></div>`,
   }[verifica];
   const scelte = conferma.scelte.map((_, k) => voceDaConferma(prev, conferma, k)).filter(Boolean);
   const copia = { ...prev, righe: prev.righe.map((r) => (scelte.includes(r) ? { ...r, opzionale: false } : r)) };
@@ -2130,19 +2885,19 @@ async function viewAccettazione(q) {
   const testoData = data.scelta ? esc(inc.testoAppuntamento(data.scelta)) : "";
   const htmlData = {
     nessuna: "",
-    ok: `<div class="banner info"><span class="ico">📅</span><div>Per iniziare il cliente ha scelto <b>${testoData}</b>.</div></div>`,
-    "non-proposta": `<div class="banner warn"><span class="ico">📅</span><div>Il cliente ha scelto <b>${testoData}</b>, che non è più tra le date che proponi: la data non viene salvata, concordala con lui.</div></div>`,
-    "gia-fissata": `<div class="banner warn"><span class="ico">📅</span><div>Il cliente avrebbe preferito <b>${testoData}</b>, ma hai già fissato <b>${data.fissata ? esc(inc.testoAppuntamento(data.fissata)) : ""}</b>: resta la tua data.</div></div>`,
+    ok: `<div class="banner info"><span class="ico">${ICONE.calendario}</span><div>Per iniziare il cliente ha scelto <b>${testoData}</b>.</div></div>`,
+    "non-proposta": `<div class="banner warn"><span class="ico">${ICONE.calendario}</span><div>Il cliente ha scelto <b>${testoData}</b>, che non è più tra le date che proponi: la data non viene salvata, concordala con lui.</div></div>`,
+    "gia-fissata": `<div class="banner warn"><span class="ico">${ICONE.calendario}</span><div>Il cliente avrebbe preferito <b>${testoData}</b>, ma hai già fissato <b>${data.fissata ? esc(inc.testoAppuntamento(data.fissata)) : ""}</b>: resta la tua data.</div></div>`,
   }[data.esito];
   pagina(`<section class="card stack">
       <div class="row">${avatar(conferma.nome)}<div><div style="font-weight:750;font-size:17px">${esc(conferma.nome)} ha accettato</div><div class="muted small">Preventivo n. ${esc(prev.numero)}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div></div>
       ${avviso}
-      ${scelte.length ? `<div><div class="muted xsmall">VOCI FACOLTATIVE AGGIUNTE DAL CLIENTE</div>${scelte.map((r) => `<div>✨ ${esc(r.descrizione)}</div>`).join("")}</div>` : ""}
+      ${scelte.length ? `<div><div class="muted small">Ha aggiunto questi extra</div>${scelte.map((r) => `<div class="row" style="gap:8px">${ICONE.piu.replace("<svg", '<svg width="16" height="16"')}${esc(r.descrizione)}</div>`).join("")}</div>` : ""}
       ${htmlData}
       <div class="r" style="display:flex;justify-content:space-between"><span>Nuovo totale</span><b class="big">${esc(core.formatEuro(totaliDi(copia).totale))}</b></div>
       ${dettaglio}
-      <button class="btn primary big block" data-action="registra-accettazione">${ICONE.check} Registra accettazione</button>
-      <a class="btn ghost block" href="#/p/${esc(prev.id)}">Apri senza registrare</a>
+      <button class="btn primary big block" data-action="registra-accettazione">${ICONE.check} Registra la firma</button>
+      <a class="btn ghost block" href="#/p/${esc(prev.id)}">Apri il preventivo senza registrare</a>
     </section>`);
   let registrata = false; // un doppio tocco non deve applicare due volte la conferma
   azioni["registra-accettazione"] = async () => {
@@ -2151,9 +2906,12 @@ async function viewAccettazione(q) {
     applicaConferma(prev, conferma, firma);
     fissaAccordo(prev);
     await salvaPreventivo(prev);
-    traccia("Accettazione online registrata", { verifica });
-    vibra(30);
-    toast("Accettazione registrata", "ok");
+    if (conferma.sulPosto && !state.pro && !state.provaPresenta) {
+      state.provaPresenta = true;
+      await db.set("prova-presenta", true);
+    }
+    traccia(conferma.sulPosto ? "Firma al tavolo registrata" : "Accettazione online registrata", { verifica });
+    state.festa = prev.id;
     vai(`#/p/${prev.id}`);
   };
 }
@@ -2164,7 +2922,7 @@ async function viewAccettazione(q) {
 async function viewAvviso(q) {
   const codice = q.get("d") || "";
   const pagina = (corpo) => {
-    app().innerHTML = `<header class="topbar"><a class="back" href="#/" aria-label="Chiudi">${ICONE.indietro}</a><div class="titolo"><div class="sopra">Avviso di pagamento</div><strong>Il cliente ha pagato?</strong></div></header>
+    app().innerHTML = `<header class="topbar"><a class="back" href="#/" aria-label="Chiudi">${ICONE.indietro}</a><div class="titolo"><strong>Il cliente ha pagato?</strong><div class="sopra">Avviso di pagamento</div></div></header>
       <main class="pagina">${corpo}</main>`;
   };
   let avviso;
@@ -2177,15 +2935,13 @@ async function viewAvviso(q) {
   }
   const prev = state.preventivi.find((p) => p.id === avviso.id);
   if (!prev) {
-    return pagina(
-      `<div class="card stack"><div class="banner warn"><span class="ico">📱</span><div>Il preventivo n. ${esc(avviso.numero)} non è su questo dispositivo. Apri il link sul telefono dove l'hai creato.</div></div></div>`,
-    );
+    return pagina(`<div class="card stack">${aiutoAltroDispositivo(avviso.numero)}</div>`);
   }
   const i = inc.normalizzaIncasso(prev.incasso);
   const apri = `<a class="btn ghost block" href="#/p/${esc(prev.id)}?sez=incassi">Apri il preventivo</a>`;
   if (i.pagamenti.some((x) => x.rif === avviso.rif)) {
     return pagina(
-      `<div class="card stack"><div class="banner ok"><span class="ico">✅</span><div>Pagamento di ${esc(core.formatEuro(avviso.importo))} già registrato.</div></div>${apri}</div>`,
+      `<div class="card stack"><div class="banner ok"><span class="ico">${ICONE.fatto}</span><div>Pagamento di ${esc(core.formatEuro(avviso.importo))} già registrato.</div></div>${apri}</div>`,
     );
   }
   const giaInAttesa = i.segnalazioni.some((x) => x.rif === avviso.rif && x.stato === "attesa");
@@ -2197,14 +2953,14 @@ async function viewAvviso(q) {
   pagina(`<section class="card stack">
       <div class="row">${avatar(core.nomeCliente(prev.cliente))}<div><div style="font-weight:750;font-size:17px">${esc(core.nomeCliente(prev.cliente))} dice di aver pagato</div><div class="muted small">Preventivo n. ${esc(prev.numero)}${prev.oggetto ? ` · ${esc(prev.oggetto)}` : ""}</div></div></div>
       <div class="risultato-calc"><div class="muted small">${esc(inc.METODI[avviso.metodo])} · ${esc(core.formatData(avviso.data))}</div><div class="big tnum">${esc(core.formatEuro(avviso.importo))}</div>${avviso.nota ? `<div class="small">${esc(avviso.nota)}</div>` : ""}</div>
-      <div class="banner warn"><span class="ico">🔎</span><div><b>Controlla sul conto</b> che il pagamento sia arrivato davvero prima di registrarlo: l'avviso lo manda il cliente.</div></div>
-      ${prev.stato !== "accettato" ? `<div class="banner warn"><span class="ico">✍️</span><div>Non hai ancora registrato l'<b>accettazione firmata</b> di questo preventivo: chiedi al cliente di mandarti anche la conferma.</div></div>` : ""}
-      ${avviso.importo > s.residuo + 0.005 ? `<div class="banner bad"><span class="ico">⚠️</span><div>L'importo è superiore a quanto resta da incassare (${esc(core.formatEuro(s.residuo))}).</div></div>` : ""}
-      ${simile ? `<div class="banner warn"><span class="ico">🔁</span><div>Hai già registrato <b>${esc(core.formatEuro(simile.importo))}</b> il ${esc(core.formatData(simile.data))} (${esc(inc.METODI[simile.metodo])}): potrebbe essere lo stesso pagamento.</div></div>` : ""}
-      ${altraSegnalazione ? `<div class="banner warn"><span class="ico">🔁</span><div>Il cliente aveva già segnalato ${esc(core.formatEuro(altraSegnalazione.importo))}: potrebbe essere lo stesso pagamento.</div></div>` : ""}
+      <div class="banner warn"><span class="ico">${ICONE.cerca}</span><div><b>Controlla sul conto</b> che il pagamento sia arrivato davvero prima di registrarlo: l'avviso lo manda il cliente.</div></div>
+      ${prev.stato !== "accettato" ? `<div class="banner warn"><span class="ico">${ICONE.firma}</span><div>Non hai ancora registrato l'<b>accettazione firmata</b> di questo preventivo: chiedi al cliente di mandarti anche la conferma.</div></div>` : ""}
+      ${avviso.importo > s.residuo + 0.005 ? `<div class="banner bad"><span class="ico">${ICONE.attenzione}</span><div>L'importo è superiore a quanto resta da incassare (${esc(core.formatEuro(s.residuo))}).</div></div>` : ""}
+      ${simile ? `<div class="banner warn"><span class="ico">${ICONE.aggiorna}</span><div>Hai già registrato <b>${esc(core.formatEuro(simile.importo))}</b> il ${esc(core.formatData(simile.data))} (${esc(inc.METODI[simile.metodo])}): potrebbe essere lo stesso pagamento.</div></div>` : ""}
+      ${altraSegnalazione ? `<div class="banner warn"><span class="ico">${ICONE.aggiorna}</span><div>Il cliente aveva già segnalato ${esc(core.formatEuro(altraSegnalazione.importo))}: potrebbe essere lo stesso pagamento.</div></div>` : ""}
       <div class="muted small">Da incassare prima di questo pagamento: <b class="tnum">${esc(core.formatEuro(s.residuo))}</b></div>
       ${simile ? `<button class="btn big block" data-action="avviso-stesso">È lo stesso: non contarlo due volte</button>` : ""}
-      <button class="btn primary big block" data-action="avviso-registra">${ICONE.check} ${simile ? "È un altro pagamento: registra" : "È arrivato: registra"}</button>
+      <button class="btn primary big block" data-action="avviso-registra">${ICONE.check} ${simile ? "È un altro pagamento: registra" : "Sì, è arrivato: registra"}</button>
       ${giaInAttesa ? "" : `<button class="btn block" data-action="avviso-attesa">Non ancora: lo controllo dopo</button>`}
       ${apri}
     </section>`);
@@ -2249,13 +3005,241 @@ async function viewAvviso(q) {
 }
 
 // ------------------------------------------------------------------
+// Lavori extra (variante) di un preventivo già firmato
+// ------------------------------------------------------------------
+// In cantiere salta fuori un lavoro in più: si prepara una variante con le sole voci extra e il
+// cliente la firma dal telefono come il preventivo. Così anche gli extra sono firmati e pagati.
+const variantiDi = (prev) =>
+  state.preventivi
+    .filter((p) => p.variante && p.variante.di === prev.id)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+async function creaVariante(orig) {
+  const numerazione = core.prossimoNumero(state.preventivi, new Date().getFullYear(), state.azienda.prefisso);
+  const prev = core.preventivoVuoto(state.azienda, numerazione);
+  prev.cliente = structuredClone(orig.cliente);
+  prev.clienteId = orig.clienteId || null;
+  prev.oggetto = `Lavori extra: ${orig.oggetto || `preventivo n. ${orig.numero}`}`.slice(0, 300);
+  prev.luogo = orig.luogo || "";
+  prev.regime = orig.regime || state.azienda.regime;
+  prev.addebitaBollo = orig.addebitaBollo ?? state.azienda.addebitaBollo;
+  // Gli extra di solito si pagano con il saldo: nessun anticipo, lo si può sempre aggiungere.
+  prev.acconto = { tipo: "perc", valore: 0 };
+  prev.caparra = false;
+  prev.tempi = "";
+  prev.variante = { di: orig.id, numero: orig.numero, data: orig.data };
+  prev.note = `Lavori aggiuntivi al preventivo n. ${orig.numero} del ${core.formatData(orig.data)}, già accettato: per il resto valgono le condizioni concordate.`;
+  await salvaPreventivo(prev);
+  traccia("Variante creata");
+  vai(`#/p/${prev.id}`);
+}
+
+function htmlVariantiDi(prev) {
+  if (prev.stato !== "accettato") return "";
+  const varianti = variantiDi(prev);
+  const firmati = varianti.filter((v) => v.stato === "accettato");
+  const totaleExtra = firmati.reduce((t, v) => t + totaliDi(v).totale, 0);
+  return `<section class="card stack" id="sezione-extra">
+    <div class="sezione-titolo" style="margin:0"><div><h2>Lavori extra</h2><div class="muted xsmall">${
+      varianti.length
+        ? firmati.length
+          ? `Firmati in più: <b class="tnum">${esc(core.formatEuro(totaleExtra))}</b>`
+          : "Non ancora firmati dal cliente"
+        : "È saltato fuori un lavoro in più? Fallo firmare prima di farlo"
+    }</div></div></div>
+    ${
+      varianti.length
+        ? `<div class="lista">${varianti
+            .map(
+              (v) =>
+                `<a class="voce-lista" href="#/p/${esc(v.id)}"><div class="corpo"><div class="t">${esc(v.oggetto.replace(/^Lavori extra: /, "").replace(/^./, (c) => c.toUpperCase()) || "Lavori extra")}</div><div class="s xsmall">N° ${esc(v.numero)} · ${esc(core.formatData(v.data))}</div></div><div class="dx"><span class="importo">${esc(core.formatEuro(totaliDi(v).totale))}</span><span class="badge ${esc(v.stato)}">${esc(core.STATI[v.stato] || "")}</span></div></a>`,
+            )
+            .join("")}</div>`
+        : ""
+    }
+    <button class="btn block" data-action="crea-variante">${ICONE.piu} Lavori extra da far firmare</button>
+  </section>`;
+}
+
+function htmlBannerVariante(prev) {
+  if (!prev.variante) return "";
+  const orig = state.preventivi.find((p) => p.id === prev.variante.di);
+  return `<div class="banner info"><span class="ico">${ICONE.variante}</span><div style="flex:1;min-width:0"><b>Lavori extra del preventivo n. ${esc(prev.variante.numero)}</b>
+    <div class="small">${prev.stato === "bozza" ? "Aggiungi solo i lavori in più, poi mandalo: il cliente li firma dal telefono come il preventivo." : "Il cliente firma e paga questi lavori a parte, con lo stesso giro del preventivo."}</div>
+    ${orig ? `<a class="btn ghost small" href="#/p/${esc(orig.id)}" style="padding-inline:0">Apri il preventivo n. ${esc(orig.numero)}</a>` : ""}</div></div>`;
+}
+
+// ------------------------------------------------------------------
+// Aspetto: tema e "modalità sole"
+// ------------------------------------------------------------------
+// Al sole un telefono si legge a fatica: la modalità sole porta tutto al contrasto massimo.
+function applicaAspetto() {
+  const r = document.documentElement;
+  const tema = preferenza.get("pl-tema") || "";
+  if (tema === "chiaro" || tema === "scuro") r.dataset.theme = tema === "chiaro" ? "light" : "dark";
+  else delete r.dataset.theme;
+  if (preferenza.get("pl-sole") === "1") r.dataset.contrasto = "sole";
+  else delete r.dataset.contrasto;
+}
+applicaAspetto();
+
+// ------------------------------------------------------------------
+// Lista materiali per il fornitore
+// ------------------------------------------------------------------
+function testoMateriali(prev) {
+  const mat = prev.righe.filter((r) => r.tipo === "mat" && !r.opzionale && String(r.descrizione || "").trim());
+  if (!mat.length) return "";
+  const dove = prev.luogo || prev.cliente.citta || "";
+  return (
+    `Buongiorno, per un lavoro${dove ? ` a ${dove}` : ""} mi servirebbe:\n` +
+    mat.map((r) => `- ${core.formatQta(r.qta)} ${r.um} · ${String(r.descrizione).trim()}`).join("\n") +
+    `\nMi fa sapere disponibilità e prezzo? Grazie` +
+    (state.azienda.ragioneSociale ? `\n${state.azienda.ragioneSociale}` : "")
+  );
+}
+
+function foglioMateriali() {
+  const prev = state.corrente;
+  const testo = testoMateriali(prev);
+  if (!testo) return toast("Non ci sono materiali: nei dettagli di una voce scegli «Materiale»");
+  const f = apriFoglio(
+    `${titoloFoglio("Lista materiali per il fornitore", "Cambiala come vuoi prima di mandarla")}
+    <div class="stack">
+      <textarea id="mat-testo" rows="8" aria-label="Lista dei materiali">${esc(testo)}</textarea>
+      <a class="btn wa big block" id="mat-wa" href="#" target="_blank" rel="noopener">${ICONE.whatsapp} Manda al fornitore su WhatsApp</a>
+      <button class="btn block" data-action="mat-copia">${ICONE.copia} Copia la lista</button>
+    </div>`,
+  );
+  const area = $("#mat-testo", f);
+  const aggiorna = () => ($("#mat-wa", f).href = `https://wa.me/?text=${encodeURIComponent(area.value)}`);
+  aggiorna();
+  autoAltezza(area);
+  area.addEventListener("input", () => {
+    aggiorna();
+    autoAltezza(area);
+  });
+  azioni["mat-copia"] = async () => toast((await copiaTesto(area.value)) ? "Lista copiata" : "Copia non riuscita");
+}
+
+// ------------------------------------------------------------------
+// Parti da un lavoro già fatto (o dal modello del tuo mestiere)
+// ------------------------------------------------------------------
+function htmlPartiDa(prev) {
+  if (prev.righe.length || prev.stato !== "bozza") return "";
+  const visti = new Set();
+  const fatti = state.preventivi
+    .filter((p) => p.id !== prev.id && p.righe.length && String(p.oggetto || "").trim())
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .filter((p) => {
+      const k = p.oggetto.trim().toLowerCase();
+      if (visti.has(k)) return false;
+      visti.add(k);
+      return true;
+    })
+    .slice(0, 4);
+  const m = trovaMestiere(state.azienda.mestiere);
+  if (!fatti.length && !m) return "";
+  const corto = (t) => (t.length > 34 ? t.slice(0, 32) + "…" : t);
+  return `<div class="piu-usate" style="margin-top:12px"><div class="muted xsmall">Oppure parti da un lavoro già fatto: copio voci e prezzi</div>
+    <div class="row wrap" style="gap:8px">
+      ${fatti.map((p) => `<button type="button" class="chip" data-action="parti-da" data-id="${esc(p.id)}">${esc(corto(p.oggetto.trim()))}</button>`).join("")}
+      ${m ? `<button type="button" class="chip" data-action="parti-da-modello">${ICONE.scintille.replace("<svg", '<svg width="16" height="16" style="margin-right:4px"')}Esempio da ${esc(m.nome.toLowerCase())}</button>` : ""}
+    </div></div>`;
+}
+
+function copiaVoci(prev, righe, oggetto) {
+  prev.righe = righe.map((r) => ({ ...r, id: core.uid() }));
+  if (!String(prev.oggetto || "").trim() && oggetto) prev.oggetto = oggetto;
+  salvaDopo(prev);
+  viewEditor(prev.id);
+  toast("Voci copiate: controlla quantità e prezzi", "ok");
+}
+
+// ------------------------------------------------------------------
+// Pagamenti per il commercialista (CSV, si apre con Excel)
+// ------------------------------------------------------------------
+function csvPagamenti() {
+  const cella = (v) => {
+    const t = String(v ?? "");
+    // Niente formule eseguite da Excel: si neutralizzano i caratteri iniziali "pericolosi".
+    const sicuro = /^[=+\-@\t\r]/.test(t) ? `'${t}` : t;
+    return /[";\n]/.test(sicuro) ? `"${sicuro.replace(/"/g, '""')}"` : sicuro;
+  };
+  const righe = [["Data", "Cliente", "Codice fiscale / P.IVA", "Preventivo", "Lavoro", "Importo", "Metodo", "Nota"]];
+  const tutti = [];
+  for (const p of state.preventivi) for (const x of inc.normalizzaIncasso(p.incasso).pagamenti) tutti.push({ p, x });
+  tutti.sort((a, b) => a.x.data.localeCompare(b.x.data));
+  for (const { p, x } of tutti)
+    righe.push([
+      core.formatData(x.data),
+      core.nomeCliente(p.cliente),
+      p.cliente.cfpiva || "",
+      p.numero,
+      p.oggetto || "",
+      String(core.round2(x.importo)).replace(".", ","),
+      inc.METODI[x.metodo] || "",
+      x.nota || "",
+    ]);
+  return { testo: "﻿" + righe.map((r) => r.map(cella).join(";")).join("\r\n"), n: tutti.length };
+}
+
+// ------------------------------------------------------------------
+// Messaggi del cliente incollati o condivisi nell'app
+// ------------------------------------------------------------------
+// Su iPhone l'app installata e Safari non condividono i dati: il link del cliente aperto da WhatsApp
+// finisce nel browser, dove il preventivo non c'è. Incollando (o condividendo) il messaggio nell'app
+// si arriva comunque alla conferma o all'avviso di pagamento.
+const RE_LINK_CLIENTE = /#\/(accettazione|pagamento)\?d=([A-Za-z0-9_-]+)/;
+
+function apriDaTesto(testo) {
+  const m = String(testo || "").match(RE_LINK_CLIENTE);
+  if (!m) return false;
+  vai(`#/${m[1]}?d=${m[2]}`);
+  return true;
+}
+
+async function incollaMessaggio() {
+  try {
+    if (apriDaTesto(await navigator.clipboard.readText())) return;
+  } catch {
+    /* lettura degli appunti negata: si incolla a mano */
+  }
+  const f = apriFoglio(
+    `${titoloFoglio("Incolla il messaggio del cliente", "La conferma della firma o l'avviso di pagamento arrivato su WhatsApp")}
+    <div class="stack">
+      <textarea id="incolla-testo" rows="4" placeholder="Tieni premuto qui e scegli Incolla" aria-label="Messaggio del cliente"></textarea>
+      <button class="btn primary big block" data-action="incolla-apri">Apri</button>
+    </div>`,
+  );
+  azioni["incolla-apri"] = () => {
+    if (apriDaTesto($("#incolla-testo", f).value)) return;
+    toast("Nel messaggio non trovo il link del cliente: copia tutto il messaggio");
+  };
+}
+
+function aiutoAltroDispositivo(numero) {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const passi =
+    ios && !standalone
+      ? `<ol class="small" style="margin:8px 0 0;padding-left:20px;line-height:1.6"><li>Tocca <b>Copia il link</b> qui sotto</li><li>Apri PreventivoLampo dalla schermata Home</li><li>Tocca <b>Incolla il messaggio</b> nella pagina iniziale</li></ol>`
+      : "";
+  return `<div class="banner warn"><span class="ico">${ICONE.info}</span><div>${
+    ios && !standalone
+      ? `Sei nel browser, non nell'app: per questo non trovo il preventivo n. ${esc(numero)}.`
+      : `Il preventivo n. ${esc(numero)} non è su questo telefono. Apri il messaggio sul telefono dove l'hai creato.`
+  }${passi}</div></div>
+  ${ios && !standalone ? `<button class="btn block" data-action="copia-link-pagina">${ICONE.copia} Copia il link</button>` : ""}`;
+}
+
+// ------------------------------------------------------------------
 // Paywall e Pro
 // ------------------------------------------------------------------
 const VANTAGGI_PRO = [
   "Preventivi e link di accettazione illimitati",
   "Recupero crediti: solleciti decisi, lettera di messa in mora e fascicolo del credito in PDF",
   "Il tuo logo e i tuoi colori su PDF e pagina del cliente",
-  "Firma del cliente sul tuo telefono, in cantiere",
+  "Firma al tavolo: il cliente sceglie gli extra e firma sul tuo telefono",
   "Foto del lavoro allegate al preventivo",
   'Niente scritta "Creato con PreventivoLampo"',
   "Assistenza prioritaria via email",
@@ -2266,7 +3250,7 @@ function paywall(motivo) {
   const mese = new Date().toLocaleDateString("it-IT", { month: "long" });
   const titoli = {
     limite: `Hai usato i ${CONFIG.pdfGratisAlMese} preventivi gratuiti di ${mese}`,
-    firma: "La firma sul posto è una funzione Pro",
+    firma: "Ti è piaciuto? Con Pro fai firmare sul posto ogni cliente",
     logo: "Logo e colori sono funzioni Pro",
     foto: "Le foto nel preventivo sono una funzione Pro",
     crediti: "Il recupero crediti è una funzione Pro",
@@ -2301,7 +3285,7 @@ function viewPro(q) {
     .join("");
 
   const statoLicenza = state.pro
-    ? `<div class="banner ok"><span class="ico">⭐</span><div><b>Pro attivo</b>${lic.email ? ` · ${esc(lic.email)}` : ""}${lic.scadenza ? `<br><span class="small">Rinnovo/scadenza: ${esc(new Date(lic.scadenza).toLocaleDateString("it-IT"))}</span>` : ""}</div></div>
+    ? `<div class="banner ok"><span class="ico">${ICONE.stella}</span><div><b>Pro attivo</b>${lic.email ? ` · ${esc(lic.email)}` : ""}${lic.scadenza ? `<br><span class="small">Rinnovo/scadenza: ${esc(new Date(lic.scadenza).toLocaleDateString("it-IT"))}</span>` : ""}</div></div>
        ${CONFIG.portaleClienti ? `<a class="btn block" href="${esc(urlSicuro(CONFIG.portaleClienti))}" target="_blank" rel="noopener">Gestisci abbonamento e fatture</a>` : ""}
        <button class="btn block danger" data-action="rimuovi-licenza">Rimuovi licenza da questo dispositivo</button>`
     : "";
@@ -2309,7 +3293,7 @@ function viewPro(q) {
   app().innerHTML = `
     <header class="topbar"><a class="back" href="#/" aria-label="Indietro">${ICONE.indietro}</a><div class="titolo"><strong>${state.pro ? "Il tuo piano" : "PreventivoLampo Pro"}</strong></div></header>
     <main class="pagina">
-      ${q.get("acquisto") === "ok" ? `<div class="banner ok"><span class="ico">🎉</span><div><b>Grazie per l'acquisto!</b> Ti abbiamo inviato via email il <b>codice licenza</b>: incollalo qui sotto per attivare Pro.</div></div>` : ""}
+      ${q.get("acquisto") === "ok" ? `<div class="banner ok"><span class="ico">${ICONE.fatto}</span><div><b>Grazie per l'acquisto!</b> Ti abbiamo inviato via email il <b>codice licenza</b>: incollalo qui sotto per attivare Pro.</div></div>` : ""}
       ${statoLicenza}
       ${
         state.pro
@@ -2363,7 +3347,7 @@ function viewClienti() {
   for (const p of state.preventivi) if (p.clienteId) conteggi[p.clienteId] = (conteggi[p.clienteId] || 0) + 1;
   const lista = [...state.clienti].sort((a, b) => (a.nome || "").localeCompare(b.nome || "", "it"));
   app().innerHTML = `
-    <header class="topbar"><div class="titolo"><strong style="font-size:22px">Clienti</strong></div><button class="btn small soft" data-action="cliente-nuovo">${ICONE.piu} Nuovo</button></header>
+    <header class="topbar"><div class="titolo"><strong style="font-size:22px">Clienti</strong></div><button class="btn small" data-action="cliente-nuovo">${ICONE.piu} Nuovo cliente</button></header>
     <main class="pagina">
       ${lista.length ? `<input type="search" id="cerca-clienti" placeholder="Cerca cliente" aria-label="Cerca cliente">` : ""}
       <div class="lista" id="lista-clienti">${htmlListaClienti(lista, conteggi, "")}</div>
@@ -2387,7 +3371,7 @@ function htmlListaClienti(lista, conteggi, filtro) {
         (c) => `<button class="voce-lista" data-action="cliente-apri" data-id="${esc(c.id)}">
           ${avatar(c.nome)}
           <div class="corpo"><div class="t">${esc(c.nome)}</div><div class="s">${esc([c.telefono, c.citta].filter(Boolean).join(" · ") || "—")}</div></div>
-          <div class="dx muted small">${conteggi[c.id] || 0} prev.</div></button>`,
+          <div class="dx muted small">${(conteggi[c.id] || 0) === 1 ? "1 preventivo" : `${conteggi[c.id] || 0} preventivi`}</div></button>`,
       )
       .join("") || `<p class="muted">Nessun cliente trovato.</p>`
   );
@@ -2396,24 +3380,45 @@ function htmlListaClienti(lista, conteggi, filtro) {
 function foglioCliente(id) {
   const c = state.clienti.find((x) => x.id === id) || { id: core.uid(), nome: "", createdAt: Date.now() };
   const nuovo = !state.clienti.some((x) => x.id === c.id);
-  const campo = (k, ph, tipo = "text") =>
-    `<input data-cli="${k}" type="${tipo}" placeholder="${ph}" value="${esc(c[k])}" aria-label="${ph}">`;
-  apriFoglio(
-    `${titoloFoglio(nuovo ? "Nuovo cliente" : esc(c.nome))}
-    <div class="stack">
-      ${campo("nome", "Nome e cognome o ragione sociale")}
-      ${campo("telefono", "Telefono", "tel")}
-      ${campo("email", "Email", "email")}
-      ${campo("indirizzo", "Via e numero civico")}
+  const campo = (k, etichetta, tipo = "text", extra = "") =>
+    `<label class="campo">${etichetta}<input data-cli="${k}" type="${tipo}" value="${esc(c[k])}" ${extra}></label>`;
+  const suoi = nuovo
+    ? []
+    : state.preventivi.filter((p) => p.clienteId === c.id).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const deve = suoi.filter((p) => p.stato === "accettato").reduce((t, p) => t + Math.max(0, incassoDi(p).residuo), 0);
+  const tel = core.telefonoWhatsApp(c.telefono);
+  const campi = `
+      ${campo("nome", "Nome e cognome o ragione sociale", "text", 'autocomplete="off"')}
+      <div class="grid2 stack-mobile">${campo("telefono", "Cellulare (WhatsApp)", "tel", 'inputmode="tel"')}${campo("email", "Email", "email")}</div>
+      ${campo("indirizzo", "Indirizzo")}
       ${campo("citta", "CAP, città e provincia")}
-      ${campo("cfpiva", "Codice fiscale o Partita IVA")}
-      <textarea data-cli="note" rows="2" placeholder="Note interne (non compaiono nel preventivo)" aria-label="Note interne">${esc(c.note)}</textarea>
-      <button class="btn primary block" data-action="cliente-salva">Salva</button>
+      ${campo("cfpiva", "Codice fiscale o partita IVA", "text", 'autocapitalize="characters" spellcheck="false"')}
+      <label class="campo"><span>Note per te <span class="aiuto">non compaiono nel preventivo</span></span><textarea data-cli="note" rows="2">${esc(c.note)}</textarea></label>
+      <button class="btn primary block" data-action="cliente-salva">Salva</button>`;
+  apriFoglio(
+    `${titoloFoglio(nuovo ? "Nuovo cliente" : esc(c.nome), nuovo ? "" : esc([c.telefono, c.citta].filter(Boolean).join(" · ")))}
+    <div class="stack">
       ${
         nuovo
-          ? ""
-          : `<button class="btn soft block" data-action="cliente-preventivo">${ICONE.piu} Nuovo preventivo per questo cliente</button>
-      <button class="btn danger block" data-action="cliente-elimina">${ICONE.cestino} Elimina cliente</button>`
+          ? campi
+          : `<div class="grid3">
+          <button class="btn soft" data-action="cliente-preventivo" style="flex-direction:column;gap:4px;min-height:66px;font-size:14px">${ICONE.nuovo}Preventivo</button>
+          ${tel ? `<a class="btn soft" href="https://wa.me/${tel}" target="_blank" rel="noopener" style="flex-direction:column;gap:4px;min-height:66px;font-size:14px">${ICONE.whatsapp}WhatsApp</a>` : `<span></span>`}
+          ${c.telefono ? `<a class="btn soft" href="tel:${esc(String(c.telefono).replace(/\s/g, ""))}" style="flex-direction:column;gap:4px;min-height:66px;font-size:14px">${ICONE.telefono}Chiama</a>` : `<span></span>`}
+        </div>
+        ${deve > 0.005 ? `<div class="banner warn"><span class="ico">${ICONE.pagamento}</span><div>Deve ancora pagarti <b class="tnum">${esc(core.formatEuro(deve))}</b></div></div>` : ""}
+        ${
+          suoi.length
+            ? `<div><div class="muted small">I suoi preventivi</div><div class="lista" style="margin-top:6px">${suoi
+                .map(
+                  (p) =>
+                    `<a class="voce-lista" href="#/p/${esc(p.id)}"><div class="corpo"><div class="t">${esc(p.oggetto || "Senza titolo")}</div><div class="s xsmall">N° ${esc(p.numero)} · ${esc(core.formatData(p.data))}</div></div><div class="dx"><span class="importo">${esc(core.formatEuro(totaliDi(p).totale))}</span><span class="badge ${esc(p.stato)}">${esc(core.STATI[p.stato] || "")}</span></div></a>`,
+                )
+                .join("")}</div></div>`
+            : ""
+        }
+        <details><summary>Modifica i dati del cliente</summary><div class="stack">${campi}</div></details>
+        <button class="btn danger block" data-action="cliente-elimina">${ICONE.cestino} Elimina cliente</button>`
       }
     </div>`,
   );
@@ -2458,15 +3463,15 @@ function viewListino() {
   const voci = [...state.listino].sort((a, b) => a.descrizione.localeCompare(b.descrizione, "it"));
   const m = trovaMestiere(state.azienda.mestiere);
   app().innerHTML = `
-    <header class="topbar"><div class="titolo"><strong style="font-size:22px">Listino prezzi</strong></div><button class="btn small soft" data-action="voce-nuova">${ICONE.piu} Nuova</button></header>
+    <header class="topbar"><div class="titolo"><strong style="font-size:22px">I miei prezzi</strong></div><button class="btn small" data-action="voce-nuova">${ICONE.piu} Nuova voce</button></header>
     <main class="pagina">
-      <p class="muted small" style="margin:0">Le voci che usi più spesso con i tuoi prezzi: nel preventivo le aggiungi con un tocco o dettandole.</p>
+      <p class="muted" style="margin:0">I lavori e i materiali che usi più spesso, con i tuoi prezzi: nel preventivo li aggiungi con un tocco o dettandoli.</p>
       ${voci.length ? `<input type="search" id="cerca-voci" placeholder="Cerca voce" aria-label="Cerca voce">` : ""}
       <div class="card" style="padding:4px 12px" id="lista-voci">${htmlVociListino(voci, "")}</div>
       <section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.scintille}</span><h2>Prezzi tipici per mestiere</h2></div>
+        <div class="sezione-titolo" style="margin:0"><h2>Prezzi tipici per mestiere</h2></div>
         <p class="muted small" style="margin:0">Aggiunge le voci più comuni con prezzi indicativi, da adattare ai tuoi.</p>
-        <select id="mestiere-esempi" aria-label="Mestiere">${MESTIERI.map((x) => `<option value="${x.id}" ${m && m.id === x.id ? "selected" : ""}>${esc(x.icona)} ${esc(x.nome)}</option>`).join("")}</select>
+        <select id="mestiere-esempi" aria-label="Mestiere">${MESTIERI.map((x) => `<option value="${x.id}" ${m && m.id === x.id ? "selected" : ""}>${esc(x.nome)}</option>`).join("")}</select>
         <button class="btn soft block" data-action="carica-esempi-sel">Aggiungi al mio listino</button>
       </section>
     </main>`;
@@ -2480,13 +3485,13 @@ function viewListino() {
 function htmlVociListino(voci, filtro) {
   const f = filtro.trim().toLowerCase();
   if (!voci.length)
-    return `<p class="muted" style="padding:8px 4px">Il listino è vuoto. Aggiungi una voce o carica i prezzi tipici del tuo mestiere qui sotto.</p>`;
+    return `<p class="muted" style="padding:8px 4px">Non hai ancora salvato prezzi. Aggiungi una voce o carica i prezzi tipici del tuo mestiere qui sotto.</p>`;
   return (
     voci
       .filter((v) => !f || v.descrizione.toLowerCase().includes(f))
       .map(
         (v) => `<button class="voce-listino" data-action="voce-apri" data-id="${esc(v.id)}">
-          <span class="tipo" aria-hidden="true">${v.tipo === "mat" ? "📦" : "🛠️"}</span>
+          <span class="tipo" aria-hidden="true">${v.tipo === "mat" ? ICONE.carrello : ICONE.lavoro}</span>
           <div class="corpo"><div>${esc(v.descrizione)}</div><div class="muted xsmall">${v.tipo === "mat" ? "Materiale" : "Manodopera"} · ${esc(v.um)}${v.costo > 0 ? ` · costo ${esc(core.formatEuro(v.costo))}` : ""}</div></div>
           <div class="prezzo">${core.formatEuro(v.prezzo)}</div></button>`,
       )
@@ -2551,13 +3556,36 @@ function foglioVoce(id) {
 // ------------------------------------------------------------------
 function viewImpostazioni() {
   const a = state.azienda;
-  const campo = (k, etichetta, ph = "", tipo = "text") =>
-    `<label class="campo">${etichetta}<input data-az="${k}" type="${tipo}" placeholder="${esc(ph)}" value="${esc(a[k])}"></label>`;
+  // Ridisegnando la stessa pagina le sezioni aperte restano aperte (l'evento "toggle" arriva in ritardo).
+  for (const d of $$("details.sez-imp")) {
+    if (d.open) state.impAperte.add(d.dataset.sez);
+    else state.impAperte.delete(d.dataset.sez);
+  }
+  const campo = (k, etichetta, ph = "", tipo = "text", extra = "") =>
+    `<label class="campo">${etichetta}<input data-az="${k}" type="${tipo}" placeholder="${esc(ph)}" value="${esc(a[k])}" ${extra}></label>`;
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   const rimasti = core.pdfRimasti(state.contatore, CONFIG.pdfGratisAlMese);
-  const proBadge = state.pro ? "" : `<span class="badge pro dx">PRO</span>`;
+  const proBadge = state.pro ? "" : ` <span class="badge pro">PRO</span>`;
   const logo = immagineSicura(a.logo);
+  const ultimaCopia = Number(preferenza.get("pl-ultima-copia")) || 0;
+  const sezione = (id, titolo, riassunto, corpo) =>
+    `<details class="card sez-imp" data-sez="${id}" ${state.impAperte.has(id) ? "open" : ""}>
+      <summary><span class="corpo"><b>${titolo}</b><span class="small">${riassunto}</span></span></summary>
+      <div class="stack">${corpo}</div>
+    </details>`;
+  const ibanOk = inc.ibanValido(a.iban);
+  const sintesiImpresa = [a.ragioneSociale, a.citta].filter(Boolean).join(", ") || "Mancano i dati";
+  const sintesiPagamenti = ibanOk
+    ? `IBAN valido${urlSicuro(a.linkPagamento) ? " · pagamento online" : ""}`
+    : a.iban
+      ? "IBAN da controllare"
+      : "Aggiungi l'IBAN: i clienti pagano con un tocco";
+  const sintesiPreventivi = `valido ${Number(a.validitaGiorni) || 30} giorni · anticipo ${Number(a.accontoDefault ?? 30)}%${a.tipoAnticipo === "caparra" ? " (caparra)" : ""}`;
+  const sintesiFisco =
+    a.regime === "forfettario"
+      ? "Regime forfettario, senza IVA"
+      : `IVA ${Number(a.ivaDefault) || 22}% sulle nuove voci`;
 
   app().innerHTML = `
     <header class="topbar"><div class="titolo"><strong style="font-size:22px">Impostazioni</strong></div></header>
@@ -2566,36 +3594,46 @@ function viewImpostazioni() {
         ${
           state.pro
             ? `<div class="row"><span class="badge pro">PRO</span><span class="small">Attivo${state.licenza.email ? " · " + esc(state.licenza.email) : ""}</span><a class="btn small" style="margin-left:auto" href="#/pro">Gestisci</a></div>`
-            : `<div class="row"><div><b>Piano gratuito</b><div class="muted xsmall">${rimasti} PDF rimasti questo mese</div></div><a class="btn small primary" style="margin-left:auto" href="#/pro">Passa a Pro</a></div>`
+            : `<div class="row"><div><b>Piano gratuito</b><div class="muted xsmall">${rimasti === 1 ? "1 preventivo gratuito rimasto" : `${rimasti} preventivi gratuiti rimasti`} questo mese</div></div><a class="btn small" style="margin-left:auto" href="#/pro">Vedi Pro</a></div>`
         }
       </section>
 
-      <div class="etichetta-sez">La tua impresa <span class="dx muted xsmall">appare sul preventivo</span></div>
-      <section class="card stack">
-        ${campo("ragioneSociale", "Nome impresa *", "es. Idraulica Rossi di Mario Rossi")}
+      ${sezione(
+        "impresa",
+        "La tua impresa",
+        esc(sintesiImpresa),
+        `<p class="muted small" style="margin:0">Compare in testa a ogni preventivo.</p>
+        ${campo("ragioneSociale", "Nome dell'impresa", "es. Idraulica Rossi di Mario Rossi", "text", 'autocomplete="organization"')}
         ${campo("indirizzo", "Indirizzo", "Via Roma 1")}
-        <div class="grid3">${campo("cap", "CAP")}${campo("citta", "Città")}${campo("provincia", "Prov.", "MI")}</div>
-        <div class="grid2 stack-mobile">${campo("piva", "Partita IVA")}${campo("cf", "Codice fiscale")}</div>
-        <div class="grid2 stack-mobile">${campo("telefono", "Telefono / WhatsApp", "", "tel")}${campo("email", "Email", "", "email")}</div>
-        <div class="grid2 stack-mobile">${campo("pec", "PEC")}${campo("sito", "Sito web")}</div>
-      </section>
+        <div class="grid3">${campo("cap", "CAP", "", "text", 'inputmode="numeric"')}${campo("citta", "Città")}${campo("provincia", "Prov.", "MI", "text", 'autocapitalize="characters"')}</div>
+        <div class="grid2 stack-mobile">${campo("piva", "Partita IVA", "", "text", 'inputmode="numeric"')}${campo("cf", "Codice fiscale", "", "text", 'autocapitalize="characters" spellcheck="false"')}</div>
+        <div class="grid2 stack-mobile">${campo("telefono", "Cellulare (WhatsApp)", "", "tel")}${campo("email", "Email", "", "email")}</div>
+        <div class="grid2 stack-mobile">${campo("pec", "PEC", "", "email")}${campo("sito", "Sito web", "", "url")}</div>`,
+      )}
 
-      <div class="etichetta-sez">Pagamenti</div>
-      <section class="card stack">
-        <div class="grid2 stack-mobile">${campo("iban", "IBAN")}${campo("intestatarioIban", "Intestatario IBAN")}</div>
-        <div id="iban-stato" class="xsmall">${htmlStatoIban(a.iban)}</div>
-        ${campo("linkPagamento", "Link per pagare l'acconto online", "https://paypal.me/... o link Satispay/Stripe", "url")}
-        <p class="muted xsmall" style="margin:0">Il cliente che accetta online vede QR del bonifico, IBAN e pulsante "Paga online" per l'acconto.</p>
-      </section>
+      ${sezione(
+        "pagamenti",
+        "Come ti pagano i clienti",
+        esc(sintesiPagamenti),
+        `<div class="grid2 stack-mobile">${campo("iban", "IBAN", "IT60 X054 2811 1010 0000 0123 456", "text", 'autocapitalize="characters" spellcheck="false" autocomplete="off"')}${campo("intestatarioIban", "Intestato a")}</div>
+        <div id="iban-stato" class="small">${htmlStatoIban(a.iban)}</div>
+        ${campo("linkPagamento", "Link per pagare online (facoltativo)", "https://paypal.me/... o Satispay, Stripe", "url")}
+        <p class="muted small" style="margin:0">Il cliente che accetta online vede l'importo dell'anticipo, i dati del bonifico da copiare, il QR e il pulsante "Paga online".</p>`,
+      )}
 
-      <div class="etichetta-sez">Protezione dai mancati pagamenti</div>
-      <section class="card stack">
-        <label class="campo">L'anticipo nei nuovi preventivi vale come
+      ${sezione(
+        "preventivi",
+        "Preventivi e testi",
+        esc(sintesiPreventivi),
+        `<div class="grid2">${campo("prefisso", "Prefisso del numero", "es. P-")}${campo("validitaGiorni", "Valido per (giorni)", "30", "number", 'inputmode="numeric"')}</div>
+        <label class="campo">Anticipo nei nuovi preventivi
+          <select data-az="accontoDefault">${[0, 20, 30, 40, 50].map((n) => `<option value="${n}" ${Number(a.accontoDefault ?? 30) === n ? "selected" : ""}>${n ? `${n}% quando il cliente accetta` : "Nessun anticipo"}</option>`).join("")}</select></label>
+        <label class="campo">L'anticipo vale come
           <select data-az="tipoAnticipo">
-            <option value="acconto" ${a.tipoAnticipo !== "caparra" ? "selected" : ""}>Acconto (anticipo sul prezzo)</option>
+            <option value="acconto" ${a.tipoAnticipo !== "caparra" ? "selected" : ""}>Acconto: si scala dal prezzo</option>
             <option value="caparra" ${a.tipoAnticipo === "caparra" ? "selected" : ""}>Caparra confirmatoria (art. 1385 c.c.)</option>
           </select></label>
-        <p class="muted xsmall" style="margin:0">Con la caparra confirmatoria, se il cliente non rispetta l'accordo puoi recedere e trattenerla (se invece sei tu a non rispettarlo, il cliente può chiederne il doppio).</p>
+        <p class="muted small" style="margin:0">Con la caparra confirmatoria, se il cliente non rispetta l'accordo puoi recedere e trattenerla; se sei tu a non rispettarlo, il cliente può chiederne il doppio.</p>
         <label class="campo">Il saldo va pagato entro
           <select data-az="giorniSaldo">${[0, 7, 15, 30, 60, 90]
             .map(
@@ -2603,17 +3641,38 @@ function viewImpostazioni() {
                 `<option value="${n}" ${Number(a.giorniSaldo) === n ? "selected" : ""}>${n === 0 ? "la fine dei lavori" : `${n} giorni dalla fine dei lavori`}</option>`,
             )
             .join("")}</select></label>
-        <div class="grid2 stack-mobile">${campo("tassoMoraPrivati", "Interessi di mora % - clienti privati", "tasso legale in vigore")}${campo("tassoMoraImprese", "Interessi di mora % - clienti con P.IVA", "tasso D.Lgs. 231/2002")}</div>
-        <p class="muted xsmall" style="margin:0">Facoltativi: servono alla lettera di messa in mora per calcolare gli interessi. Per i privati vale il tasso legale (art. 1284 c.c., fissato ogni anno dal Ministero dell'Economia); per imprese e P.A. quello del D.Lgs. 231/2002 (BCE + 8 punti, aggiornato ogni sei mesi). Il cliente conta come impresa se nel preventivo c'è la sua partita IVA.</p>
-        ${campo("linkRecensioni", "Link per lasciarti una recensione (Google)", "https://g.page/r/...", "url")}
-        <button class="btn soft block" data-action="clausola-pagamenti">${ICONE.condizioni} Aggiungi alle condizioni la clausola sui ritardi</button>
-        <p class="muted xsmall" style="margin:0">${esc(AVVISO_LEGALE)}</p>
-      </section>
+        <label class="campo">Ricordami di richiamare chi non risponde dopo
+          <select data-az="giorniRicontatto">${[2, 3, 5, 7, 10].map((n) => `<option value="${n}" ${Number(a.giorniRicontatto) === n ? "selected" : ""}>${n} giorni</option>`).join("")}</select></label>
+        <label class="campo">Come ti pagano (testo predefinito)<textarea data-az="pagamento" rows="2">${esc(a.pagamento)}</textarea></label>
+        <label class="campo">Condizioni predefinite<textarea data-az="condizioni" rows="4">${esc(a.condizioni)}</textarea></label>
+        <button class="btn soft block" data-action="clausola-pagamenti">${ICONE.condizioni} Aggiungi la clausola sui ritardi di pagamento</button>`,
+      )}
 
-      <div class="etichetta-sez">Logo e colore ${proBadge}</div>
-      <section class="card stack">
-        <div class="row">
-          ${logo ? `<img src="${logo}" alt="Logo" style="max-height:56px;max-width:140px;border-radius:10px;background:#fff;padding:4px">` : `<span class="muted small">Nessun logo</span>`}
+      ${sezione(
+        "fisco",
+        "IVA e fisco",
+        esc(sintesiFisco),
+        `<label class="campo">Regime fiscale
+          <select data-az="regime">
+            <option value="ordinario" ${a.regime !== "forfettario" ? "selected" : ""}>Con IVA (ordinario o semplificato)</option>
+            <option value="forfettario" ${a.regime === "forfettario" ? "selected" : ""}>Forfettario (senza IVA)</option>
+          </select>
+        </label>
+        ${
+          a.regime === "forfettario"
+            ? `<label class="check"><input type="checkbox" data-az="addebitaBollo" ${a.addebitaBollo ? "checked" : ""}> <span>Addebita al cliente il bollo da 2 € (sopra 77,47 €)</span></label>
+             <label class="campo">Frase del regime forfettario<textarea data-az="fraseForfettario" rows="3">${esc(a.fraseForfettario)}</textarea></label>`
+            : `<label class="campo">IVA per le nuove voci
+              <select data-az="ivaDefault">${core.ALIQUOTE_IVA.map((x) => `<option value="${x}" ${Number(a.ivaDefault) === x ? "selected" : ""}>${x}%</option>`).join("")}</select></label>`
+        }`,
+      )}
+
+      ${sezione(
+        "logo",
+        `Logo e colore${proBadge}`,
+        logo ? "Logo caricato" : "Il tuo marchio sul PDF e sulla pagina del cliente",
+        `<div class="row">
+          ${logo ? `<img src="${logo}" alt="Logo" style="max-height:56px;max-width:140px;border-radius:8px;background:#fff;padding:4px">` : `<span class="muted small">Nessun logo</span>`}
           ${
             state.pro
               ? `<label class="btn small" style="margin-left:auto">Carica logo<input type="file" accept="image/png,image/jpeg,image/webp" id="file-logo" hidden></label>`
@@ -2623,53 +3682,83 @@ function viewImpostazioni() {
         </div>
         ${
           state.pro
-            ? `<label class="campo">Colore del preventivo<input type="color" data-az="colore" value="${esc(/^#[0-9a-f]{6}$/i.test(a.colore) ? a.colore : "#1d4ed8")}"></label>`
+            ? `<label class="campo">Colore del preventivo<input type="color" data-az="colore" value="${esc(/^#[0-9a-f]{6}$/i.test(a.colore) ? a.colore : "#1a1d21")}"></label>`
             : `<button class="btn block" data-action="paywall" data-motivo="logo">Scegli il colore del preventivo</button>`
-        }
-      </section>
+        }`,
+      )}
 
-      <div class="etichetta-sez">Fisco</div>
-      <section class="card stack">
-        <label class="campo">Regime fiscale
-          <select data-az="regime">
-            <option value="ordinario" ${a.regime !== "forfettario" ? "selected" : ""}>Ordinario / semplificato (con IVA)</option>
-            <option value="forfettario" ${a.regime === "forfettario" ? "selected" : ""}>Forfettario (senza IVA)</option>
-          </select>
-        </label>
-        ${
-          a.regime === "forfettario"
-            ? `<label class="check"><input type="checkbox" data-az="addebitaBollo" ${a.addebitaBollo ? "checked" : ""}> <span>Addebita al cliente il bollo da 2 € (sopra 77,47 €)</span></label>
-             <label class="campo">Dicitura forfettario<textarea data-az="fraseForfettario" rows="3">${esc(a.fraseForfettario)}</textarea></label>`
-            : `<label class="campo">IVA predefinita per le nuove voci
-              <select data-az="ivaDefault">${core.ALIQUOTE_IVA.map((x) => `<option value="${x}" ${Number(a.ivaDefault) === x ? "selected" : ""}>${x}%</option>`).join("")}</select></label>`
-        }
-      </section>
+      ${sezione(
+        "recensioni",
+        "Recensioni",
+        a.linkRecensioni ? "Link impostato" : "Fatti lasciare una recensione su Google",
+        `${campo("linkRecensioni", "Link per lasciarti una recensione (Google)", "https://g.page/r/...", "url")}
+        <p class="muted small" style="margin:0">Quando un lavoro è pagato tutto, l'app ti propone di chiedere la recensione con un messaggio già pronto.</p>`,
+      )}
 
-      <div class="etichetta-sez">Preventivi</div>
-      <section class="card stack">
-        <div class="grid2">${campo("prefisso", "Prefisso numero", "es. P-")}${campo("validitaGiorni", "Validità (giorni)", "30", "number")}</div>
-        <label class="campo">Promemoria "da ricontattare" dopo
-          <select data-az="giorniRicontatto">${[2, 3, 5, 7, 10].map((n) => `<option value="${n}" ${Number(a.giorniRicontatto) === n ? "selected" : ""}>${n} giorni</option>`).join("")}</select></label>
-        <label class="campo">Pagamento predefinito<textarea data-az="pagamento" rows="2">${esc(a.pagamento)}</textarea></label>
-        <label class="campo">Condizioni predefinite<textarea data-az="condizioni" rows="4">${esc(a.condizioni)}</textarea></label>
-      </section>
+      ${sezione(
+        "crediti",
+        "Recupero crediti",
+        "Interessi di mora per le lettere",
+        `<div class="grid2 stack-mobile">${campo("tassoMoraPrivati", "Interessi di mora % per i privati", "tasso legale in vigore", "text", 'inputmode="decimal"')}${campo("tassoMoraImprese", "Interessi di mora % per le imprese", "tasso D.Lgs. 231/2002", "text", 'inputmode="decimal"')}</div>
+        <details><summary>Quali tassi mettere?</summary><p class="muted small" style="margin:0">Facoltativi: servono alla lettera di messa in mora per calcolare gli interessi. Per i privati vale il tasso legale (art. 1284 c.c., fissato ogni anno dal Ministero dell'Economia); per imprese ed enti pubblici quello del D.Lgs. 231/2002 (BCE + 8 punti, aggiornato ogni sei mesi). Nel preventivo puoi indicare se il cliente è un'impresa.</p></details>
+        <p class="muted xsmall" style="margin:0">${esc(AVVISO_LEGALE)}</p>`,
+      )}
 
-      <div class="etichetta-sez">App e dati</div>
-      <section class="card stack">
-        ${state.installEvento ? `<button class="btn soft block" data-action="installa">📲 Installa l'app sul telefono</button>` : ""}
-        ${isIos && !standalone ? `<div class="banner info"><span class="ico">📲</span><div>Per installare l'app su iPhone: tocca <b>Condividi</b> e poi <b>Aggiungi alla schermata Home</b>.</div></div>` : ""}
-        <p class="muted small" style="margin:0">I tuoi dati restano solo su questo dispositivo. Fai un backup ogni tanto o prima di cambiare telefono.</p>
+      ${sezione(
+        "aspetto",
+        "Aspetto",
+        preferenza.get("pl-sole") === "1"
+          ? "Modalità sole attiva"
+          : { chiaro: "Tema chiaro", scuro: "Tema scuro" }[preferenza.get("pl-tema")] || "Tema come il telefono",
+        `<div class="seg seg-pieno" role="radiogroup" aria-label="Tema">${[
+          ["", "Come il telefono"],
+          ["chiaro", "Chiaro"],
+          ["scuro", "Scuro"],
+        ]
+          .map(([k, v]) => {
+            const on = (preferenza.get("pl-tema") || "") === k;
+            return `<button type="button" role="radio" data-action="tema" data-tema="${k}" class="${on ? "on" : ""}" aria-checked="${on}">${v}</button>`;
+          })
+          .join("")}</div>
+        <label class="check"><span class="switch"><input type="checkbox" id="pref-sole" ${preferenza.get("pl-sole") === "1" ? "checked" : ""}><span></span></span><span><b>Modalità sole</b><br><span class="small muted">Contrasto massimo e testi più grandi, per leggere bene all'aperto</span></span></label>`,
+      )}
+
+      ${sezione(
+        "promemoria",
+        "Promemoria",
+        "Chi deve pagare, chi richiamare",
+        `<p class="muted small" style="margin:0">L'app non manda notifiche: per non dimenticarti di nessuno, mettiti un appuntamento fisso nel calendario del telefono.</p>
+        <button class="btn block" data-action="promemoria-conti">${ICONE.sveglia} Ogni venerdì alle 17:30: 5 minuti per i conti</button>`,
+      )}
+
+      ${sezione(
+        "dati",
+        "Copia di sicurezza e app",
+        ultimaCopia
+          ? `Ultima copia il ${esc(core.formatData(core.oggiISO(new Date(ultimaCopia))))}`
+          : "Nessuna copia: i dati sono solo su questo telefono",
+        `${state.installEvento ? `<button class="btn soft block" data-action="installa">${ICONE.scarica} Installa l'app sul telefono</button>` : ""}
+        ${isIos && !standalone ? `<div class="banner info"><span class="ico">${ICONE.info}</span><div>Per installare l'app su iPhone: tocca <b>Condividi</b> e poi <b>Aggiungi alla schermata Home</b>.</div></div>` : ""}
+        <p class="muted small" style="margin:0">I preventivi restano solo su questo telefono. Salva una copia ogni tanto e prima di cambiare telefono: puoi mandarla a te stesso su WhatsApp o salvarla su Drive.</p>
         <div class="grid2">
-          <button class="btn" data-action="backup-esporta">${ICONE.scarica} Esporta backup</button>
-          <label class="btn">Importa backup<input type="file" accept="application/json,.json" id="file-backup" hidden></label>
+          <button class="btn" data-action="backup-esporta">${ICONE.scarica} Salva una copia</button>
+          <label class="btn">Ripristina<input type="file" accept="application/json,.json" id="file-backup" hidden></label>
         </div>
-        <button class="btn soft block" data-action="consiglia">${ICONE.condividi} Consiglia l'app a un collega</button>
-        <div class="row wrap small" style="justify-content:center;gap:16px;margin-top:4px">
-          <a href="privacy.html">Privacy</a><a href="termini.html">Termini</a><a href="mailto:${esc(CONFIG.emailSupporto)}">Assistenza</a>
-        </div>
-      </section>
+        <button class="btn block" data-action="esporta-pagamenti">${ICONE.tabella} Pagamenti ricevuti per il commercialista (Excel)</button>`,
+      )}
+
+      <button class="btn soft block" data-action="consiglia">${ICONE.condividi} Consiglia l'app a un collega</button>
+      <div class="row wrap small" style="justify-content:center;gap:16px;margin-top:4px">
+        <a href="privacy.html">Privacy</a><a href="termini.html">Termini</a><a href="mailto:${esc(CONFIG.emailSupporto)}">Assistenza</a>
+      </div>
     </main>`;
   ombraTopbar();
+  $$("details.sez-imp").forEach((d) =>
+    d.addEventListener("toggle", () => {
+      if (d.open) state.impAperte.add(d.dataset.sez);
+      else state.impAperte.delete(d.dataset.sez);
+    }),
+  );
 
   $("#file-logo")?.addEventListener("change", async (e) => {
     const file = e.target.files[0];
@@ -2693,15 +3782,15 @@ function viewImpostazioni() {
     try {
       const dati = JSON.parse(await file.text());
       const ok = await chiedi({
-        titolo: "Importare il backup?",
-        testo: "Sostituirà i dati attuali su questo dispositivo.",
-        ok: "Importa",
+        titolo: "Ripristinare questa copia?",
+        testo: "Sostituirà i dati che ci sono adesso su questo telefono.",
+        ok: "Ripristina",
         pericolo: true,
       });
       if (!ok) return;
       const n = await db.importa(dati);
       await caricaTutto();
-      toast(`Backup importato: ${n.preventivi} preventivi, ${n.clienti} clienti`, "ok");
+      toast(`Copia ripristinata: ${n.preventivi} preventivi, ${n.clienti} clienti`, "ok");
       vai("#/");
     } catch (err) {
       toast(err.message || "File non valido");
@@ -2716,10 +3805,11 @@ const CLAUSOLA_PAGAMENTI =
   "I lavori iniziano dopo il versamento dell'anticipo pattuito. In caso di ritardato pagamento sono dovuti gli interessi di mora nella misura di legge e le spese di recupero del credito.";
 
 function htmlStatoIban(iban) {
-  if (!iban) return `<span class="muted">Con un IBAN valido il cliente può pagare inquadrando un QR.</span>`;
+  if (!iban)
+    return `<span class="muted">Con l'IBAN il cliente paga l'anticipo copiando i dati o inquadrando un QR.</span>`;
   return inc.ibanValido(iban)
-    ? `<span style="color:var(--ok)">✓ IBAN valido: QR di pagamento attivo su PDF e pagina del cliente</span>`
-    : `<span class="testo-bad">⚠ IBAN non valido: controlla le cifre (un errore manda i soldi altrove o li fa tornare indietro)</span>`;
+    ? `<span class="row" style="gap:6px;color:var(--ok);font-weight:600">${ICONE.fatto.replace("<svg", '<svg width="18" height="18"')}IBAN valido: pagamento con un tocco attivo</span>`
+    : `<span class="row testo-bad" style="gap:6px;font-weight:600;align-items:flex-start">${ICONE.attenzione.replace("<svg", '<svg width="18" height="18" style="flex:none;margin-top:1px"')}IBAN non valido: controlla le cifre (un errore manda i soldi altrove o li fa tornare indietro)</span>`;
 }
 
 const CAMPI_AZIENDA = new Set(
@@ -2728,11 +3818,21 @@ const CAMPI_AZIENDA = new Set(
 
 function suInputImpostazioni(e) {
   const el = e.target;
+  if (el.id === "pref-sole") {
+    preferenza.set("pl-sole", el.checked ? "1" : "");
+    return applicaAspetto();
+  }
   const k = el.dataset.az;
   if (!k || !CAMPI_AZIENDA.has(k)) return;
   if (k === "colore" && !state.pro) return;
   let v = el.type === "checkbox" ? el.checked : el.value;
-  if (k === "ivaDefault" || k === "validitaGiorni" || k === "giorniRicontatto" || k === "giorniSaldo")
+  if (
+    k === "ivaDefault" ||
+    k === "validitaGiorni" ||
+    k === "giorniRicontatto" ||
+    k === "giorniSaldo" ||
+    k === "accontoDefault"
+  )
     v = core.parseNumero(v);
   const conLink = k === "linkPagamento" || k === "linkRecensioni";
   if (conLink && e.type === "change" && v && !urlSicuro(v)) {
@@ -2759,45 +3859,65 @@ function viewBenvenuto() {
   state.mestiereScelto = scelto;
   const passo = state.passoOnb;
   const iva = a.regime === "forfettario" ? "forf" : String(a.ivaDefault || 22);
+  const acconto = Number(a.accontoDefault ?? 30);
+  const icona = (id) => ICONE_MESTIERI[id] || ICONE.cassetta;
+  const nomeMestiere = scelto && scelto !== "altro" ? trovaMestiere(scelto)?.nome || "" : "";
   const passo1 = `
-      <div class="titolone"><h1>Che lavoro fai?</h1><p>Ti preparo il listino con i prezzi tipici del tuo mestiere.</p></div>
+      <div class="titolone"><h1>Che lavoro fai?</h1><p>Ti preparo i prezzi tipici del tuo mestiere: li cambi quando vuoi.</p></div>
       <main class="pagina">
-        <div class="griglia-mestieri">
-          ${MESTIERI.map((m) => `<button class="mestiere ${scelto === m.id ? "on" : ""}" data-action="scegli-mestiere" data-m="${m.id}"><span class="em" aria-hidden="true">${esc(m.icona)}</span>${esc(m.nome)}</button>`).join("")}
-          <button class="mestiere ${scelto === "altro" ? "on" : ""}" data-action="scegli-mestiere" data-m="altro"><span class="em" aria-hidden="true">✨</span>Altro</button>
+        <div class="griglia-mestieri" role="radiogroup" aria-label="Il tuo mestiere">
+          ${MESTIERI.map((m) => `<button class="mestiere ${scelto === m.id ? "on" : ""}" role="radio" aria-checked="${scelto === m.id}" data-action="scegli-mestiere" data-m="${m.id}"><span class="em" aria-hidden="true">${icona(m.id)}</span>${esc(m.nome)}</button>`).join("")}
+          <button class="mestiere ${scelto === "altro" ? "on" : ""}" role="radio" aria-checked="${scelto === "altro"}" data-action="scegli-mestiere" data-m="altro"><span class="em" aria-hidden="true">${icona("altro")}</span>Altro</button>
         </div>
       </main>
-      <footer class="barra-totale"><div class="tot"><div class="muted xsmall">Passo 1 di 2</div><b>${scelto && scelto !== "altro" ? esc(trovaMestiere(scelto)?.nome || "") : scelto === "altro" ? "Altro" : "Scegli un mestiere"}</b></div>
+      <footer class="barra-totale"><div class="tot"><div class="xsmall">Passo 1 di 3</div><b>${scelto ? esc(nomeMestiere || "Altro") : "Scegli il tuo mestiere"}</b></div>
         <button class="btn primary big" data-action="onb-avanti" ${scelto ? "" : 'aria-disabled="true"'}>Avanti</button></footer>`;
   const passo2 = `
-      <div class="titolone"><h1>I tuoi dati</h1><p>Compaiono sul preventivo. Niente registrazione: restano sul tuo telefono.</p></div>
+      <div class="titolone"><h1>La tua impresa</h1><p>Questi dati compaiono sul preventivo. Niente registrazione: restano sul tuo telefono.</p></div>
       <main class="pagina">
         <section class="card stack">
-          <input id="b-nome" placeholder="Nome impresa (es. Idraulica Rossi)" value="${esc(a.ragioneSociale)}" aria-label="Nome impresa" autocomplete="organization">
+          <label class="campo">Nome dell'impresa<input id="b-nome" placeholder="es. Idraulica Rossi" value="${esc(a.ragioneSociale)}" autocomplete="organization" enterkeyhint="next"></label>
           <div class="grid2 stack-mobile">
-            <input id="b-tel" type="tel" placeholder="Telefono / WhatsApp" value="${esc(a.telefono)}" aria-label="Telefono" autocomplete="tel">
-            <input id="b-piva" placeholder="Partita IVA" value="${esc(a.piva)}" aria-label="Partita IVA" inputmode="numeric">
+            <label class="campo">Cellulare (WhatsApp)<input id="b-tel" type="tel" inputmode="tel" placeholder="es. 333 123 4567" value="${esc(a.telefono)}" autocomplete="tel" enterkeyhint="next"></label>
+            <label class="campo">Partita IVA<input id="b-piva" inputmode="numeric" placeholder="11 cifre" value="${esc(a.piva)}" enterkeyhint="next"></label>
           </div>
           <div class="grid2 stack-mobile">
-            <input id="b-citta" placeholder="Città" value="${esc(a.citta)}" aria-label="Città" autocomplete="address-level2">
-            <input id="b-email" type="email" placeholder="Email" value="${esc(a.email)}" aria-label="Email" autocomplete="email">
+            <label class="campo">Città<input id="b-citta" placeholder="es. Bergamo" value="${esc(a.citta)}" autocomplete="address-level2" enterkeyhint="next"></label>
+            <label class="campo"><span>Email <span class="aiuto">facoltativa</span></span><input id="b-email" type="email" placeholder="es. info@tuaimpresa.it" value="${esc(a.email)}" autocomplete="email"></label>
           </div>
         </section>
-        <div class="etichetta-sez">Come applichi l'IVA?</div>
-        <div class="scelta-iva" role="radiogroup">
-          <label><input type="radio" name="b-iva" value="22" ${iva === "22" ? "checked" : ""}><span>IVA 22%<small>Aliquota ordinaria</small></span></label>
-          <label><input type="radio" name="b-iva" value="10" ${iva === "10" ? "checked" : ""}><span>IVA 10%<small>Manutenzioni su abitazioni private</small></span></label>
-          <label><input type="radio" name="b-iva" value="forf" ${iva === "forf" ? "checked" : ""}><span>Regime forfettario<small>Senza IVA, con la dicitura di legge</small></span></label>
+        <div class="etichetta-sez">Nei tuoi preventivi metti l'IVA?</div>
+        <div class="scelta-iva" role="radiogroup" aria-label="IVA">
+          <label><input type="radio" name="b-iva" value="22" ${iva === "22" ? "checked" : ""}><span>Sì, di solito il 22%<small>La più comune</small></span></label>
+          <label><input type="radio" name="b-iva" value="10" ${iva === "10" ? "checked" : ""}><span>Sì, di solito il 10%<small>Manutenzioni nelle case dei privati</small></span></label>
+          <label><input type="radio" name="b-iva" value="forf" ${iva === "forf" ? "checked" : ""}><span>No, sono nel regime forfettario<small>Senza IVA: aggiungo io la frase richiesta dalla legge</small></span></label>
         </div>
-        <p class="muted xsmall" style="margin:0 4px">Puoi cambiare tutto quando vuoi da Impostazioni.</p>
+        <p class="muted small" style="margin:0 2px">Non sei sicuro? Guarda una tua fattura: se c'è la riga dell'IVA, scegli Sì.</p>
+        <div class="etichetta-sez">Chiedi un anticipo quando il cliente accetta?</div>
+        <div class="seg seg-pieno" role="radiogroup" aria-label="Anticipo predefinito">
+          ${[0, 20, 30, 50].map((v) => `<button type="button" role="radio" data-action="onb-acconto" data-v="${v}" class="${acconto === v ? "on" : ""}" aria-checked="${acconto === v}">${v ? `${v}%` : "No"}</button>`).join("")}
+        </div>
+        <p class="muted small" style="margin:0 2px">È la protezione migliore contro chi firma e poi non paga. Lo cambi in ogni preventivo.</p>
       </main>
       <footer class="barra-totale"><button class="btn" data-action="onb-indietro" aria-label="Indietro">${ICONE.indietro}</button>
-        <div class="tot"><div class="muted xsmall">Passo 2 di 2</div><b>Quasi fatto</b></div>
-        <button class="btn primary big" data-action="fine-benvenuto">${ICONE.fulmine} Inizia</button></footer>`;
+        <div class="tot"><div class="xsmall">Passo 2 di 3</div><b>I tuoi dati</b></div>
+        <button class="btn primary big" data-action="onb-dati">Avanti</button></footer>`;
+  const m = trovaMestiere(a.mestiere || (scelto !== "altro" ? scelto : ""));
+  const passo3 = `
+      <div class="titolone"><h1>Facciamo il primo preventivo</h1><p>Ci vuole un minuto. Puoi partire da un esempio già pronto e vedere cosa riceve il cliente.</p></div>
+      <main class="pagina">
+        <div class="lista-azioni">
+          ${m ? `<button data-action="fine-benvenuto" data-modo="esempio" class="principale"><span class="ico">${icona(m.id)}</span><span class="corpo">Prova con un esempio da ${esc(m.nome.toLowerCase())}<small>Voci e prezzi tipici già compilati: cambi solo il cliente</small></span></button>` : ""}
+          <button data-action="fine-benvenuto" data-modo="vuoto" class="${m ? "" : "principale"}"><span class="ico">${ICONE.matita}</span><span class="corpo">Fai un preventivo vero<small>Per un cliente che ti ha già chiesto un lavoro</small></span></button>
+          <button data-action="fine-benvenuto" data-modo="home"><span class="ico">${ICONE.casa}</span><span class="corpo">Lo faccio dopo<small>Vai alla pagina iniziale</small></span></button>
+        </div>
+      </main>
+      <footer class="barra-totale"><button class="btn" data-action="onb-indietro" aria-label="Indietro">${ICONE.indietro}</button>
+        <div class="tot"><div class="xsmall">Passo 3 di 3</div><b>Pronto</b></div></footer>`;
   app().innerHTML = `
     <header class="topbar"><div class="brand">${ICONE.logo}<span>${esc(CONFIG.nomeProdotto)}</span></div></header>
-    <div class="passi-onb" aria-hidden="true"><i class="on"></i><i class="${passo === 2 ? "on" : ""}"></i></div>
-    ${passo === 1 ? passo1 : passo2}`;
+    <div class="passi-onb" aria-hidden="true"><i class="on"></i><i class="${passo >= 2 ? "on" : ""}"></i><i class="${passo >= 3 ? "on" : ""}"></i></div>
+    ${passo === 1 ? passo1 : passo === 2 ? passo2 : passo3}`;
 }
 
 function salvaDatiOnb() {
@@ -2816,7 +3936,7 @@ function salvaDatiOnb() {
   }
 }
 
-async function fineBenvenuto() {
+async function datiOnb() {
   salvaDatiOnb();
   const a = state.azienda;
   if (!a.ragioneSociale) {
@@ -2824,12 +3944,26 @@ async function fineBenvenuto() {
     return toast("Scrivi il nome della tua impresa");
   }
   a.mestiere = state.mestiereScelto && state.mestiereScelto !== "altro" ? state.mestiereScelto : "";
+  state.passoOnb = 3;
+  transizione(() => {
+    viewBenvenuto();
+    window.scrollTo(0, 0);
+  });
+}
+
+async function fineBenvenuto(modo) {
+  const a = state.azienda;
+  if (!a.ragioneSociale) {
+    state.passoOnb = 2;
+    return viewBenvenuto();
+  }
   a.onboarded = true;
   await salvaAzienda();
-  traccia("Onboarding completato", { mestiere: a.mestiere || "altro", regime: a.regime });
+  traccia("Onboarding completato", { mestiere: a.mestiere || "altro", regime: a.regime, modo });
   if (a.mestiere && !state.listino.length) await caricaEsempi(a.mestiere);
   db.rendiPersistente();
-  const modello = state.apriModello ? trovaMestiere(a.mestiere) : null;
+  if (modo === "home") return vai("#/");
+  const modello = modo === "esempio" || state.apriModello ? trovaMestiere(a.mestiere) : null;
   state.apriModello = false;
   const prev = await creaPreventivo({ modello });
   vai(`#/p/${prev.id}`);
@@ -2868,6 +4002,45 @@ const azioni = {
     await salvaPreventivo(prev);
     traccia("Ricontatto");
     viewLista();
+  },
+  stato: () => state.corrente && foglioStato(state.corrente),
+  "imposta-stato": (el) => state.corrente && impostaStato(state.corrente, el.dataset.stato),
+  sblocca: () => {
+    const prev = state.corrente;
+    if (!prev) return;
+    state.sbloccati.add(prev.id);
+    viewEditor(prev.id);
+    toast("Ora puoi modificarlo: se cambi i prezzi, rimandalo al cliente");
+  },
+  acconto: (el) => {
+    const prev = state.corrente;
+    if (!prev || bloccato(prev)) return;
+    if (el.dataset.v === "altro") {
+      state.accontoAltro.add(prev.id);
+    } else {
+      state.accontoAltro.delete(prev.id);
+      prev.acconto = { tipo: "perc", valore: Number(el.dataset.v) || 0 };
+      salvaDopo(prev);
+    }
+    vibra();
+    $("#sezione-acconto").innerHTML = htmlAcconto(prev);
+    aggiornaTotali();
+  },
+  "da-rubrica": async () => {
+    const prev = state.corrente;
+    try {
+      const [contatto] = await navigator.contacts.select(["name", "tel"], { multiple: false });
+      if (!contatto) return;
+      const nome = (contatto.name || [])[0] || "";
+      const tel = (contatto.tel || [])[0] || "";
+      if (nome) prev.cliente.nome = nome;
+      if (tel) prev.cliente.telefono = tel;
+      prev.clienteId = null;
+      salvaDopo(prev);
+      viewEditor(prev.id);
+    } catch {
+      toast("Rubrica non disponibile su questo telefono");
+    }
   },
   "menu-riga": (el) => menuRiga(Number(el.dataset.i)),
   "riga-op": (el) => opRiga(el.dataset.op, Number(el.dataset.i)),
@@ -2915,7 +4088,7 @@ const azioni = {
   "carica-esempi-sel": async () => {
     await caricaEsempi($("#mestiere-esempi").value);
     viewListino();
-    toast("Voci aggiunte al listino", "ok");
+    toast("Prezzi aggiunti", "ok");
   },
   "detta-righe": () =>
     detta('Prova: "sostituzione miscelatore, poi 2 ore di manodopera a 38 euro"', aggiungiDaDettatura),
@@ -2929,41 +4102,26 @@ const azioni = {
     }),
   "togli-foto": async (el) => {
     const prev = state.corrente;
-    prev.foto = (prev.foto || []).filter((f) => f.id !== el.dataset.id);
+    const prima = [...(prev.foto || [])];
+    prev.foto = prima.filter((f) => f.id !== el.dataset.id);
     await salvaPreventivo(prev);
     $("#sezione-foto").innerHTML = htmlFoto(prev);
     collegaInputFoto();
+    toast("Foto tolta", "", {
+      azione: "Annulla",
+      suAzione: async () => {
+        prev.foto = prima;
+        await salvaPreventivo(prev);
+        if (state.corrente !== prev) return;
+        $("#sezione-foto").innerHTML = htmlFoto(prev);
+        collegaInputFoto();
+      },
+    });
   },
   "menu-preventivo": () => menuPreventivo(),
   "scarica-pdf": () => scaricaPdf(),
-  "duplica-preventivo": async () => {
-    const orig = state.corrente;
-    const numerazione = core.prossimoNumero(state.preventivi, new Date().getFullYear(), state.azienda.prefisso);
-    const copia = {
-      ...structuredClone(orig),
-      ...numerazione,
-      id: core.uid(),
-      data: core.oggiISO(),
-      stato: "bozza",
-      firma: null,
-      link: null,
-      linkPrecedenti: [],
-      accettazioneOnline: null,
-      accettatoIl: "",
-      incasso: null,
-      appuntamento: null,
-      disponibilita: [],
-      inviatoIl: null,
-      ricontattatoIl: null,
-      regime: state.azienda.regime,
-      addebitaBollo: state.azienda.addebitaBollo,
-      createdAt: Date.now(),
-    };
-    copia.righe = copia.righe.map((r) => ({ ...r, id: core.uid() }));
-    await salvaPreventivo(copia);
-    toast(`Creato il preventivo N. ${copia.numero}`, "ok");
-    vai(`#/p/${copia.id}`);
-  },
+  "duplica-preventivo": () => foglioDuplica(),
+  "duplica-per": (el) => duplica(el.dataset.chi === "stesso"),
   "elimina-preventivo": async () => {
     const prev = state.corrente;
     chiudiFoglio(true);
@@ -2976,15 +4134,11 @@ const azioni = {
       }))
     )
       return;
-    clearTimeout(timerSalva);
-    await db.elimina("preventivi", prev.id);
-    nelArchivio.delete(prev.id);
-    canale?.postMessage({ id: prev.id });
-    state.preventivi = state.preventivi.filter((p) => p.id !== prev.id);
-    state.corrente = null;
+    await eliminaPreventivo(prev);
     vai("#/");
   },
   firma: () => foglioFirma(),
+  presenta: (el) => presenta(el),
   "rimuovi-firma": async () => {
     if (!(await chiedi({ titolo: "Rimuovere la firma del cliente?", ok: "Rimuovi", pericolo: true }))) return;
     state.corrente.firma = null;
@@ -2992,7 +4146,7 @@ const azioni = {
     $("#sezione-firma").innerHTML = htmlFirma(state.corrente);
   },
   anteprima: () => anteprima(),
-  invia: () => invia(),
+  invia: (el) => invia(el),
   checkout: (el) => {
     const url = urlSicuro(CONFIG.checkout[el.dataset.piano]);
     traccia("Checkout", { piano: el.dataset.piano });
@@ -3024,10 +4178,24 @@ const azioni = {
     await salvaAzienda();
     viewImpostazioni();
   },
+  // La copia si può mandare su WhatsApp a se stessi o salvare su Drive: così sopravvive al cambio di telefono.
   "backup-esporta": async () => {
     const dati = await db.esporta();
-    const blob = new Blob([JSON.stringify(dati)], { type: "application/json" });
-    scaricaBlob(blob, `preventivolampo-backup-${core.oggiISO()}.json`);
+    const nome = `preventivolampo-copia-${core.oggiISO()}.json`;
+    const file = new File([JSON.stringify(dati)], nome, { type: "application/json" });
+    let fatto = false;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "Copia dei miei preventivi" });
+        fatto = true;
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+      }
+    }
+    if (!fatto) scaricaBlob(file, nome);
+    preferenza.set("pl-ultima-copia", String(Date.now()));
+    toast("Copia salvata: tienila in un posto sicuro", "ok");
+    if (!state.corrente && (rotta().parti[0] || "") === "") viewLista();
   },
   consiglia: async () => {
     const testo = `Uso ${CONFIG.nomeProdotto} per fare i preventivi dal telefono in un minuto: il cliente li accetta e firma da WhatsApp. Provalo gratis:`;
@@ -3056,13 +4224,40 @@ const azioni = {
   },
   "onb-indietro": () => {
     salvaDatiOnb();
-    state.passoOnb = 1;
+    state.passoOnb = Math.max(1, state.passoOnb - 1);
     transizione(viewBenvenuto);
   },
-  "fine-benvenuto": () => fineBenvenuto(),
+  "onb-dati": () => datiOnb(),
+  "onb-acconto": (el) => {
+    state.azienda.accontoDefault = Number(el.dataset.v) || 0;
+    $$("[data-action=onb-acconto]").forEach((b) => {
+      b.classList.toggle("on", b === el);
+      b.setAttribute("aria-checked", String(b === el));
+    });
+    vibra();
+  },
+  "fine-benvenuto": (el) => fineBenvenuto(el.dataset.modo || "vuoto"),
 
   // Incassi
   "registra-pagamento": () => foglioPagamento(),
+  // Il momento in cui si chiede il saldo: segna la fine lavori e prepara il messaggio.
+  "lavori-finiti": async () => {
+    const prev = state.corrente;
+    const i = incassoModificabile(prev);
+    i.fineLavori = core.oggiISO();
+    i.storico = false;
+    // Finito il lavoro sono finiti anche i lavori extra già firmati.
+    for (const v of variantiDi(prev).filter((x) => x.stato === "accettato")) {
+      const iv = incassoModificabile(v);
+      if (!iv.fineLavori) {
+        iv.fineLavori = i.fineLavori;
+        iv.storico = false;
+        await salvaPreventivo(v);
+      }
+    }
+    await salvaIncasso(prev);
+    foglioSollecito(0);
+  },
   // L'app non può mandare notifiche da sola (niente server): il promemoria lo fa il calendario del telefono.
   "promemoria-scadenza": () => {
     const prev = state.corrente;
@@ -3079,11 +4274,65 @@ const azioni = {
     scaricaBlob(new Blob([ics], { type: "text/calendar" }), nomeFile("Promemoria-pagamento", prev, "ics"));
     toast("Aprilo per aggiungerlo al calendario", "ok");
   },
-  "incassi-tutti": () => {
-    state.incassiTutti = !state.incassiTutti;
-    const el = $("#da-incassare");
-    if (el) el.outerHTML = htmlDaIncassare();
+  "compiti-tutti": () => {
+    state.compitiTutti = !state.compitiTutti;
+    const el = $("#da-fare");
+    if (el) el.outerHTML = htmlDaFare(compitiOggi());
   },
+  andamento: () => foglioAndamento(),
+  "lista-materiali": () => foglioMateriali(),
+  "guarda-cliente": () => traccia("Anteprima cliente"),
+  "crea-variante": () => state.corrente && creaVariante(state.corrente),
+  "parti-da": (el) => {
+    const prev = state.corrente;
+    const da = state.preventivi.find((p) => p.id === el.dataset.id);
+    if (prev && da) copiaVoci(prev, da.righe, da.oggetto);
+  },
+  "parti-da-modello": () => {
+    const prev = state.corrente;
+    const m = trovaMestiere(state.azienda.mestiere);
+    if (!prev || !m) return;
+    copiaVoci(
+      prev,
+      vociListino(m)
+        .slice(0, 5)
+        .map((v) => core.rigaVuota(ivaRiga(prev), v)),
+      m.oggetto,
+    );
+  },
+  tema: (el) => {
+    preferenza.set("pl-tema", el.dataset.tema || "");
+    applicaAspetto();
+    $$("[data-action=tema]").forEach((b) => {
+      b.classList.toggle("on", b === el);
+      b.setAttribute("aria-checked", String(b === el));
+    });
+  },
+  "esporta-pagamenti": () => {
+    const { testo, n } = csvPagamenti();
+    if (!n) return toast("Non hai ancora registrato pagamenti");
+    scaricaBlob(new Blob([testo], { type: "text/csv;charset=utf-8" }), `pagamenti-${core.oggiISO()}.csv`);
+    toast(n === 1 ? "1 pagamento esportato" : `${n} pagamenti esportati`, "ok");
+  },
+  "promemoria-conti": () => {
+    // Il prossimo venerdì: 5 minuti per i conti, ogni settimana.
+    const oggi = new Date();
+    const giorni = (5 - oggi.getDay() + 7) % 7 || 7;
+    const ics = inc.creaIcs({
+      id: "pl-conti-settimanali",
+      titolo: "5 minuti per i conti: apri PreventivoLampo",
+      data: core.aggiungiGiorni(core.oggiISO(), giorni),
+      fascia: "promemoria",
+      anticipo: "PT0M",
+      ripeti: "settimanale",
+      descrizione: "Guarda la lista Da fare: chi deve pagare, chi richiamare, quali preventivi stanno per scadere.",
+    });
+    scaricaBlob(new Blob([ics], { type: "text/calendar" }), "promemoria-conti.ics");
+    toast("Aprilo per aggiungerlo al calendario", "ok");
+  },
+  "copia-link-pagina": async () =>
+    toast((await copiaTesto(location.href)) ? "Link copiato: ora aprilo nell'app" : "Copia non riuscita"),
+  "incolla-messaggio": () => incollaMessaggio(),
   "togli-pagamento": async (el) => {
     const prev = state.corrente;
     const i = incassoModificabile(prev);
@@ -3131,9 +4380,20 @@ const azioni = {
   },
   "data-togli": (el) => {
     const prev = state.corrente;
-    (prev.disponibilita || []).splice(Number(el.dataset.i), 1);
+    const i = Number(el.dataset.i);
+    const [tolta] = (prev.disponibilita || []).splice(i, 1);
     aggiornaDate();
     salvaDopo(prev);
+    if (tolta && tolta.data)
+      toast("Data tolta", "", {
+        azione: "Annulla",
+        suAzione: () => {
+          if (state.corrente !== prev) return;
+          prev.disponibilita.splice(Math.min(i, prev.disponibilita.length), 0, tolta);
+          aggiornaDate();
+          salvaDopo(prev);
+        },
+      });
   },
   "fissa-data": () => foglioFissaData(),
   "appuntamento-togli": async () => {
@@ -3194,7 +4454,7 @@ document.addEventListener("change", (e) => {
   if (state.corrente) {
     if (e.target.tagName === "SELECT" || e.target.dataset.inc || e.target.dataset.disp) suInputEditor(e);
     suChangeEditor(e);
-  } else if (e.target.dataset.az) suInputImpostazioni(e);
+  } else if (e.target.dataset.az || e.target.id === "pref-sole") suInputImpostazioni(e);
 });
 
 // Dopo aver cambiato la fine lavori la sezione Incassi si ridisegna quando il focus esce dalla
@@ -3207,6 +4467,18 @@ document.addEventListener("focusout", (e) => {
   incassiDaRidisegnare = false;
   setTimeout(aggiornaIncassi, 0);
 });
+
+// I dettagli di una voce restano aperti anche quando le voci si ridisegnano.
+document.addEventListener(
+  "toggle",
+  (e) => {
+    const id = e.target.dataset && e.target.dataset.riga;
+    if (!id) return;
+    if (e.target.open) state.righeAperte.add(id);
+    else state.righeAperte.delete(id);
+  },
+  true,
+);
 
 window.addEventListener("hashchange", render);
 window.addEventListener("beforeinstallprompt", (e) => {
@@ -3224,7 +4496,10 @@ function salvaTuttoOra() {
 window.addEventListener("pagehide", salvaTuttoOra);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") salvaTuttoOra();
-  else controllaAggiornamenti();
+  else {
+    if (ritornoDaInvio) setTimeout(dopoInvio, 250);
+    controllaAggiornamenti();
+  }
 });
 
 // ------------------------------------------------------------------
@@ -3242,6 +4517,13 @@ async function avvio() {
 
   // Link dalle pagine "modello" del sito: app.html?mestiere=idraulico&modello=1
   const params = new URLSearchParams(location.search);
+  // Messaggio del cliente condiviso da WhatsApp verso l'app (Android): app.html?text=...
+  const condiviso = ["text", "url", "title"].map((k) => params.get(k) || "").join(" ");
+  if (condiviso.trim()) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    const m = condiviso.match(RE_LINK_CLIENTE);
+    if (m) location.hash = `#/${m[1]}?d=${m[2]}`;
+  }
   const mestiere = trovaMestiere(params.get("mestiere"));
   if (mestiere || params.has("modello")) {
     history.replaceState(null, "", location.pathname + location.hash);

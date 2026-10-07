@@ -7,10 +7,10 @@
   <title>PreventivoLampo - Preventivi dal telefono che il cliente firma online</title>
   <meta name="description" content="L'app per artigiani: preventivo professionale in 60 secondi dal telefono, inviato su WhatsApp. Il cliente lo accetta e firma online, aggiunge le voci facoltative e ti torna la conferma. Prova gratis, senza registrazione.">
   <link rel="canonical" href="https://preventivolampo.it/">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#ffc21a">
   <link rel="icon" href="img/icona.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="img/icona-180.png">
-  <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
   <meta property="og:type" content="website">
   <meta property="og:title" content="PreventivoLampo - Il preventivo che il cliente firma dal telefono">
   <meta property="og:description" content="Preventivo in 60 secondi, link su WhatsApp, il cliente accetta e firma online. Per idraulici, elettricisti, imbianchini e tutti gli artigiani.">
@@ -36,331 +36,459 @@
   </script>
 </head>
 <body class="home">
-  <header class="header">
+  <!-- Icone Lucide (lucide.dev, licenza ISC), tratto 2px: le stesse dell'app -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-freccia" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-doppio" viewBox="0 0 24 24"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></symbol>
+    <symbol id="i-meno" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-giu" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-indietro" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-avanti" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-piu" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></symbol>
+    <symbol id="i-listino" viewBox="0 0 24 24"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+    <symbol id="i-matita" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
+    <symbol id="i-telefono" viewBox="0 0 24 24"><path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/></symbol>
+    <symbol id="i-attenzione" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-campanella" viewBox="0 0 24 24"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></symbol>
+    <symbol id="i-stella" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></symbol>
+    <symbol id="i-foto" viewBox="0 0 24 24"><path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/></symbol>
+    <symbol id="i-lucchetto" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+    <symbol id="i-righello" viewBox="0 0 24 24"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></symbol>
+    <symbol id="i-percento" viewBox="0 0 24 24"><line x1="19" x2="5" y1="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></symbol>
+    <symbol id="i-offline" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/></symbol>
+    <symbol id="i-immagine" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
+    <symbol id="i-elenco" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol>
+    <symbol id="i-pagamento" viewBox="0 0 24 24"><path d="M11 15h2a2 2 0 1 0 0-4h-3c-.6 0-1.1.2-1.4.6L3 17"/><path d="m7 21 1.6-1.4c.3-.4.8-.6 1.4-.6h4c1.1 0 2.1-.4 2.8-1.2l4.6-4.4a2 2 0 0 0-2.75-2.91l-4.2 3.9"/><path d="m2 16 6 6"/><circle cx="16" cy="9" r="2.9"/><circle cx="6" cy="5" r="3"/></symbol>
+  </svg>
+  <a class="salta" href="#contenuto">Vai al contenuto</a>
+
+  <header class="testata">
     <div class="wrap">
-      <a class="logo" href="./"><img src="img/icona.svg" alt="" width="34" height="34">PreventivoLampo</a>
+      <a class="marchio" href="./"><svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1a1d21"/><path d="M36.5 7 15 36h14.5l-4 21L49 27H34.5z" fill="#ffc21a"/></svg><span>PreventivoLampo</span></a>
       <nav aria-label="Sezioni">
-        <a class="link" href="#funzioni">Funzioni</a>
-        <a class="link" href="#come-funziona">Come funziona</a>
-        <a class="link" href="#prezzi">Prezzi</a>
-        <a class="link" href="#faq">Domande</a>
-        <a class="btn small primary" href="app.html">Prova gratis</a>
+        <a class="largo" href="#come-funziona">Come funziona</a>
+        <a class="largo" href="#se-non-paga">Se non paga</a>
+        <a href="#prezzi">Prezzi</a>
+        <a class="largo" href="#faq">Domande</a>
+        <a class="largo" href="app.html">Apri l'app</a>
       </nav>
     </div>
   </header>
 
-  <main>
-    <section class="hero">
+  <main id="contenuto">
+    <section class="banda eroe" aria-labelledby="titolo-eroe">
       <div class="wrap">
-        <div>
-          <span class="pill"><b>NUOVO</b> Il cliente accetta e firma dal suo telefono</span>
-          <h1>Il preventivo che il cliente <span class="grad">firma subito</span>.</h1>
-          <p class="lead">Lo prepari dal telefono in 60 secondi, lo mandi su WhatsApp e il cliente lo accetta con la firma, scegliendo da solo gli extra che gli proponi. Tu ricevi la conferma e il lavoro è tuo.</p>
-          <div class="cta-row">
-            <a class="btn primary big" href="app.html">Fai il primo preventivo gratis</a>
-          </div>
-          <p class="nota-cta">Nessuna registrazione · Nessuna carta di credito · Per idraulici, elettricisti, imbianchini e tutti gli artigiani</p>
-          <div class="fiducia">
-            <span>Listino pronto per 27 mestieri</span>
-            <span>IVA e forfettario automatici</span>
-            <span>Funziona anche senza rete</span>
+        <div class="eroe-testo">
+          <h1 id="titolo-eroe">Il preventivo che il cliente firma subito.</h1>
+          <p class="lead">Lo prepari dal telefono in 60 secondi e lo mandi su WhatsApp. Il cliente lo apre, firma col dito e paga l'acconto. Tu ricevi la conferma e il lavoro è tuo.</p>
+          <div class="azione">
+            <a class="btn grande" href="app.html" id="cta-eroe"><span><b>Prova gratis</b><small>Fai il primo preventivo</small></span><svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a>
+            <p class="nota">Senza registrazione e senza carta di credito. Per idraulici, elettricisti, imbianchini e tutti gli artigiani.</p>
           </div>
         </div>
-        <div class="scena" aria-label="L'app dell'artigiano e la pagina che riceve il cliente">
-          <div class="telefono a"><img src="img/screen-editor.png" alt="L'app PreventivoLampo mentre si compila un preventivo" width="780" height="1688"></div>
-          <div class="telefono b"><img src="img/screen-cliente.png" alt="La pagina in cui il cliente vede il preventivo e lo accetta" width="780" height="1688"></div>
-          <div class="badge-flottante uno"><span class="ic" aria-hidden="true">✅</span><div>Giulia ha firmato<small>+ ha aggiunto il sifone nuovo</small></div></div>
-          <div class="badge-flottante due"><span class="ic" aria-hidden="true">⏰</span><div>Da ricontattare<small>messaggio già pronto</small></div></div>
-        </div>
-      </div>
-    </section>
 
-    <section class="alt">
-      <div class="wrap">
-        <span class="occhiello">Il problema</span>
-        <h2>Chi manda il preventivo per primo, di solito prende il lavoro.</h2>
-        <p class="sotto">Il cliente chiede due o tre preventivi. Se il tuo arriva dopo giorni, scritto a mano o in un messaggio confuso, il lavoro lo prende un altro.</p>
-        <div class="problema">
-          <div class="box no">
-            <h3>😩 Come si fa di solito</h3>
-            <ul>
-              <li>Appunti sul blocchetto durante il sopralluogo</li>
-              <li>La sera, stanco, a fare conti e a scrivere in Word</li>
-              <li>IVA, sconti e acconti calcolati a mano (con qualche errore)</li>
-              <li>Il cliente non risponde e tu non sai se richiamarlo</li>
-            </ul>
-          </div>
-          <div class="box si">
-            <h3>⚡ Con PreventivoLampo</h3>
-            <ul>
-              <li>Voci dal tuo listino o dettate a voce, anche più insieme</li>
-              <li>Totali, IVA, acconto e saldo calcolati da soli</li>
-              <li>Link su WhatsApp: il cliente accetta e firma in un minuto</li>
-              <li>L'app ti dice chi ricontattare, con il messaggio pronto</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="funzioni">
-      <div class="wrap">
-        <div class="centro">
-          <span class="occhiello">Funzioni</span>
-          <h2>Fatta per vincere più lavori.</h2>
-          <p class="sotto">Non è un gestionale da imparare: la apri, fai il preventivo, lo mandi. Il resto lo fa lei.</p>
-        </div>
-        <div class="bento">
-          <div class="tile larga con-tel scura">
-            <div>
-              <span class="nuovo">NUOVO</span>
-              <div class="ic" aria-hidden="true">✍️</div>
-              <h3>Il cliente accetta e firma dal suo telefono</h3>
-              <p>Gli arriva un link su WhatsApp: vede il preventivo, firma con il dito e ti rimanda la conferma. Niente app da installare, niente stampe.</p>
-              <ul class="elenco">
-                <li>Sceglie da solo le voci facoltative</li>
-                <li>Vede IBAN e link per pagare l'acconto</li>
-                <li>Scarica il PDF firmato</li>
-                <li>Tu ricevi tutto con un tocco</li>
-              </ul>
+        <figure class="eroe-tel">
+          <div class="tel" role="img" aria-label="Esempio: la pagina del preventivo sul telefono del cliente, con il timbro Accettato: firmato da Giulia Bianchi il 7 ottobre 2026, totale 473 euro IVA inclusa">
+            <div class="sch">
+              <div class="sch-isola"></div>
+              <div class="sch-stato">10:24</div>
+              <div class="c-testa">
+                <div class="c-impresa"><span class="c-avatar">IR</span><b>Idraulica Rossi</b></div>
+                <div class="c-num">Preventivo n. 2026-004 · 7 ottobre 2026</div>
+                <div class="c-titolo">Sostituzione scaldabagno</div>
+                <div class="c-per">Per Giulia Bianchi</div>
+                <div class="c-stato"><span class="timbro timbro-eroe" id="timbro-eroe">Accettato<small>Firmato il 07/10/2026</small></span></div>
+              </div>
+              <div class="s-pag">
+                <div class="s-card">
+                  <div class="s-h">Lavori compresi</div>
+                  <div class="s-riga"><span class="d">Scaldabagno elettrico 80 L</span><b>€&nbsp;220,00</b></div>
+                  <div class="s-riga"><span class="d">Installazione scaldabagno</span><b>€&nbsp;140,00</b></div>
+                  <div class="s-riga"><span class="d">Materiale di consumo</span><b>€&nbsp;25,00</b></div>
+                  <div class="s-riga facolt"><span class="d">Sostituzione sifone lavabo <i class="s-etic">aggiunta</i></span><b>€&nbsp;45,00</b></div>
+                </div>
+                <div class="s-card">
+                  <div class="s-r"><span>Imponibile</span><span>€&nbsp;430,00</span></div>
+                  <div class="s-r"><span>IVA 10%</span><span>€&nbsp;43,00</span></div>
+                  <div class="s-r tot"><b>Totale IVA inclusa</b><b>€&nbsp;473,00</b></div>
+                  <div class="s-r"><span>Caparra confirmatoria all'accettazione</span><span>€&nbsp;141,90</span></div>
+                </div>
+              </div>
             </div>
-            <div class="mini-tel"><img src="img/screen-cliente.png" alt="Pagina di accettazione del preventivo sul telefono del cliente" width="780" height="1688" loading="lazy"></div>
           </div>
-          <div class="tile">
-            <span class="nuovo">NUOVO</span>
-            <div class="ic" aria-hidden="true">✨</div>
-            <h3>Voci facoltative</h3>
-            <p>Proponi gli extra ("sifone nuovo + 45 €"): il cliente li aggiunge da solo quando accetta. Più valore da ogni lavoro, senza insistere.</p>
+          <figcaption>Esempio: così il cliente vede il preventivo firmato.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="sezione dopo-eroe" id="come-funziona" aria-labelledby="titolo-come">
+      <div class="wrap">
+        <div class="testa-sez">
+          <h2 id="titolo-come">Tre passaggi, meno di un minuto.</h2>
+          <p class="intro">Anche con le mani sporche, anche dal furgone.</p>
+        </div>
+        <ol class="passi">
+          <li class="passo">
+            <span class="numero" aria-hidden="true">1</span>
+            <h3><span class="vh">Primo passo: </span>Prepari il preventivo</h3>
+            <p>Dettalo a voce o scegli dai tuoi prezzi. Totali, IVA e acconto si calcolano da soli. Se vuoi, aggiungi foto e voci facoltative.</p>
+            <div class="mensola">
+              <div class="tel" role="img" aria-label="Esempio: il preventivo nell'app, con le voci, i prezzi e i pulsanti Dai miei prezzi e Detta a voce">
+                <div class="sch">
+                  <div class="sch-isola"></div>
+                  <div class="sch-stato">10:18</div>
+                  <div class="e-top">
+                    <span class="e-back"><svg class="ico" aria-hidden="true"><use href="#i-indietro"/></svg></span>
+                    <span class="t"><b>Sostituzione scaldabagno</b><span>N° 2026-004</span></span>
+                    <span class="e-stato">Da inviare</span>
+                  </div>
+                  <div class="s-pag">
+                    <div class="s-card">
+                      <div class="s-h">Cosa c'è da fare<span class="s-sub" style="margin-left:auto;font-weight:500;font-stretch:100%">4 voci</span></div>
+                      <div class="s-riga"><span class="d">Scaldabagno elettrico 80 L<span>1 cad × €&nbsp;220,00</span></span><b>€&nbsp;220,00</b></div>
+                      <div class="s-riga"><span class="d">Installazione scaldabagno<span>1 cad × €&nbsp;140,00</span></span><b>€&nbsp;140,00</b></div>
+                      <div class="s-riga"><span class="d">Materiale di consumo<span>1 a corpo × €&nbsp;25,00</span></span><b>€&nbsp;25,00</b></div>
+                      <div class="s-riga facolt"><span class="d">Sostituzione sifone lavabo <i class="s-etic">facoltativa</i><span>1 cad × €&nbsp;45,00</span></span><b>€&nbsp;45,00</b></div>
+                      <div class="e-azioni">
+                        <span class="s-btn soft"><svg class="ico" aria-hidden="true"><use href="#i-listino"/></svg>Dai miei prezzi</span>
+                        <span class="s-btn soft"><svg class="ico" aria-hidden="true"><use href="#i-mic"/></svg>Detta a voce</span>
+                        <span class="s-btn soft"><svg class="ico" aria-hidden="true"><use href="#i-matita"/></svg>Scrivi a mano</span>
+                      </div>
+                      <div class="s-r tot" style="margin-top:10px"><b>Totale IVA inclusa</b><b>€&nbsp;423,50</b></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li class="passo">
+            <span class="numero" aria-hidden="true">2</span>
+            <h3><span class="vh">Secondo passo: </span>Lo mandi su WhatsApp</h3>
+            <p>Parte un messaggio con il link. Il cliente apre il preventivo sul suo telefono, ben impaginato e con il tuo nome in evidenza. Non deve installare niente.</p>
+            <div class="mensola">
+              <div class="tel" role="img" aria-label="Esempio: il messaggio WhatsApp con il link al preventivo e la risposta del cliente con la conferma firmata">
+                <div class="sch">
+                  <div class="sch-isola"></div>
+                  <div class="sch-stato" style="background:var(--surface)">10:24</div>
+                  <div class="w-top"><span class="c-avatar">GB</span><span><b>Giulia Bianchi</b></span></div>
+                  <div class="w-chat">
+                    <span class="w-giorno">Oggi</span>
+                    <div class="w-bolla mia">Buongiorno Giulia, ecco il preventivo n. 2026-004 per "Sostituzione scaldabagno": €&nbsp;423,50 IVA inclusa.
+C'è anche una voce facoltativa che può aggiungere se le interessa.
+Può vederlo e accettarlo con la firma direttamente dal telefono:
+<u>https://preventivolampo.it/accetta.html#…</u>
+
+Idraulica Rossi<span class="w-ora">10:24 <svg class="ico" aria-hidden="true"><use href="#i-doppio"/></svg></span></div>
+                    <div class="w-bolla sua">Buongiorno, ho accettato il preventivo n. 2026-004 "Sostituzione scaldabagno" per un totale di €&nbsp;473,00. Ho aggiunto: Sostituzione sifone lavabo.
+Ecco la conferma con la mia firma: <u>https://preventivolampo.it/accetta.html#…</u><span class="w-ora">10:31</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li class="passo">
+            <span class="numero" aria-hidden="true">3</span>
+            <h3><span class="vh">Terzo passo: </span>Il cliente firma col dito e paga l'acconto</h3>
+            <p>Sceglie gli extra, firma nel riquadro e ti rimanda la conferma. Se chiedi un acconto, lo paga subito: i dati del bonifico si copiano con un tocco.</p>
+            <div class="mensola">
+              <div class="tel" role="img" aria-label="Esempio: il cliente scrive il suo nome, firma con il dito nel riquadro e conferma l'accettazione">
+                <div class="sch">
+                  <div class="sch-isola"></div>
+                  <div class="sch-stato">10:29</div>
+                  <div class="f-sotto">
+                    <div class="c-impresa"><span class="c-avatar">IR</span><b>Idraulica Rossi</b></div>
+                  </div>
+                  <div class="f-velo"></div>
+                  <div class="f-foglio">
+                    <div class="f-maniglia"></div>
+                    <div class="f-titolo"><b>Accetta e firma</b><span class="s-sub tnum">Totale €&nbsp;473,00 · 1 voce facoltativa aggiunta</span></div>
+                    <div class="f-campo">Giulia Bianchi</div>
+                    <span class="s-sub">Firma con il dito nel riquadro</span>
+                    <div class="f-riquadro"><svg class="tratto" viewBox="0 0 160 56" aria-hidden="true"><path d="M10 40c5-12 12-27 19-27 6 0-1 17-7 25-3 4 1 5 5 0 4-6 7-11 9-9s-2 9 1 9 6-9 9-9 0 8 3 8c4 0 8-17 12-25 2-4 4-1 2 5-3 9-6 18-3 19 3 1 7-11 11-11s1 7 4 7 6-8 10-8 2 6 5 6c4 0 8-9 12-9 3 0 1 5 4 5 4 0 9-3 15-6"/></svg></div>
+                    <span class="f-ok"><i><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></i>Ho letto il preventivo e accetto lavori, prezzi e condizioni indicati.</span>
+                    <span class="s-btn giallo pieno"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>Conferma accettazione</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="sezione bianca" aria-labelledby="titolo-primo">
+      <div class="wrap">
+        <div class="testa-sez">
+          <h2 id="titolo-primo">Chi manda il preventivo per primo, di solito prende il lavoro.</h2>
+          <p class="intro">Il cliente chiede due o tre preventivi. Se il tuo arriva dopo giorni, scritto a mano o in un messaggio confuso, il lavoro lo prende un altro.</p>
+        </div>
+        <table class="confronto">
+          <caption class="vh">Come si fa di solito e come si fa con PreventivoLampo</caption>
+          <thead><tr><th scope="col">Come si fa di solito</th><th scope="col">Con PreventivoLampo</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="prima"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-meno"/></svg><span><span class="etic">Di solito</span>Appunti sul blocchetto durante il sopralluogo.</span></span></td>
+              <td class="dopo"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><span class="etic">Con PreventivoLampo</span>Il preventivo lo fai lì, dal cliente, in un minuto: voci dal tuo listino con un tocco o dettate a voce, anche più insieme.</span></span></td>
+            </tr>
+            <tr>
+              <td class="prima"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-meno"/></svg><span><span class="etic">Di solito</span>La sera, stanco, a fare conti e a scrivere in Word.</span></span></td>
+              <td class="dopo"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><span class="etic">Con PreventivoLampo</span>Lo mandi subito con un link su WhatsApp: il cliente accetta e firma dal suo telefono in un minuto.</span></span></td>
+            </tr>
+            <tr>
+              <td class="prima"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-meno"/></svg><span><span class="etic">Di solito</span>IVA, sconti e acconti calcolati a mano, con qualche errore.</span></span></td>
+              <td class="dopo"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><span class="etic">Con PreventivoLampo</span>Totali, IVA, acconto e saldo calcolati da soli, senza errori.</span></span></td>
+            </tr>
+            <tr>
+              <td class="prima"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-meno"/></svg><span><span class="etic">Di solito</span>Il cliente non risponde e tu non sai se richiamarlo.</span></span></td>
+              <td class="dopo"><span class="cella"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><span class="etic">Con PreventivoLampo</span>L'app ti dice chi ricontattare, con il promemoria su WhatsApp già scritto.</span></span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sezione" id="se-non-paga" aria-labelledby="titolo-paga">
+      <div class="wrap nonpaga">
+        <div class="testa-sez" style="margin-bottom:0">
+          <h2 id="titolo-paga">E se firma ma non paga?</h2>
+          <p class="intro">Dalla caparra al recupero del credito, ogni passo è già pronto. Tu vedi subito chi è in ritardo e non devi scrivere niente.</p>
+        </div>
+        <div class="tel-box">
+          <div class="tel" role="img" aria-label="Esempio: la schermata Da fare dell'app, con un cliente in ritardo di 6 giorni, un pagamento da controllare e un cliente da richiamare">
+            <div class="sch alta-auto">
+              <div class="sch-isola"></div>
+              <div class="sch-stato">8:05</div>
+              <div class="h-top"><svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1a1d21"/><path d="M36.5 7 15 36h14.5l-4 21L49 27H34.5z" fill="#ffc21a"/></svg>Idraulica Rossi<span class="s-btn"><svg class="ico" aria-hidden="true"><use href="#i-stella"/></svg>Pro</span></div>
+              <div class="s-pag">
+                <div class="h-saluto"><b>Buongiorno</b><span>Oggi hai 3 cose da fare</span></div>
+                <div class="h-nuovo"><span class="q"><svg class="ico" aria-hidden="true"><use href="#i-piu"/></svg></span><span><b>Nuovo preventivo</b><span>Dettalo a voce o scegli dai tuoi prezzi</span></span><svg class="ico" aria-hidden="true"><use href="#i-avanti"/></svg></div>
+                <div class="s-card">
+                  <div class="s-h">Da fare<span class="n">3</span></div>
+                  <div class="h-compito"><span class="h-segno bad"><svg class="ico" aria-hidden="true"><use href="#i-attenzione"/></svg></span><span class="corpo"><span class="t" style="display:block">Paolo Conti ti deve €&nbsp;610,00</span><span class="s" style="display:block">In ritardo da 6 giorni</span></span><span class="s-btn wa">Sollecita</span></div>
+                  <div class="h-compito"><span class="h-segno warn"><svg class="ico" aria-hidden="true"><use href="#i-campanella"/></svg></span><span class="corpo"><span class="t" style="display:block">Marco Ferri dice di aver pagato €&nbsp;150,00</span><span class="s" style="display:block">Controlla sul conto, poi conferma</span></span><span class="s-btn">Controlla</span></div>
+                  <div class="h-compito"><span class="h-segno penna"><svg class="ico" aria-hidden="true"><use href="#i-telefono"/></svg></span><span class="corpo"><span class="t" style="display:block">Luca Neri non ha ancora risposto</span><span class="s" style="display:block">Inviato 4 giorni fa · €&nbsp;980</span></span><span class="s-btn wa">Scrivi</span></div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="tile larga">
-            <span class="nuovo">NUOVO</span>
-            <div class="ic" aria-hidden="true">🛡️</div>
-            <h3>Firma ma non paga? Ci pensa lei.</h3>
-            <p>Dalla caparra al recupero del credito, ogni passo è già pronto: tu ti accorgi subito di chi è in ritardo e non devi scrivere niente.</p>
+        </div>
+        <div>
+          <ol class="scala">
+            <li>
+              <h3>Prima lo previeni: chiedi la caparra</h3>
+              <p>Chiedi l'anticipo come caparra confirmatoria. Il cliente la paga subito dal telefono: link di pagamento, dati del bonifico copiati in un tocco, oppure il QR se è davanti a te. Inizi i lavori quando arriva.</p>
+            </li>
+            <li>
+              <h3>Il cliente tocca "Ho pagato"</h3>
+              <p>L'avviso ti arriva: controlli sul conto e registri il pagamento.</p>
+            </li>
+            <li>
+              <h3>L'app tiene il conto</h3>
+              <p>In "Da incassare" vedi subito chi è in ritardo e di quanto. Il più urgente è in cima a "Da fare".</p>
+            </li>
+            <li>
+              <h3>Solleciti già scritti</h3>
+              <p>Promemoria cortese, sollecito, ultimo avviso: tre toni, con importo e IBAN già dentro. Al cliente arriva un link per pagare con il pulsante "Ho pagato".</p>
+            </li>
+            <li>
+              <h3>Se non basta: messa in mora e dossier <span class="pro">Pro</span></h3>
+              <p>Generi la lettera di costituzione in mora e il dossier del credito in PDF: preventivo firmato, data e ora dell'accettazione, pagamenti e solleciti. È quello che serve a un avvocato.</p>
+            </li>
+          </ol>
+          <p class="avviso-legale">Caparra, solleciti e lettera di messa in mora sono modelli generici, non consulenza legale: per crediti importanti chiedi sempre a un professionista.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sezione bianca" id="funzioni" aria-labelledby="titolo-funzioni">
+      <div class="wrap">
+        <div class="testa-sez">
+          <h2 id="titolo-funzioni">Fatta per vincere più lavori.</h2>
+          <p class="intro">Non è un gestionale da imparare: la apri, fai il preventivo, lo mandi. Il resto lo fa lei.</p>
+        </div>
+        <div class="in-evidenza">
+          <div class="evid">
+            <div class="evid-testo">
+              <h3>Voci facoltative: gli extra li sceglie il cliente</h3>
+              <p>Proponi gli extra, come il sifone nuovo a 45 €. Il cliente li aggiunge da solo quando accetta. Più valore da ogni lavoro, senza insistere.</p>
+            </div>
+            <div class="ritaglio" role="img" aria-label="Esempio: sulla pagina del cliente la voce facoltativa Sostituzione sifone lavabo è attivata e il totale sale a 473 euro">
+              <div class="s-h">Puoi aggiungere</div>
+              <div class="s-sub">Voci facoltative: attivale se ti interessano</div>
+              <div class="rit-opz"><span class="d">Sostituzione sifone lavabo<span>1 cad × €&nbsp;45,00</span></span><b>+&nbsp;€&nbsp;45,00</b><span class="interr"></span></div>
+              <div class="rit-tot"><span>Totale IVA inclusa</span><b>€&nbsp;473,00</b></div>
+            </div>
+          </div>
+          <div class="evid">
+            <div class="evid-testo">
+              <h3>Il cliente sceglie la data</h3>
+              <p>Proponi fino a 3 giorni: il cliente ne sceglie uno mentre firma. Ti ritrovi il lavoro in agenda e nel calendario del telefono.</p>
+            </div>
+            <div class="ritaglio" role="img" aria-label="Esempio: il cliente sceglie tra tre date proposte, lunedì 12 ottobre mattina è selezionata">
+              <div class="s-h">Quando iniziamo?</div>
+              <div class="s-sub">Scegli una data quando accetti</div>
+              <div class="rit-date">
+                <span class="on"><i></i>lunedì 12 ottobre, mattina</span>
+                <span><i></i>martedì 13 ottobre, pomeriggio</span>
+                <span><i></i>giovedì 15 ottobre</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="gruppi">
+          <div class="gruppo">
+            <h3>Per fare prima</h3>
             <ul class="elenco">
-              <li>Caparra confirmatoria e dati del bonifico copiati in un tocco: il cliente paga in 10 secondi</li>
-              <li>Pulsante "Ho pagato": l'avviso ti arriva, controlli e registri</li>
-              <li>"Da incassare": vedi subito chi è in ritardo e di quanto</li>
-              <li>Solleciti in tre toni, già scritti con importo e IBAN</li>
-              <li>Lettera di messa in mora e fascicolo del credito in PDF (Pro)</li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-mic"/></svg><div><b>Detta più voci insieme</b><p>"Sostituzione miscelatore, poi due ore di manodopera": le voci si compilano con i prezzi del tuo listino.</p></div></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-listino"/></svg><div><b>Listino pronto per 27 mestieri</b><p>Voci e prezzi tipici già pronti, da idraulico a fotografo. Li adatti una volta e li riusi sempre.</p></div></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-righello"/></svg><div><b>Calcolatore metri quadri</b><p>Misure della stanza, pareti, soffitto, pavimento, meno porte e finestre: la quantità si scrive da sola.</p></div></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-percento"/></svg><div><b>IVA e forfettario giusti</b><p>Aliquote diverse per riga, riepilogo IVA, bollo da 2 € e dicitura del forfettario in automatico.</p></div></li>
             </ul>
           </div>
-          <div class="tile">
-            <span class="nuovo">NUOVO</span>
-            <div class="ic" aria-hidden="true">📅</div>
-            <h3>Il cliente sceglie la data</h3>
-            <p>Proponi fino a 3 giorni: il cliente ne sceglie uno mentre firma. Ti ritrovi il lavoro in agenda e nel calendario del telefono.</p>
-          </div>
-          <div class="tile meta">
-            <span class="nuovo">NUOVO</span>
-            <div class="ic" aria-hidden="true">⏰</div>
-            <h3>Da ricontattare</h3>
-            <p>I preventivi senza risposta da qualche giorno finiscono in cima, con il messaggio di promemoria su WhatsApp già scritto. Un tocco e via.</p>
-          </div>
-          <div class="tile meta">
-            <span class="nuovo">NUOVO</span>
-            <div class="ic" aria-hidden="true">📷</div>
-            <h3>Foto del lavoro nel PDF</h3>
-            <p>Scatta le foto durante il sopralluogo: finiscono in una pagina del preventivo. Il cliente capisce subito cosa farai e perché.</p>
-          </div>
-          <div class="tile">
-            <div class="ic" aria-hidden="true">📐</div>
-            <h3>Calcolatore metri quadri</h3>
-            <p>Misure della stanza, pareti, soffitto, pavimento, meno porte e finestre: la quantità si scrive da sola.</p>
-          </div>
-          <div class="tile">
-            <div class="ic" aria-hidden="true">🔒</div>
-            <h3>Il tuo guadagno, solo per te</h3>
-            <p>Inserisci quanto paghi i materiali e vedi il guadagno di ogni preventivo. Al cliente non arriva mai.</p>
-          </div>
-          <div class="tile">
-            <div class="ic" aria-hidden="true">🎤</div>
-            <h3>Detta più voci insieme</h3>
-            <p>"Sostituzione miscelatore, poi due ore di manodopera": le voci si compilano con i prezzi del tuo listino.</p>
-          </div>
-          <div class="tile">
-            <div class="ic" aria-hidden="true">📋</div>
-            <h3>Listino per 27 mestieri</h3>
-            <p>Voci e prezzi tipici già pronti, da idraulico a fotografo. Li adatti una volta e li riusi sempre.</p>
-          </div>
-          <div class="tile">
-            <div class="ic" aria-hidden="true">🧮</div>
-            <h3>IVA e forfettario giusti</h3>
-            <p>Aliquote diverse per riga, riepilogo IVA, bollo da 2 € e dicitura del forfettario in automatico.</p>
-          </div>
-          <div class="tile">
-            <div class="ic" aria-hidden="true">📶</div>
-            <h3>Offline e riservata</h3>
-            <p>Funziona anche in cantina. Clienti e preventivi restano sul tuo telefono, non sui nostri server.</p>
+          <div class="gruppo">
+            <h3>Per lavorare tranquillo</h3>
+            <ul class="elenco">
+              <li><svg class="ico" aria-hidden="true"><use href="#i-telefono"/></svg><div><b>Da ricontattare</b><p>I preventivi senza risposta da qualche giorno finiscono in cima, con il messaggio di promemoria su WhatsApp già scritto. Un tocco e via.</p></div></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-foto"/></svg><div><b>Foto del lavoro nel PDF <span class="pro">Pro</span></b><p>Scatta le foto durante il sopralluogo: finiscono in una pagina del preventivo. Il cliente capisce subito cosa farai e perché.</p></div></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-lucchetto"/></svg><div><b>Il tuo guadagno, solo per te</b><p>Inserisci quanto paghi i materiali e vedi il guadagno di ogni preventivo. Al cliente non arriva mai.</p></div></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-offline"/></svg><div><b>Offline e riservata</b><p>Funziona anche in cantina. Clienti e preventivi restano sul tuo telefono, non sui nostri server.</p></div></li>
+            </ul>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="alt" id="come-funziona">
+    <section class="sezione" id="modelli" aria-labelledby="titolo-modelli">
       <div class="wrap">
-        <div class="centro">
-          <span class="occhiello">Come funziona</span>
-          <h2>Tre passaggi, meno di un minuto.</h2>
-          <p class="sotto">Anche con le mani sporche, anche dal furgone.</p>
+        <div class="testa-sez">
+          <h2 id="titolo-modelli">Un modello di preventivo per il tuo mestiere</h2>
+          <p class="intro">Esempi completi con le voci e i prezzi indicativi più usati. Si aprono nell'app già compilati.</p>
         </div>
-        <div class="passi">
-          <div class="passo"><h3>Scegli o detta le voci</h3><p>Dal tuo listino con un tocco, o a voce. Aggiungi foto e voci facoltative se vuoi proporre degli extra.</p></div>
-          <div class="passo"><h3>Mandalo su WhatsApp</h3><p>Parte un messaggio con il link: il cliente vede il preventivo sul telefono, ben impaginato, con il tuo nome in evidenza.</p></div>
-          <div class="passo"><h3>Il cliente firma, tu lavori</h3><p>Accetta, firma e ti rimanda la conferma. Con un tocco la registri: preventivo accettato, firma nel PDF.</p></div>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="wrap">
-        <div class="centro">
-          <span class="occhiello">Confronto</span>
-          <h2>Carta e Word contro PreventivoLampo</h2>
-          <p class="sotto">Stesso lavoro, molta meno fatica.</p>
-        </div>
-        <div class="confronto">
-          <table>
-            <thead><tr><th></th><th>Blocchetto o Word</th><th class="noi">PreventivoLampo</th></tr></thead>
-            <tbody>
-              <tr><td>Preventivo fatto dal cliente, in un minuto</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>Prezzi del tuo listino con un tocco o a voce</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>IVA, acconto e saldo calcolati senza errori</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>Il cliente accetta e firma dal suo telefono</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>Extra facoltativi che il cliente aggiunge da solo</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>Promemoria per chi non ha risposto</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>Foto del lavoro allegate</td><td class="si-no">✕</td><td class="noi">✓</td></tr>
-              <tr><td>Aspetto professionale con il tuo logo</td><td>dipende</td><td class="noi">✓</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section class="alt">
-      <div class="wrap centro">
-        <span class="occhiello">Modelli gratuiti</span>
-        <h2>Un modello di preventivo per il tuo mestiere</h2>
-        <p class="sotto">Esempi completi con le voci e i prezzi indicativi più usati. Si aprono nell'app già compilati.</p>
         <div class="mestieri" id="mestieri">
           <!-- MESTIERI:INIZIO -->
-          <a href="modelli/preventivo-idraulico.html">Idraulico</a>
-          <a href="modelli/preventivo-elettricista.html">Elettricista</a>
-          <a href="modelli/preventivo-imbianchino.html">Imbianchino</a>
-          <a href="modelli/preventivo-muratore.html">Muratore</a>
-          <a href="modelli/preventivo-piastrellista.html">Piastrellista</a>
-          <a href="modelli/preventivo-cartongessista.html">Cartongessista</a>
-          <a href="modelli/preventivo-falegname.html">Falegname</a>
-          <a href="modelli/preventivo-fabbro.html">Fabbro</a>
-          <a href="modelli/preventivo-serramentista.html">Serramentista</a>
-          <a href="modelli/preventivo-giardiniere.html">Giardiniere</a>
-          <a href="modelli/preventivo-impresa-pulizie.html">Impresa di pulizie</a>
-          <a href="modelli/preventivo-traslochi.html">Traslochi</a>
-          <a href="modelli/preventivo-climatizzazione.html">Installatore climatizzatori</a>
-          <a href="modelli/preventivo-caldaie.html">Tecnico caldaie</a>
-          <a href="modelli/preventivo-ristrutturazione-bagno.html">Ristrutturazione bagno</a>
-          <a href="modelli/preventivo-parquettista.html">Parquettista</a>
-          <a href="modelli/preventivo-tapparelle.html">Tapparellista</a>
-          <a href="modelli/preventivo-antennista.html">Antennista</a>
-          <a href="modelli/preventivo-tecnico-informatico.html">Tecnico informatico</a>
-          <a href="modelli/preventivo-fotografo.html">Fotografo</a>
-          <a href="modelli/preventivo-web-designer.html">Web designer</a>
-          <a href="modelli/preventivo-disinfestazione.html">Disinfestazione</a>
-          <a href="modelli/preventivo-tuttofare.html">Tuttofare / montaggio mobili</a>
-          <a href="modelli/preventivo-spurghi.html">Autospurgo</a>
-          <a href="modelli/preventivo-impermeabilizzazione.html">Impermeabilizzazioni e lattoneria</a>
-          <a href="modelli/preventivo-vetraio.html">Vetraio</a>
-          <a href="modelli/preventivo-meccanico.html">Meccanico / officina</a>
+          <a href="modelli/preventivo-idraulico.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z" /></svg>Idraulico</a>
+          <a href="modelli/preventivo-elettricista.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /></svg>Elettricista</a>
+          <a href="modelli/preventivo-imbianchino.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><rect width="16" height="6" x="2" y="2" rx="2" /><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect width="4" height="6" x="8" y="16" rx="1" /></svg>Imbianchino</a>
+          <a href="modelli/preventivo-muratore.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M12 9v6" /><path d="M16 15v6" /><path d="M16 3v6" /><path d="M3 15h18" /><path d="M3 9h18" /><path d="M8 15v6" /><path d="M8 3v6" /></svg>Muratore</a>
+          <a href="modelli/preventivo-piastrellista.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" /><path d="M15 3v18" /></svg>Piastrellista</a>
+          <a href="modelli/preventivo-cartongessista.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" /><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" /><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" /></svg>Cartongessista</a>
+          <a href="modelli/preventivo-falegname.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9" /><path d="m18 15 4-4" /><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5" /></svg>Falegname</a>
+          <a href="modelli/preventivo-fabbro.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" /><circle cx="16.5" cy="7.5" r=".5" fill="currentColor" /></svg>Fabbro</a>
+          <a href="modelli/preventivo-serramentista.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M10 21H2" /><path d="M10 3H7a2 2 0 00-2 2v16" /><path d="M14 12h.01" /><path d="M19 21V5a2 2 0 00-1.675-1.974l-6.163-1.013A1 1 0 0010 3v18a1 1 0 001.124.992z" /><path d="M22 21h-3" /></svg>Serramentista</a>
+          <a href="modelli/preventivo-giardiniere.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M11 20a10 10 0 0010-10 25.9 25.9 0 00-1.04-7.281 1 1 0 00-1.755-.325C15.833 5.5 13 5.5 9.8 6.1A7 7 0 0011 20" /><path d="M2 21a5 5 0 012.911-4.544C7.613 15.212 8.351 15.24 11 13" /></svg>Giardiniere</a>
+          <a href="modelli/preventivo-impresa-pulizie.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M3 3h.01" /><path d="M7 5h.01" /><path d="M11 7h.01" /><path d="M3 7h.01" /><path d="M7 9h.01" /><path d="M3 11h.01" /><rect width="4" height="4" x="15" y="5" /><path d="m19 9 2 2v10c0 .6-.4 1-1 1h-6c-.6 0-1-.4-1-1V11l2-2" /><path d="m13 14 8-2" /><path d="m13 19 8-2" /></svg>Impresa di pulizie</a>
+          <a href="modelli/preventivo-traslochi.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" /><path d="M15 18H9" /><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" /><circle cx="17" cy="18" r="2" /><circle cx="7" cy="18" r="2" /></svg>Traslochi</a>
+          <a href="modelli/preventivo-climatizzazione.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="m10 20-1.25-2.5L6 18" /><path d="M10 4 8.75 6.5 6 6" /><path d="m14 20 1.25-2.5L18 18" /><path d="m14 4 1.25 2.5L18 6" /><path d="m17 21-3-6h-4" /><path d="m17 3-3 6 1.5 3" /><path d="M2 12h6.5L10 9" /><path d="m20 10-1.5 2 1.5 2" /><path d="M22 12h-6.5L14 15" /><path d="m4 10 1.5 2L4 14" /><path d="m7 21 3-6-1.5-3" /><path d="m7 3 3 6h4" /></svg>Installatore climatizzatori</a>
+          <a href="modelli/preventivo-caldaie.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4" /></svg>Tecnico caldaie</a>
+          <a href="modelli/preventivo-ristrutturazione-bagno.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M10 4 8 6" /><path d="M17 19v2" /><path d="M2 12h20" /><path d="M7 19v2" /><path d="M9 5 7.621 3.621A2.121 2.121 0 0 0 4 5v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" /></svg>Ristrutturazione bagno</a>
+          <a href="modelli/preventivo-parquettista.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z" /><path d="m14.5 12.5 2-2" /><path d="m11.5 9.5 2-2" /><path d="m8.5 6.5 2-2" /><path d="m17.5 15.5 2-2" /></svg>Parquettista</a>
+          <a href="modelli/preventivo-tapparelle.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M3 3h18" /><path d="M20 7H8" /><path d="M20 11H8" /><path d="M10 19h10" /><path d="M8 15h12" /><path d="M4 3v14" /><circle cx="4" cy="19" r="2" /></svg>Tapparellista</a>
+          <a href="modelli/preventivo-antennista.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M18 12a6 6 0 00-6-6" /><path d="M2.824 10.459a8 8 0 0010.717 10.717c.558-.276.623-1.012.183-1.452l-9.448-9.448c-.44-.44-1.176-.375-1.452.183" /><path d="M22 12A10 10 0 0012 2" /><path d="m9 15 4-4" /></svg>Antennista</a>
+          <a href="modelli/preventivo-tecnico-informatico.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z" /><path d="M20.054 15.987H3.946" /></svg>Tecnico informatico</a>
+          <a href="modelli/preventivo-fotografo.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z" /><circle cx="12" cy="13" r="3" /></svg>Fotografo</a>
+          <a href="modelli/preventivo-web-designer.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></svg>Web designer</a>
+          <a href="modelli/preventivo-disinfestazione.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12 20v-9" /><path d="M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z" /><path d="M14.12 3.88 16 2" /><path d="M21 21a4 4 0 0 0-3.81-4" /><path d="M21 5a4 4 0 0 1-3.55 3.97" /><path d="M22 13h-4" /><path d="M3 21a4 4 0 0 1 3.81-4" /><path d="M3 5a4 4 0 0 0 3.55 3.97" /><path d="M6 13H2" /><path d="m8 2 1.88 1.88" /><path d="M9 7.13V6a3 3 0 1 1 6 0v1.13" /></svg>Disinfestazione</a>
+          <a href="modelli/preventivo-tuttofare.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M16 12v4" /><path d="M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" /><path d="M17 6a2 2 0 011.414.586l3 3A2 2 0 0122 11v8a2 2 0 01-2 2H4a2 2 0 01-2-2v-8a2 2 0 01.586-1.414l3-3A2 2 0 017 6z" /><path d="M2 14h20" /><path d="M8 12v4" /></svg>Tuttofare / montaggio mobili</a>
+          <a href="modelli/preventivo-spurghi.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z" /><path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97" /></svg>Autospurgo</a>
+          <a href="modelli/preventivo-impermeabilizzazione.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12 13v7a2 2 0 0 0 4 0" /><path d="M12 2v2" /><path d="M20.992 13a1 1 0 0 0 .97-1.274 10.284 10.284 0 0 0-19.923 0A1 1 0 0 0 3 13z" /></svg>Impermeabilizzazioni e lattoneria</a>
+          <a href="modelli/preventivo-vetraio.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /></svg>Vetraio</a>
+          <a href="modelli/preventivo-meccanico.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" /><circle cx="7" cy="17" r="2" /><path d="M9 17h6" /><circle cx="17" cy="17" r="2" /></svg>Meccanico / officina</a>
           <!-- MESTIERI:FINE -->
         </div>
+        <p class="dopo-mestieri"><a class="link-freccia" href="modelli/">Tutti i modelli di preventivo<svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a></p>
       </div>
     </section>
 
-    <section id="prezzi">
+    <section class="sezione bianca" id="prezzi" aria-labelledby="titolo-prezzi">
       <div class="wrap">
-        <div class="centro">
-          <span class="occhiello">Prezzi</span>
-          <h2>Inizi gratis. Passi a Pro quando ti fa lavorare di più.</h2>
-          <p class="sotto">Nessun vincolo: disdici con un clic.</p>
+        <div class="testa-sez">
+          <h2 id="titolo-prezzi">Inizi gratis. Passi a Pro quando ti fa lavorare di più.</h2>
+          <p class="intro">Nessun vincolo: disdici con un clic.</p>
         </div>
-        <div class="prezzi">
-          <div class="prezzo-card">
+        <div class="piani">
+          <div class="piano">
             <h3>Gratis</h3>
             <div class="cifra">0 €</div>
-            <div class="risparmio"></div>
+            <div class="sotto-cifra">Senza carta di credito</div>
             <ul>
-              <li><span data-config="gratis">3</span> preventivi al mese, PDF e link</li>
-              <li>Accettazione e firma online del cliente</li>
-              <li>Voci facoltative e promemoria</li>
-              <li>QR del bonifico, "Ho pagato" e registro incassi</li>
-              <li>Listino, clienti e dettatura</li>
-              <li class="no">Scritta "Creato con PreventivoLampo"</li>
-              <li class="no">Logo, foto e firma sul posto</li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span><span data-config="gratis">3</span> preventivi al mese, PDF e link</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Accettazione e firma online del cliente</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Voci facoltative e promemoria</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>QR del bonifico, "Ho pagato" e registro incassi</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Listino, clienti e dettatura</span></li>
+              <li class="no"><svg class="ico" aria-hidden="true"><use href="#i-meno"/></svg><span><span class="vh">Con questo piano: </span>Scritta "Creato con PreventivoLampo"</span></li>
+              <li class="no"><svg class="ico" aria-hidden="true"><use href="#i-meno"/></svg><span><span class="vh">Non incluso: </span>Logo, foto e firma sul posto</span></li>
             </ul>
-            <a class="btn" href="app.html">Inizia gratis</a>
+            <a class="btn medio" href="app.html">Inizia gratis<svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a>
           </div>
-          <div class="prezzo-card top">
-            <span class="badge">Consigliato</span>
+          <div class="piano consigliato">
+            <span class="timbro consigliato-timbro">Consigliato</span>
             <h3>Pro annuale</h3>
             <div class="cifra"><span data-prezzo="annuale">79 €</span> <small>/anno</small></div>
-            <div class="risparmio">Meno di 7 € al mese · risparmi il 33%</div>
+            <div class="sotto-cifra">Meno di 7 € al mese · risparmi il 33%</div>
             <ul>
-              <li>Preventivi e link illimitati</li>
-              <li>Il tuo logo e i tuoi colori</li>
-              <li>Foto del lavoro nel PDF</li>
-              <li>Firma del cliente sul tuo telefono</li>
-              <li>Recupero crediti: solleciti decisi, messa in mora e fascicolo PDF</li>
-              <li>Nessuna scritta PreventivoLampo</li>
-              <li>Assistenza prioritaria</li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Preventivi e link illimitati</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Il tuo logo e i tuoi colori</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Foto del lavoro nel PDF</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Firma del cliente sul tuo telefono</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Recupero crediti: solleciti decisi, messa in mora e fascicolo PDF</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Nessuna scritta PreventivoLampo</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Assistenza prioritaria</span></li>
             </ul>
-            <a class="btn primary" href="app.html#/pro">Scegli Pro annuale</a>
+            <a class="link-freccia" href="app.html#/pro">Scegli Pro annuale<svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a>
           </div>
-          <div class="prezzo-card">
+          <div class="piano">
             <h3>Pro mensile</h3>
             <div class="cifra"><span data-prezzo="mensile">9,90 €</span> <small>/mese</small></div>
-            <div class="risparmio">Disdici quando vuoi</div>
+            <div class="sotto-cifra">Disdici quando vuoi</div>
             <ul>
-              <li>Tutto quello che c'è in Pro</li>
-              <li>Nessun vincolo</li>
-              <li>Paghi mese per mese</li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Tutto quello che c'è in Pro</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Nessun vincolo</span></li>
+              <li><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>Paghi mese per mese</span></li>
             </ul>
-            <a class="btn" href="app.html#/pro">Scegli Pro mensile</a>
+            <a class="link-freccia" href="app.html#/pro">Scegli Pro mensile<svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a>
           </div>
         </div>
-        <div class="calcolo">Un solo lavoro in più all'anno, grazie a un preventivo arrivato prima degli altri, <b>ripaga l'abbonamento per anni</b>.<br><span style="color:var(--muted);font-size:15px">Prezzi IVA inclusa. Pagamento sicuro con carta. Ricevuta automatica via email.</span></div>
+        <p class="calcolo">Un solo lavoro in più all'anno, grazie a un preventivo arrivato prima degli altri, <b>ripaga l'abbonamento per anni</b>.</p>
+        <p class="nota-prezzi">Prezzi IVA inclusa. Pagamento sicuro con carta. Ricevuta automatica via email.</p>
       </div>
     </section>
 
-    <section class="alt" id="faq">
+    <section class="sezione" id="faq" aria-labelledby="titolo-faq">
       <div class="wrap">
-        <div class="centro"><span class="occhiello">Domande</span><h2>Domande frequenti</h2></div>
+        <div class="testa-sez">
+          <h2 id="titolo-faq">Domande frequenti</h2>
+        </div>
         <div class="faq">
-          <details><summary>Devo registrarmi o scaricare qualcosa?</summary><p>No. Apri l'app dal browser del telefono e sei operativo in un minuto. Se vuoi, la aggiungi alla schermata Home e si apre come una normale app, anche senza connessione.</p></details>
-          <details><summary>Il cliente deve installare qualcosa per firmare?</summary><p>No. Riceve un link su WhatsApp (o SMS, email), lo apre nel browser del telefono, vede il preventivo e firma con il dito. Poi tocca "Invia conferma" e ti arriva il messaggio con la sua firma.</p></details>
-          <details><summary>Il link di accettazione è sicuro? I dati passano dai vostri server?</summary><p>I dati del preventivo viaggiano dentro il link stesso, nella parte che i browser non inviano mai al server: non passano da noi. Ogni preventivo ha un'impronta digitale: se qualcuno modificasse prezzi o voci nel link, l'app te lo segnalerebbe quando ricevi la conferma.</p></details>
-          <details><summary>Il preventivo è una fattura? Va inviato allo SdI?</summary><p>No. Il preventivo non è un documento fiscale e non va trasmesso al Sistema di Interscambio. Quando il lavoro è finito emetti la fattura elettronica con il tuo programma di sempre (o quello del commercialista).</p></details>
-          <details><summary>Sono in regime forfettario: funziona?</summary><p>Sì. Scegli "Forfettario" nelle impostazioni: l'IVA sparisce dal preventivo, viene aggiunta la dicitura di legge (art. 1, commi 54-89, L. 190/2014) e, se vuoi, il bollo da 2 € per importi oltre 77,47 €.</p></details>
-          <details><summary>E se il cliente firma ma poi non paga?</summary><p>Prima di tutto lo previeni: chiedi l'anticipo come <b>caparra confirmatoria</b>, che il cliente paga subito dal telefono (link di pagamento o dati del bonifico copiati in un tocco, oppure il QR se è davanti a te), e inizi i lavori quando arriva. Poi l'app tiene il conto. Ti mostra chi è in ritardo e di quanto, prepara i solleciti in tre toni e manda al cliente un link per pagare con il pulsante "Ho pagato". Se non basta, con Pro generi la lettera di costituzione in mora e il fascicolo del credito: preventivo firmato, data e ora dell'accettazione, pagamenti e solleciti. È quello che serve a un avvocato. I testi sono modelli generici: per crediti importanti chiedi sempre a un professionista.</p></details>
-          <details><summary>La firma del cliente vale?</summary><p>È una firma elettronica semplice: nel PDF trovi firma, nome, data e ora, e se il cliente ha firmato online anche l'indicazione dell'accettazione via link. È un'ottima prova dell'accettazione, utile in caso di contestazioni. Per contratti importanti valuta sempre con il tuo consulente.</p></details>
-          <details><summary>Dove finiscono i dati dei miei clienti?</summary><p>Restano sul tuo telefono. Per questo l'app è veloce, funziona offline e la privacy dei tuoi clienti è al sicuro. Dalle impostazioni puoi esportare un backup in qualsiasi momento.</p></details>
-          <details><summary>Funziona su iPhone e Android?</summary><p>Sì, su qualsiasi telefono, tablet o computer con un browser aggiornato (Chrome, Safari, Edge, Firefox).</p></details>
-          <details><summary>Come disdico l'abbonamento?</summary><p>Con un clic dal link che ricevi via email dopo l'acquisto. Nessun vincolo. Se disdici, l'app torna al piano gratuito e i tuoi preventivi restano tutti dove sono.</p></details>
+          <details><summary>Devo registrarmi o scaricare qualcosa?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>No. Apri l'app dal browser del telefono e sei operativo in un minuto. Se vuoi, la aggiungi alla schermata Home e si apre come una normale app, anche senza connessione.</p></details>
+          <details><summary>Il cliente deve installare qualcosa per firmare?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>No. Riceve un link su WhatsApp (o SMS, email), lo apre nel browser del telefono, vede il preventivo e firma con il dito. Poi tocca "Invia conferma" e ti arriva il messaggio con la sua firma.</p></details>
+          <details><summary>Il link di accettazione è sicuro? I dati passano dai vostri server?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>I dati del preventivo viaggiano dentro il link stesso, nella parte che i browser non inviano mai al server: non passano da noi. Ogni preventivo ha un'impronta digitale: se qualcuno modificasse prezzi o voci nel link, l'app te lo segnalerebbe quando ricevi la conferma.</p></details>
+          <details><summary>Il preventivo è una fattura? Va inviato allo SdI?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>No. Il preventivo non è un documento fiscale e non va trasmesso al Sistema di Interscambio. Quando il lavoro è finito emetti la fattura elettronica con il tuo programma di sempre (o quello del commercialista).</p></details>
+          <details><summary>Sono in regime forfettario: funziona?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>Sì. Scegli "Forfettario" nelle impostazioni: l'IVA sparisce dal preventivo, viene aggiunta la dicitura di legge (art. 1, commi 54-89, L. 190/2014) e, se vuoi, il bollo da 2 € per importi oltre 77,47 €.</p></details>
+          <details><summary>E se il cliente firma ma poi non paga?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>Prima di tutto lo previeni: chiedi l'anticipo come <b>caparra confirmatoria</b>, che il cliente paga subito dal telefono (link di pagamento o dati del bonifico copiati in un tocco, oppure il QR se è davanti a te), e inizi i lavori quando arriva. Poi l'app tiene il conto. Ti mostra chi è in ritardo e di quanto, prepara i solleciti in tre toni e manda al cliente un link per pagare con il pulsante "Ho pagato". Se non basta, con Pro generi la lettera di costituzione in mora e il fascicolo del credito: preventivo firmato, data e ora dell'accettazione, pagamenti e solleciti. È quello che serve a un avvocato. I testi sono modelli generici: per crediti importanti chiedi sempre a un professionista.</p></details>
+          <details><summary>La firma del cliente vale?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>È una firma elettronica semplice: nel PDF trovi firma, nome, data e ora, e se il cliente ha firmato online anche l'indicazione dell'accettazione via link. È un'ottima prova dell'accettazione, utile in caso di contestazioni. Per contratti importanti valuta sempre con il tuo consulente.</p></details>
+          <details><summary>Dove finiscono i dati dei miei clienti?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>Restano sul tuo telefono. Per questo l'app è veloce, funziona offline e la privacy dei tuoi clienti è al sicuro. Dalle impostazioni puoi esportare un backup in qualsiasi momento.</p></details>
+          <details><summary>Funziona su iPhone e Android?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>Sì, su qualsiasi telefono, tablet o computer con un browser aggiornato (Chrome, Safari, Edge, Firefox).</p></details>
+          <details><summary>Come disdico l'abbonamento?<svg class="ico" aria-hidden="true"><use href="#i-giu"/></svg></summary><p>Con un clic dal link che ricevi via email dopo l'acquisto. Nessun vincolo. Se disdici, l'app torna al piano gratuito e i tuoi preventivi restano tutti dove sono.</p></details>
         </div>
       </div>
     </section>
 
-    <section class="cta-finale">
+    <section class="banda chiusura" aria-labelledby="titolo-chiusura">
       <div class="wrap">
-        <h2>Il prossimo preventivo fallo firmare in un minuto.</h2>
-        <p class="sotto" style="margin-left:auto;margin-right:auto">Gratis, senza registrazione. Se non ti fa risparmiare tempo, non hai perso niente.</p>
-        <a class="btn primary big" href="app.html">Fai il primo preventivo gratis</a>
+        <h2 id="titolo-chiusura">Il prossimo preventivo fallo firmare in un minuto.</h2>
+        <p class="lead">Gratis, senza registrazione. Se non ti fa risparmiare tempo, non hai perso niente.</p>
+        <a class="btn grande" href="app.html" id="cta-chiusura"><span><b>Prova gratis</b><small>Fai il primo preventivo</small></span><svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a>
       </div>
     </section>
   </main>
 
-  <div class="barra-cta"><a class="btn primary big" href="app.html">Prova gratis, senza registrazione</a></div>
+  <div class="barra-cta" id="barra-cta"><a class="btn grande" href="app.html"><span><b>Prova gratis</b><small>Fai il primo preventivo, senza registrazione</small></span><svg class="ico" aria-hidden="true"><use href="#i-freccia"/></svg></a></div>
 
-  <footer>
+  <footer class="piede">
     <div class="wrap">
       <span>© <span data-config="anno">2026</span> PreventivoLampo<span data-config="titolare"></span></span>
       <nav aria-label="Informazioni">

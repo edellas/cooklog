@@ -194,6 +194,8 @@ export function datiPerLink(prev, azienda, { pro }) {
     gs: giorniSaldoDi(prev, a),
     // Date proposte per iniziare: il cliente ne sceglie una quando firma.
     dt: dateProposte(prev).map((d) => [d.data, d.fascia]),
+    // Lavori extra (variante) di un preventivo già firmato: numero e data dell'originale.
+    ...(prev.variante && prev.variante.numero ? { va: [prev.variante.numero, prev.variante.data || ""] } : {}),
     wm: pro ? 0 : 1,
   };
 }
@@ -272,6 +274,10 @@ export function preventivoDaDati(d) {
         .map((x) => (Array.isArray(x) ? { data: x[0], fascia: x[1] } : null)),
     ),
     firma: null,
+    variante:
+      Array.isArray(d.va) && str(d.va[0], 40)
+        ? { numero: str(d.va[0], 40), data: /^\d{4}-\d{2}-\d{2}$/.test(d.va[1]) ? d.va[1] : "" }
+        : null,
     azienda: aziendaDaDati(az, d.ff),
     conMarchio: d.wm !== 0,
   };
@@ -391,9 +397,10 @@ export async function leggiAvviso(codice) {
 // scelte: indici delle voci facoltative scelte; descrizioni: le stesse voci, per controllo e riepilogo.
 // appuntamento: la data proposta scelta dal cliente ({ data, fascia }) o null. Viaggia il valore, non la
 // posizione: l'app dell'impresa la accetta solo se è ancora tra le date che ha proposto.
+// sulPosto: il cliente ha firmato sul telefono dell'impresa ("firma al tavolo").
 export async function creaLinkConferma(
   base,
-  { id, numero, hash, scelte, descrizioni, nome, firma, appuntamento = null },
+  { id, numero, hash, scelte, descrizioni, nome, firma, appuntamento = null, sulPosto = false },
 ) {
   const dati = {
     v: VERSIONE_LINK,
@@ -406,6 +413,7 @@ export async function creaLinkConferma(
     dt: new Date().toISOString(),
     f: firma,
     ad: appuntamento ? [appuntamento.data, appuntamento.fascia] : null,
+    ...(sulPosto === true ? { sp: 1 } : {}),
   };
   return `${base}app.html#/accettazione?d=${await comprimi(JSON.stringify(dati))}`;
 }
@@ -429,6 +437,7 @@ export async function leggiConferma(codice) {
     data: new Date(dt).toISOString(),
     firma: Array.isArray(d.f) ? d.f : [],
     appuntamento: Array.isArray(d.ad) ? normalizzaDisponibilita([{ data: d.ad[0], fascia: d.ad[1] }])[0] || null : null,
+    sulPosto: d.sp === 1,
   };
 }
 
@@ -467,7 +476,15 @@ export function applicaConferma(prev, conferma, firmaPng) {
   });
   // Il cliente non può firmare prima che il link esista né nel futuro.
   const t = Math.min(Math.max(Date.parse(conferma.data) || 0, (prev.link && prev.link.il) || 0), Date.now());
-  prev.firma = { img: firmaPng, nome: conferma.nome, luogo: "", data: new Date(t).toISOString(), online: true };
+  const sulPosto = conferma.sulPosto === true;
+  prev.firma = {
+    img: firmaPng,
+    nome: conferma.nome,
+    luogo: "",
+    data: new Date(t).toISOString(),
+    online: !sulPosto,
+    sulPosto,
+  };
   prev.stato = "accettato";
   prev.accettatoIl = oggiISO(new Date(t));
   prev.accettazioneOnline = { il: Date.now(), hash: conferma.hash, facoltativeAggiunte: facoltative };

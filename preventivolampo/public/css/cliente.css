@@ -1,0 +1,217 @@
+/* PreventivoLampo: pagina del cliente (accetta.html). Si carica dopo app.css e ne usa token e componenti.
+   Chi la legge è spesso una persona anziana, al telefono: testi più grandi (base 17 px, mai sotto 14 px),
+   un'azione principale per schermata, la firma e il timbro come su carta. */
+
+/* ---------- Scala del testo e token della pagina ---------- */
+body.pagina-cliente { font-size: 17px; line-height: 1.5; --bianco: #fff; --carta: #fff; --carta-linea: #8a9099; --carta-testo: #4c525a; --inchiostro: #2445b0; }
+html.testo-grande { zoom: 1.15; }
+.pagina-cliente .small { font-size: 15px; }
+.pagina-cliente .xsmall { font-size: 14px; }
+.pagina-cliente .btn { font-size: 17px; }
+.pagina-cliente .btn.small { font-size: 16px; min-height: 48px; }
+.pagina-cliente .badge { font-size: 14px; }
+.pagina-cliente .banner { font-size: 16px; line-height: 1.45; }
+.pagina-cliente .banner b { display: block; margin-bottom: 2px; }
+.pagina-cliente label.campo { font-size: 16px; color: var(--ink); }
+.pagina-cliente .scelta label { font-size: 17px; }
+.pagina-cliente .scelta label small { font-size: 15px; margin-top: 2px; }
+.pagina-cliente details summary { font-size: 16px; }
+.pagina-cliente .foglio-testa p { font-size: 15px; color: var(--ink-2); }
+.pagina-cliente #toast { font-size: 16px; }
+.nw { white-space: nowrap; }
+.pagina-cliente #app:not(:has(.barra-totale)) { padding-bottom: calc(32px + var(--safe-b)); }
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* ---------- Testata: chi lo manda, cosa, quanto ---------- */
+.cp-testa { --su-accento: var(--bianco); padding: calc(22px + var(--safe-t)) 16px 18px; }
+.cp-testa.breve { padding-bottom: 14px; }
+.cp-esci { position: absolute; top: calc(14px + var(--safe-t)); right: 8px; color: var(--ink); }
+.cp-testa.con-esci .cp-azienda { padding-right: 44px; }
+.cp-azienda { align-items: flex-start; }
+.cp-azienda .avatar { color: var(--su-accento); margin-top: 1px; }
+.cp-azienda b { display: block; font-size: 17px; line-height: 1.3; }
+.cp-azienda-dati { font-size: 14px; color: var(--ink-2); line-height: 1.4; margin-top: 2px; }
+.cp-testa h1 { margin: 18px 0 8px; font-size: 29px; line-height: 1.15; overflow-wrap: anywhere; }
+.cp-prezzo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.cp-prezzo b { font-size: 35px; line-height: 1.1; font-weight: 800; font-stretch: 112%; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cp-prezzo > span { font-size: 16px; color: var(--ink-2); }
+.cp-sotto { margin: 6px 0 0; font-size: 16px; color: var(--ink); }
+.cp-sotto b, .cp-sotto > span { white-space: nowrap; }
+.cp-meta { margin: 12px 0 0; font-size: 14px; color: var(--ink-2); font-variant-numeric: tabular-nums; line-height: 1.5; }
+.cp-testa h1 + .cp-meta.cp-variante { margin: -2px 0 10px; }
+.cp-testa .badge.warn { background: var(--warn-soft); color: var(--warn); }
+.cp-strumenti { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.cp-strumenti:empty { display: none; }
+.cp-strumento { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px 0 12px; border: 0; border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink); font-size: 15px; font-weight: 600; cursor: pointer; transition: transform var(--t-press) var(--ease-out), background-color var(--t-fast) ease; }
+.cp-strumento svg { width: 20px; height: 20px; flex: none; }
+.cp-strumento:active { transform: scale(0.97); }
+.cp-strumento[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+@media (hover: hover) and (pointer: fine) { .cp-strumento:hover { background: var(--surface-3); } .cp-strumento[aria-pressed="true"]:hover { background: var(--ink); } }
+
+/* ---------- Introduzione e passi ---------- */
+.cp-corpo { gap: 16px; padding-top: 18px; }
+.cp-intro { display: flex; flex-direction: column; gap: 14px; margin: 0 2px; }
+.cp-intro p, p.cp-intro { margin: 0; font-size: 17px; line-height: 1.5; max-width: 34em; }
+.cp-nota-variante { margin: 0 2px; font-size: 16px; line-height: 1.5; color: var(--ink); max-width: 34em; }
+.cp-passi { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.cp-passi li { display: flex; align-items: center; gap: 12px; font-size: 16px; font-weight: 500; color: var(--ink-2); line-height: 1.3; }
+.cp-passi .n { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--line-2); background: var(--surface); font-size: 15px; font-weight: 750; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.cp-passi .n svg { width: 17px; height: 17px; stroke-width: 3; }
+.cp-passi li.ora { color: var(--ink); font-weight: 700; }
+.cp-passi li.ora .n { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.cp-passi li.fatto .n { background: var(--ok); border-color: var(--ok); color: var(--on-ok); }
+
+/* ---------- Il preventivo come un unico foglio ---------- */
+.cp-corpo h2, .cp-successo h2 { font-size: 20px; font-weight: 750; line-height: 1.25; margin: 0; }
+.cp-doc { padding: 18px 16px 6px; }
+.cp-doc > h2 { margin-bottom: 2px; }
+.cp-sez { border-top: 1px solid var(--line); margin-top: 6px; padding: 18px 0 8px; }
+.cp-sez > h2 { margin-bottom: 4px; }
+.cp-aiuto { margin: 0; font-size: 16px; color: var(--ink-2); line-height: 1.45; }
+.cp-sez > .cp-aiuto { margin-bottom: 4px; }
+.cp-voce, .cp-opz { padding: 14px 0; gap: 14px; }
+.cp-voce .d, .cp-opz .d { display: block; font-size: 17px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.cp-dett { display: block; margin-top: 2px; font-size: 15px; color: var(--ink-2); }
+.cp-voce .imp { font-size: 17px; font-weight: 700; align-self: flex-start; }
+.cp-opz { align-items: center; }
+.cp-opz-dx { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.cp-piu { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+.cp-piu b { font-size: 17px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+.cp-piu small { font-size: 14px; color: var(--ink-2); }
+.cp-opz-input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+.cp-aggiungi { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px 0 10px; border-radius: var(--r-sm); border: 1.5px solid var(--ink); background: var(--surface); color: var(--ink); font-size: 16px; font-weight: 700; transition: background-color var(--t-fast) ease, color var(--t-fast) ease, transform var(--t-press) var(--ease-out); }
+.cp-aggiungi > span { display: inline-flex; align-items: center; gap: 6px; }
+.cp-aggiungi svg { width: 18px; height: 18px; stroke-width: 2.6; flex: none; }
+.cp-aggiungi .si { display: none; }
+.cp-opz-input:checked ~ .cp-aggiungi { background: var(--ink); color: var(--surface); }
+.cp-opz-input:checked ~ .cp-aggiungi .no { display: none; }
+.cp-opz-input:checked ~ .cp-aggiungi .si { display: inline-flex; }
+.cp-opz-input:focus-visible ~ .cp-aggiungi { outline: 2.5px solid var(--penna); outline-offset: 2px; }
+.cp-opz-input:disabled ~ .cp-aggiungi { opacity: 0.45; }
+.cp-opz:active .cp-aggiungi { transform: scale(0.97); }
+.pagina-cliente .riepilogo .r > span { min-width: 0; }
+.pagina-cliente .riepilogo .r > span b { white-space: normal; }
+.cp-doc .riepilogo .r { padding: 5px 0; font-size: 17px; }
+.cp-doc .riepilogo .r span { color: var(--ink-2); }
+.cp-doc .riepilogo .r.tot span { color: var(--ink); }
+.cp-doc .riepilogo .r.tot .big { font-size: 26px; }
+.cp-cond-riga + .cp-cond-riga, .cp-cond-riga + .cp-note { margin-top: 12px; }
+.cp-cond h3 { margin: 10px 0 2px; font-size: 16px; font-weight: 700; font-stretch: 100%; }
+.cp-cond p { margin: 0; font-size: 16px; line-height: 1.5; }
+.cp-cond .cp-fine { margin-top: 12px; font-size: 14px; color: var(--ink-2); }
+.cp-note { margin-top: 10px; }
+.cp-stampa { padding: 8px 0; }
+.cp-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 0; border: 0; background: none; color: var(--penna); font-size: 16px; font-weight: 600; text-align: left; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; cursor: pointer; line-height: 1.3; }
+.cp-link svg { width: 20px; height: 20px; flex: none; }
+
+/* ---------- Data di inizio, contatti, piede ---------- */
+.cp-date { display: flex; flex-direction: column; gap: 6px; }
+.cp-date .scelta { margin-top: 8px; }
+.cp-contatti { gap: 10px; }
+.cp-risposte { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.cp-risposte .btn { flex: 1 1 auto; }
+.cp-piede { margin: 4px 6px 0; font-size: 14px; color: var(--ink-2); text-align: center; line-height: 1.5; }
+.cp-marchio { margin: -6px 0 0; font-size: 14px; color: var(--ink-2); text-align: center; }
+.cp-barra .cp-barra-et { font-size: 14px; color: var(--ink-2); font-weight: 500; }
+.cp-barra .tot .big { font-size: 24px; }
+.cp-barra > .cp-aiuto { flex: 1; text-align: center; }
+@media (max-width: 380px) { .cp-barra .tot .big { font-size: 21px; } .cp-barra .btn.primary { padding: 0 14px; } }
+
+/* ---------- Foglio della firma ---------- */
+.foglio.cp-foglio-firma { max-height: calc(100dvh - 12px - var(--safe-t)); }
+.cp-firma { gap: 12px; }
+.cp-dichiarazione { margin: 0; font-size: 16px; line-height: 1.5; }
+.cp-rileggi { margin-top: -6px; }
+.cp-rileggi .cp-cond { padding: 2px 0 6px; }
+.cp-data-scelta { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 14px; border-radius: var(--r); background: var(--surface-2); }
+.cp-data-scelta > svg { width: 22px; height: 22px; flex: none; color: var(--ink-2); }
+.cp-data-scelta > div { flex: 1; min-width: 0; }
+.cp-data-scelta .et { display: block; font-size: 14px; color: var(--ink-2); }
+.cp-data-scelta b { display: block; font-size: 16px; line-height: 1.3; }
+.cp-data-scelta .btn { flex: none; background: var(--surface); }
+.cp-firma-blocco { display: flex; flex-direction: column; gap: 8px; }
+.cp-firma-testa { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.cp-etichetta { font-size: 16px; font-weight: 600; }
+.cp-firma-testa .btn.small { min-height: 44px; padding: 0 8px; margin-right: -8px; }
+.cp-pad { position: relative; }
+.cp-firma .cp-pad { max-width: 520px; }
+.cp-pad canvas.firma { aspect-ratio: 2 / 1; background: var(--carta); border: 1.5px solid var(--line-2); color: var(--inchiostro); }
+.cp-pad.errore canvas.firma { border-color: var(--bad); }
+.cp-pad-linea { position: absolute; left: 7%; right: 7%; top: 72%; border-top: 2px solid var(--carta-linea); pointer-events: none; }
+.cp-pad-invito { position: absolute; left: 7%; top: 72%; transform: translateY(calc(-100% - 8px)); display: inline-flex; align-items: center; gap: 6px; color: var(--carta-testo); font-size: 17px; font-weight: 600; pointer-events: none; transition: opacity var(--t-base) var(--ease-out); }
+.cp-pad-invito svg { width: 20px; height: 20px; stroke-width: 2.4; }
+.cp-pad.con-firma .cp-pad-invito { opacity: 0; transition-duration: 150ms; }
+.cp-ingrandisci { align-self: flex-start; padding: 0; }
+.cp-consenso { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 14px; border: 1.5px solid var(--line-2); border-radius: var(--r); background: var(--surface); font-size: 16px; font-weight: 600; line-height: 1.35; cursor: pointer; transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease; }
+.cp-consenso input[type="checkbox"] { width: 26px; height: 26px; }
+.cp-consenso:has(input:checked) { border-color: var(--ink); background: var(--lampo-soft); }
+.cp-consenso.errore { border-color: var(--bad); }
+.cp-errore { display: flex; align-items: flex-start; gap: 8px; margin: -4px 0 0; color: var(--bad); font-size: 15px; font-weight: 600; line-height: 1.4; }
+.cp-errore svg { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.foglio input[aria-invalid="true"] { border-color: var(--bad); }
+.cp-foglio-piede { position: sticky; bottom: calc(-20px - var(--safe-b)); z-index: 2; display: flex; flex-direction: column; gap: 6px; margin: 4px -18px calc(-20px - var(--safe-b)); padding: 12px 18px calc(12px + var(--safe-b)); background: var(--surface); border-top: 1px solid var(--line); }
+@media (min-width: 700px) { .cp-foglio-piede { bottom: -20px; margin-bottom: -20px; padding-bottom: 14px; border-radius: 0 0 var(--r-sheet) var(--r-sheet); } }
+
+/* Riquadro grande, a tutto schermo */
+.cp-pad-grande { position: fixed; inset: 0; z-index: 150; background: var(--bg); display: flex; flex-direction: column; justify-content: center; gap: 12px; padding: calc(12px + var(--safe-t)) 16px calc(12px + var(--safe-b)); }
+.cp-pg-testa b { display: block; font-size: 20px; font-stretch: 112%; }
+.cp-pg-testa span { font-size: 15px; color: var(--ink-2); }
+.cp-pad-grande .cp-pad { width: min(100%, calc((100dvh - 190px) * 2.5)); margin: 0 auto; }
+.cp-pad-grande canvas.firma { aspect-ratio: 2.5 / 1; }
+.cp-pg-azioni { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: min(100%, 560px); margin: 0 auto; }
+@media (orientation: landscape) { .cp-pg-testa span { display: none; } }
+
+/* ---------- Dopo la firma ---------- */
+.cp-successo { text-align: left; padding-top: 18px; gap: 16px; }
+.cp-successo h1 { margin: 2px 0 0; font-size: 29px; line-height: 1.15; }
+.cp-successo .cp-lead { margin: -6px 0 0; font-size: 17px; line-height: 1.5; }
+.cp-successo > .stack .cp-aiuto { margin-top: -4px; }
+.cp-timbro-riga { padding: 8px 4px 0; }
+.cp-timbro-riga .timbro { font-size: 26px; padding: 10px 18px 9px; }
+.cp-timbro-riga .timbro small { font-size: 14px; }
+.cp-di-nuovo { display: flex; flex-direction: column; gap: 8px; }
+.cp-ricevuta { display: flex; flex-direction: column; gap: 10px; }
+.cp-righe { display: flex; flex-direction: column; }
+.cp-riga { display: flex; flex-direction: column; padding: 9px 0; border-top: 1px solid var(--line); }
+.cp-riga:first-child { border-top: 0; padding-top: 2px; }
+.cp-riga > span { font-size: 14px; color: var(--ink-2); }
+.cp-riga b { font-size: 17px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.cp-firma-img { display: block; width: 200px; max-width: 70%; height: auto; padding: 4px; border-radius: var(--r-xs); border: 1px solid var(--line); background: var(--carta); }
+.cp-prossimi { display: flex; flex-direction: column; gap: 6px; }
+.cp-tempi { list-style: none; margin: 4px 0 0; padding: 0; }
+.cp-tempi li { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 12px; padding: 0 0 16px; }
+.cp-tempi li::before { content: ""; position: absolute; left: 8px; top: 18px; bottom: 0; border-left: 2px solid var(--line); }
+.cp-tempi li:last-child { padding-bottom: 4px; }
+.cp-tempi li:last-child::before { display: none; }
+.cp-tempi .segno { width: 18px; height: 18px; margin-top: 2px; border-radius: 50%; border: 2px solid var(--line-2); background: var(--surface); }
+.cp-tempi li.fatto .segno { background: var(--ok); border-color: var(--ok); }
+.cp-tempi li.ora .segno { border: 5px solid var(--ink); }
+.cp-tempi .quando { display: block; font-size: 15px; font-weight: 700; color: var(--ink-2); }
+.cp-tempi li.ora .quando { color: var(--ink); }
+.cp-tempi .cosa { display: block; font-size: 17px; line-height: 1.4; }
+.cp-tempi .btn { margin-top: 8px; }
+
+.cp-consegna > .btn.primary { margin-top: 4px; }
+
+/* ---------- Pagamento ---------- */
+.cp-paga { gap: 12px; }
+.cp-paga > h2 .tnum { white-space: nowrap; }
+.cp-host { font-size: 15px; font-weight: 500; }
+.cp-dati { display: flex; flex-direction: column; }
+.cp-dato { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.cp-dato:first-child { border-top: 0; padding-top: 4px; }
+.cp-dato-testo { flex: 1; min-width: 0; }
+.cp-dato-testo .et { display: block; font-size: 14px; color: var(--ink-2); }
+.cp-dato-testo b { display: block; font-size: 17px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
+.cp-dato.principale b { font-size: 21px; font-weight: 750; font-stretch: 112%; line-height: 1.25; }
+.cp-dato .btn { flex: none; }
+.cp-iban-num { letter-spacing: 0.02em; }
+.cp-iban-num span { white-space: nowrap; }
+.cp-prima { align-items: flex-start; }
+.cp-prima > div { min-width: 0; }
+.cp-paga .cp-qr > summary { padding: 8px 0; }
+.cp-paga .qr-box .muted { font-size: 15px; color: var(--ink-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-strumento:active, .cp-opz:active .cp-aggiungi { transform: none; }
+}

@@ -18,14 +18,22 @@ export const FASCE = { mattina: "Mattina", pomeriggio: "Pomeriggio", giornata: "
 export const LIVELLI_SOLLECITO = { 1: "Promemoria cortese", 2: "Sollecito", 3: "Ultimo avviso" };
 // Il livello 0 è la semplice richiesta di pagamento (dopo i lavori o per l'acconto): non è un sollecito.
 export const TONI_MESSAGGIO = { 0: "Richiesta", 1: "Cortese", 2: "Sollecito", 3: "Ultimo avviso" };
+// "Scaduto" da solo sembra un preventivo scaduto: per i soldi si dice "in ritardo".
 export const FASI = {
   "non-accettato": "Non accettato",
-  "attesa-acconto": "Attesa acconto",
+  "attesa-acconto": "Aspetti l'acconto",
   "in-corso": "Lavori in corso",
   "da-saldare": "Da saldare",
-  scaduto: "Scaduto",
+  scaduto: "Pagamento in ritardo",
   pagato: "Pagato",
-  storico: "Da aggiornare",
+  storico: "Segna i pagamenti",
+};
+// Cosa fa il pulsante WhatsApp a ogni livello di sollecito.
+export const AZIONI_SOLLECITO = {
+  0: "Chiedi il pagamento",
+  1: "Manda un promemoria gentile",
+  2: "Manda il sollecito",
+  3: "Manda l'ultimo avviso",
 };
 
 // Giorni concessi per versare l'acconto dopo la firma, prima di considerarlo in ritardo.
@@ -491,7 +499,11 @@ export function payloadEpc({ nome, iban, importo, causale: causaleTesto }) {
 // ------------------------------------------------------------------
 // Calendario (.ics): inizio lavori nel calendario del telefono
 // ------------------------------------------------------------------
-export const ORARI_FASCIA = { mattina: ["080000", "130000"], pomeriggio: ["140000", "190000"] };
+export const ORARI_FASCIA = {
+  mattina: ["080000", "130000"],
+  pomeriggio: ["140000", "190000"],
+  promemoria: ["173000", "174500"], // solo per i promemoria dell'app, non tra le fasce proposte al cliente
+};
 
 // Si taglia PRIMA di aggiungere gli escape, così non resta mai una barra "orfana" in fondo.
 function escIcs(v, max) {
@@ -518,6 +530,8 @@ function piega(riga) {
 }
 
 // anticipo: quando suona il promemoria rispetto all'inizio ("-PT12H" la sera prima, "PT0M" all'ora di inizio).
+// Ripetizioni ammesse (valori fissi: niente testo libero dentro il file del calendario).
+const RIPETIZIONI = { settimanale: "FREQ=WEEKLY" };
 const ANTICIPI = new Set(["-PT12H", "-PT1H", "PT0M"]);
 export function creaIcs({
   id,
@@ -528,6 +542,7 @@ export function creaIcs({
   descrizione = "",
   ora = new Date(),
   anticipo = "-PT12H",
+  ripeti = "",
 }) {
   if (!dataValida(data)) return "";
   const giorno = data.replace(/-/g, "");
@@ -547,6 +562,7 @@ export function creaIcs({
     `DTSTAMP:${stamp}`,
     inizio,
     fine,
+    RIPETIZIONI[ripeti] ? `RRULE:${RIPETIZIONI[ripeti]}` : "",
     `SUMMARY:${escIcs(titolo, 300)}`,
     luogo ? `LOCATION:${escIcs(luogo, 300)}` : "",
     descrizione ? `DESCRIPTION:${escIcs(descrizione, 1500)}` : "",

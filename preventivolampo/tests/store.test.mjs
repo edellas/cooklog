@@ -89,3 +89,37 @@ test("backup: incassi, date e appuntamenti ostili vengono ripuliti", () => {
   assert.equal(p2.incasso, null);
   assert.deepEqual(p2.disponibilita, []);
 });
+
+test("backup: il riferimento dei lavori extra (variante) viene ripulito", () => {
+  const { preventivi } = validaBackup({
+    app: "preventivolampo",
+    preventivi: [
+      { id: "v1", variante: { di: "../<x>orig-1", numero: "2026-004", data: "2026-02-30", altro: "x" } },
+      { id: "v2", variante: "orig" },
+      { id: "v3" },
+    ],
+  });
+  assert.deepEqual(preventivi[0].variante, { di: "xorig-1", numero: "2026-004", data: "" });
+  assert.equal(preventivi[1].variante, null);
+  assert.equal(preventivi[2].variante, null);
+});
+
+test("backup: firma sul posto e online solo come booleani veri", () => {
+  const firma = (extra) => ({
+    img: "data:image/png;base64,AA==",
+    nome: "Giulia",
+    data: "2026-10-01T10:00:00Z",
+    ...extra,
+  });
+  const { preventivi } = validaBackup({
+    app: "preventivolampo",
+    preventivi: [
+      { id: "a", firma: firma({ sulPosto: true, online: false }) },
+      { id: "b", firma: firma({ sulPosto: "true", online: 1 }) },
+    ],
+  });
+  assert.equal(preventivi[0].firma.sulPosto, true);
+  assert.equal(preventivi[0].firma.online, false);
+  assert.equal(preventivi[1].firma.sulPosto, false);
+  assert.equal(preventivi[1].firma.online, false);
+});

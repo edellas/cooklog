@@ -17,7 +17,10 @@ export function immagineSicura(src) {
   return typeof src === "string" && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(src) ? src : "";
 }
 
-export function vibra(ms = 8) {
+// Vibrazioni brevi per i tocchi, un ritmo riconoscibile per i momenti buoni (firmato, pagato).
+export const VIBRA = { tocco: 10, successo: [16, 50, 28], errore: [36, 60, 36] };
+
+export function vibra(ms = VIBRA.tocco) {
   try {
     navigator.vibrate?.(ms);
   } catch {
@@ -26,7 +29,8 @@ export function vibra(ms = 8) {
 }
 
 let timerToast;
-export function toast(msg, tipo = "") {
+// azione: un pulsante nella notifica (per esempio "Annulla" dopo un'eliminazione), che resta 5 secondi.
+export function toast(msg, tipo = "", { azione = "", suAzione = null } = {}) {
   let t = $("#toast");
   if (!t) {
     t = document.createElement("div");
@@ -36,16 +40,34 @@ export function toast(msg, tipo = "") {
     document.body.appendChild(t);
   }
   t.textContent = msg;
-  t.className = "on " + tipo;
+  if (azione && suAzione) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = azione;
+    b.addEventListener("click", () => {
+      clearTimeout(timerToast);
+      t.className = tipo;
+      suAzione();
+    });
+    t.append(b);
+  }
+  t.className = `on ${tipo} ${azione ? "con-azione" : ""}`;
   clearTimeout(timerToast);
-  timerToast = setTimeout(() => (t.className = tipo), 2600);
+  timerToast = setTimeout(() => (t.className = tipo), azione ? 5000 : 2600);
 }
 
 // Foglio a comparsa dal basso (bottom sheet). Restituisce l'elemento del contenuto.
+// Entra e esce con transizioni (interrompibili, a differenza dei keyframe) e si chiude anche
+// trascinandolo in giù: basta un gesto rapido, non serve arrivare in fondo.
+// Con un foglio aperto il tasto Indietro del telefono chiude il foglio, non la pagina: per questo
+// all'apertura si aggiunge una voce alla cronologia, tolta alla chiusura.
+let voceStoria = 0;
+
 export function apriFoglio(html, { alMontaggio, classe = "" } = {}) {
-  chiudiFoglio(true);
+  const sostituisce = Boolean($("#foglio"));
+  chiudiFoglio(true, { tieniStoria: true });
   const ov = document.createElement("div");
-  ov.className = "overlay";
+  ov.className = "overlay entra";
   ov.id = "foglio";
   ov.innerHTML = `<div class="foglio ${classe}" role="dialog" aria-modal="true"><div class="maniglia" aria-hidden="true"></div>${html}</div>`;
   ov.addEventListener("click", (e) => {
@@ -54,24 +76,81 @@ export function apriFoglio(html, { alMontaggio, classe = "" } = {}) {
   document.body.appendChild(ov);
   document.body.classList.add("con-foglio");
   const foglio = ov.firstElementChild;
+  // Il doppio frame garantisce che lo stato iniziale venga disegnato prima della transizione.
+  requestAnimationFrame(() => requestAnimationFrame(() => ov.classList.remove("entra")));
+  trascinaPerChiudere(ov, foglio);
+  if (!(sostituisce && voceStoria && history.state?.foglio === voceStoria)) {
+    voceStoria = Date.now();
+    try {
+      history.pushState({ ...(history.state || {}), foglio: voceStoria }, "");
+    } catch {
+      voceStoria = 0;
+    }
+  }
   const primo = foglio.querySelector("input:not([type=hidden]):not([readonly]), textarea, select");
   if (primo && !primo.dataset.noFocus && matchMedia("(pointer: fine)").matches) primo.focus();
   alMontaggio?.(foglio);
   return foglio;
 }
 
-export function chiudiFoglio(subito = false) {
+function trascinaPerChiudere(ov, foglio) {
+  let inizio = null;
+  foglio.addEventListener("pointerdown", (e) => {
+    if (inizio || e.button > 0 || matchMedia("(min-width: 700px)").matches) return;
+    // Si trascina dalla maniglia o dalla testata, oppure dal contenuto quando è già in cima.
+    const daTesta = e.target.closest(".maniglia, .foglio-testa");
+    if (!daTesta && (foglio.scrollTop > 0 || e.target.closest("input, textarea, select, canvas, button, a, label"))) return;
+    inizio = { y: e.clientY, t: performance.now(), id: e.pointerId, dy: 0 };
+  });
+  foglio.addEventListener("pointermove", (e) => {
+    if (!inizio || e.pointerId !== inizio.id) return;
+    const dy = e.clientY - inizio.y;
+    if (!foglio.classList.contains("trascina")) {
+      if (dy < 6) return;
+      foglio.classList.add("trascina");
+      foglio.setPointerCapture?.(e.pointerId);
+    }
+    // Verso l'alto il foglio resiste, verso il basso segue il dito.
+    inizio.dy = dy;
+    foglio.style.transform = `translateY(${dy > 0 ? dy : dy / 6}px)`;
+  });
+  const fine = (e) => {
+    if (!inizio || e.pointerId !== inizio.id) return;
+    const { dy, t } = inizio;
+    inizio = null;
+    if (!foglio.classList.contains("trascina")) return;
+    foglio.classList.remove("trascina");
+    const velocita = dy / Math.max(1, performance.now() - t);
+    foglio.style.transform = "";
+    if (dy > foglio.offsetHeight * 0.3 || (dy > 24 && velocita > 0.11)) chiudiFoglio();
+  };
+  foglio.addEventListener("pointerup", fine);
+  foglio.addEventListener("pointercancel", fine);
+}
+
+export function chiudiFoglio(subito = false, { tieniStoria = false } = {}) {
   const ov = $("#foglio");
   if (!ov) return;
   if (ov._allaChiusura) ov._allaChiusura();
   ov.removeAttribute("id");
   document.body.classList.remove("con-foglio");
-  if (subito || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  if (!tieniStoria && voceStoria) {
+    const voce = voceStoria;
+    voceStoria = 0;
+    // Dopo il giro corrente: se intanto si è cambiata pagina la voce non è più quella attuale e resta.
+    setTimeout(() => {
+      if (history.state?.foglio === voce) history.back();
+    }, 0);
+  }
+  if (subito) {
     ov.remove();
     return;
   }
+  // Mentre esce resta visibile ma non è più "il" foglio: niente tocchi e niente id doppi con quello nuovo.
+  ov.inert = true;
+  for (const el of ov.querySelectorAll("[id]")) el.removeAttribute("id");
   ov.classList.add("esce");
-  setTimeout(() => ov.remove(), 180);
+  setTimeout(() => ov.remove(), 220);
 }
 
 export function titoloFoglio(titolo, sottotitolo = "") {
@@ -148,3 +227,13 @@ export async function copiaTesto(testo) {
     return ok;
   }
 }
+
+window.addEventListener("popstate", (e) => {
+  if (voceStoria && e.state?.foglio !== voceStoria) {
+    voceStoria = 0;
+    chiudiFoglio(false, { tieniStoria: true });
+  }
+});
+
+// Su iPhone :active scatta solo se la pagina ascolta i tocchi.
+document.addEventListener("touchstart", () => {}, { passive: true });

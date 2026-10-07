@@ -138,6 +138,7 @@ export function validaBackup(dati) {
             luogo: testo(p.firma.luogo, 120),
             data: testo(p.firma.data, 40),
             online: p.firma.online === true,
+            sulPosto: p.firma.sulPosto === true,
           }
         : null,
       accettazioneOnline: oggetto(p.accettazioneOnline)
@@ -154,6 +155,14 @@ export function validaBackup(dati) {
       disponibilita: normalizzaDisponibilita(p.disponibilita),
       appuntamento: normalizzaAppuntamento(p.appuntamento),
       accettatoIl: dataValida(p.accettatoIl) ? p.accettatoIl : "",
+      // Lavori extra: riferimento al preventivo originale (solo identificativo, numero e data).
+      variante: oggetto(p.variante)
+        ? {
+            di: testo(p.variante.di, 64).replace(/[^a-zA-Z0-9-]/g, ""),
+            numero: testo(p.variante.numero, 40),
+            data: dataValida(p.variante.data) ? p.variante.data : "",
+          }
+        : null,
       // Backup di prima del registro incassi: gli accettati restano "da aggiornare" (niente falsi scaduti).
       incasso:
         p.incasso === undefined && p.stato === "accettato"

@@ -1,9 +1,10 @@
 // Logica pura (nessun DOM): calcoli, formattazione, numerazione, dettatura.
 // Importabile sia dal browser sia da Node per i test.
 
+// Come lo dice l'artigiano: "da inviare", non "bozza".
 export const STATI = {
-  bozza: "Bozza",
-  inviato: "Inviato",
+  bozza: "Da inviare",
+  inviato: "In attesa",
   accettato: "Accettato",
   rifiutato: "Rifiutato",
 };
@@ -387,11 +388,12 @@ export function preventivoVuoto(azienda, numerazione, oggi = oggiISO()) {
     luogo: "",
     righe: [],
     scontoGlobale: 0,
-    acconto: { tipo: "perc", valore: 0 },
+    acconto: { tipo: "perc", valore: Math.min(Math.max(Number(azienda.accontoDefault) || 0, 0), 100) },
     // Caparra confirmatoria invece del semplice acconto (art. 1385 c.c.), dalle impostazioni.
     caparra: azienda.tipoAnticipo === "caparra",
     disponibilita: [], // date proposte al cliente per iniziare i lavori
     appuntamento: null,
+    variante: null, // lavori extra di un preventivo già firmato: { di, numero, data }
     incasso: null, // pagamenti ricevuti, fine lavori, solleciti (vedi incassi.js)
     pagamento: azienda.pagamento || "",
     tempi: "",

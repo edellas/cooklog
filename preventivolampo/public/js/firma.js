@@ -123,30 +123,53 @@ export function lunghezzaTratti(tratti) {
   return l;
 }
 
+// Riquadro sul quadro logico 1000x400 con la stessa scala sui due assi: un riquadro più alto
+// (per esempio 2:1, più comodo col dito) occupa la fascia centrale del quadro e la firma non si
+// deforma quando la si ridisegna a 2,5:1 (PDF, app). A 2,5:1 la corrispondenza è quella di sempre.
+function vistaDi(r) {
+  const s = Math.max(r.width / LARGHEZZA, r.height / ALTEZZA) || 1;
+  return { s, ox: (LARGHEZZA - r.width / s) / 2, oy: (ALTEZZA - r.height / s) / 2 };
+}
+
+const copiaTratti = (v) =>
+  (Array.isArray(v) ? v : [])
+    .filter((t) => Array.isArray(t) && t.length)
+    .map((t) => t.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })));
+
 // Collega un <canvas> al disegno con dito/penna/mouse.
-export function creaPadFirma(canvas, { alCambio } = {}) {
+// Opzioni: alCambio() a fine tratto e dopo cancella/imposta; tratti: firma da ripristinare;
+// colore: inchiostro (stringa o funzione che lo restituisce), altrimenti quello predefinito.
+export function creaPadFirma(canvas, { alCambio, tratti: iniziali, colore } = {}) {
   const ctx = canvas.getContext("2d");
-  let tratti = [];
+  let tratti = copiaTratti(iniziali);
   let corrente = null;
+  let vista = { s: 1, ox: 0, oy: 0 };
 
   function ridimensiona() {
     const dpr = Math.max(window.devicePixelRatio || 1, 2);
     const r = canvas.getBoundingClientRect();
     canvas.width = Math.max(1, Math.round(r.width * dpr));
     canvas.height = Math.max(1, Math.round(r.height * dpr));
+    vista = vistaDi(r);
     ridisegna();
   }
 
   function ridisegna() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    disegnaTratti(ctx, tratti, canvas.width, canvas.height);
+    const k = canvas.width / Math.max(1, LARGHEZZA - 2 * vista.ox); // pixel del canvas per unità logica
+    ctx.translate(-vista.ox * k, -vista.oy * k);
+    const inchiostro = typeof colore === "function" ? colore() : colore;
+    disegnaTratti(ctx, tratti, LARGHEZZA * k, ALTEZZA * k, inchiostro || undefined);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   function punto(e) {
     const r = canvas.getBoundingClientRect();
+    const v = vistaDi(r);
     return {
-      x: ((e.clientX - r.left) / r.width) * LARGHEZZA,
-      y: ((e.clientY - r.top) / r.height) * ALTEZZA,
+      x: Math.min(Math.max(v.ox + (e.clientX - r.left) / v.s, 0), LARGHEZZA),
+      y: Math.min(Math.max(v.oy + (e.clientY - r.top) / v.s, 0), ALTEZZA),
     };
   }
 
@@ -178,6 +201,13 @@ export function creaPadFirma(canvas, { alCambio } = {}) {
   return {
     cancella() {
       tratti = [];
+      ridisegna();
+      alCambio?.();
+    },
+    // Sostituisce la firma (per esempio con quella fatta nel riquadro grande).
+    imposta(nuovi) {
+      tratti = copiaTratti(nuovi);
+      corrente = null;
       ridisegna();
       alCambio?.();
     },

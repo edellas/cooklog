@@ -250,6 +250,25 @@ test("conferma del cliente: andata e ritorno e applicazione al preventivo", asyn
   await assert.rejects(leggiConferma("zAAAA"), /non valid|danneggiato|incompleto/);
 });
 
+test("firma al tavolo: la conferma dice che ha firmato sul telefono dell'impresa, valori ostili ignorati", async () => {
+  const base = { id: "p1", numero: "2026-001", hash: "abc", scelte: [], descrizioni: [], nome: "Giulia", firma: [] };
+  const normale = await creaLinkConferma("https://x.it/", base);
+  const sulPosto = await creaLinkConferma("https://x.it/", { ...base, sulPosto: true });
+  assert.equal((await leggiConferma(normale.split("?d=")[1])).sulPosto, false);
+  const c = await leggiConferma(sulPosto.split("?d=")[1]);
+  assert.equal(c.sulPosto, true);
+  const prev = preventivo();
+  applicaConferma(prev, c, "data:image/png;base64,xx");
+  assert.equal(prev.firma.sulPosto, true);
+  assert.equal(prev.firma.online, false);
+  // solo il numero 1 vale "sul posto"
+  for (const sp of ["1", 2, true, {}, [1]]) {
+    const d = JSON.parse(await decomprimi(normale.split("?d=")[1]));
+    d.sp = sp;
+    assert.equal((await leggiConferma(await comprimi(JSON.stringify(d)))).sulPosto, false);
+  }
+});
+
 test("firma: semplificazione, codifica compatta e limiti di sicurezza", () => {
   const linea = Array.from({ length: 200 }, (_, i) => ({ x: i * 5, y: 200 }));
   assert.equal(semplifica(linea).length, 2);
@@ -455,4 +474,23 @@ test("avviso 'Ho pagato': andata e ritorno, impronta per non registrarlo due vol
   assert.equal(futuro.data, iso, "una data di pagamento nel futuro non è plausibile");
   assert.equal((await fai({ v: 1, k: "av", id: "x", im: 5, dt: "2001-01-01" })).data, iso);
   assert.equal(strano.nota.length, 300);
+});
+
+test("lavori extra (variante): il link porta numero e data del preventivo originale, ripuliti", async () => {
+  const p = { ...preventivo(), variante: { di: "abc", numero: "2026-004", data: "2026-09-02" } };
+  const d = datiPerLink(p, AZIENDA, { pro: false });
+  assert.deepEqual(d.va, ["2026-004", "2026-09-02"]);
+  const { url } = await creaLinkAccettazione("https://x.it/", p, AZIENDA, { pro: false });
+  const letto = await leggiLinkAccettazione(url.split("#")[1]);
+  assert.deepEqual(letto.prev.variante, { numero: "2026-004", data: "2026-09-02" });
+  // un preventivo normale non ha la variante, e dati ostili vengono neutralizzati
+  assert.equal(datiPerLink(preventivo(), AZIENDA, { pro: false }).va, undefined);
+  assert.equal(preventivoDaDati(datiPerLink(preventivo(), AZIENDA, { pro: false })).variante, null);
+  const ostile = preventivoDaDati({
+    ...datiPerLink(preventivo(), AZIENDA, { pro: false }),
+    va: ["x".repeat(500), "<b>"],
+  });
+  assert.equal(ostile.variante.numero.length, 40);
+  assert.equal(ostile.variante.data, "");
+  assert.equal(preventivoDaDati({ ...d, va: "2026-004" }).variante, null);
 });

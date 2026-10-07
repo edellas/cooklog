@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { MESTIERI, vociListino } from "../public/js/mestieri.js";
 import { CONFIG } from "../public/js/config.js";
+import { ICONE_MESTIERI } from "../public/js/icone.js";
 import { calcolaTotali, formatEuro, formatQta, rigaVuota } from "../public/js/core.js";
 
 const pubblica = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
@@ -18,6 +19,18 @@ const esc = (s) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+
+const iconaMestiere = (m) => ICONE_MESTIERI[m.id] || ICONE_MESTIERI.altro;
+
+// Marchio dell'app (lo stesso di ICONE.logo) e icone Lucide (licenza ISC) usate nelle pagine.
+const MARCHIO = `<svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1a1d21"/><path d="M36.5 7 15 36h14.5l-4 21L49 27H34.5z" fill="#ffc21a"/></svg>`;
+const SPRITE = `<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-freccia" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+    <symbol id="i-giu" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-avanti" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  </svg>`;
+const ico = (id) => `<svg class="ico" aria-hidden="true"><use href="#i-${id}"/></svg>`;
 
 function qtaEsempio(v) {
   if (v.um === "mq") return v.prezzo < 2 ? 300 : 20;
@@ -40,31 +53,34 @@ function testa({ titolo, descrizione, canonico, jsonld = [] }) {
   <title>${esc(titolo)}</title>
   <meta name="description" content="${esc(descrizione)}">
   <link rel="canonical" href="${esc(canonico)}">
-  <meta name="theme-color" content="#1d4ed8">
+  <meta name="theme-color" content="#f4f2ed" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#131518" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="../img/icona.svg" type="image/svg+xml">
   <meta property="og:type" content="article">
   <meta property="og:title" content="${esc(titolo)}">
   <meta property="og:description" content="${esc(descrizione)}">
   <meta property="og:image" content="${SITO}/img/og.png">
   <meta property="og:locale" content="it_IT">
-  <link rel="preload" href="../fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="../css/sito.css">
 ${jsonld.map((j) => `  <script type="application/ld+json">${JSON.stringify(j)}</script>`).join("\n")}
 </head>
 <body>
-  <header class="header">
+  ${SPRITE}
+  <a class="salta" href="#contenuto">Vai al contenuto</a>
+  <header class="testata carta">
     <div class="wrap">
-      <a class="logo" href="../"><img src="../img/icona.svg" alt="" width="32" height="32">PreventivoLampo</a>
-      <nav><a class="link" href="./">Modelli</a><a class="link" href="../#prezzi">Prezzi</a><a class="btn small primary" href="../app.html">Prova gratis</a></nav>
+      <a class="marchio" href="../">${MARCHIO}<span>PreventivoLampo</span></a>
+      <nav aria-label="Sezioni"><a class="largo" href="./">Modelli</a><a class="largo" href="../#prezzi">Prezzi</a><a class="btn" href="../app.html">Prova gratis</a></nav>
     </div>
   </header>`;
 }
 
 const piede = `
-  <footer>
+  <footer class="piede">
     <div class="wrap">
       <span>© ${ANNO} PreventivoLampo</span>
-      <nav><a href="../">Home</a><a href="./">Modelli di preventivo</a><a href="../privacy.html">Privacy</a><a href="../termini.html">Termini</a></nav>
+      <nav aria-label="Informazioni"><a href="../">Home</a><a href="./">Modelli di preventivo</a><a href="../privacy.html">Privacy</a><a href="../termini.html">Termini</a></nav>
     </div>
   </footer>
   <script type="module" src="../js/sito.js"></script>
@@ -74,10 +90,15 @@ const piede = `
 
 function boxCta(m, testo) {
   return `<div class="box-cta">
-        <div><h3>${esc(testo)}</h3><p>Si apre già compilato: cambi i prezzi, aggiungi il cliente e lo invii su WhatsApp. Il cliente lo accetta e firma dal suo telefono. Gratis, senza registrazione.</p></div>
-        <a class="btn primary big" href="../app.html?mestiere=${m.id}&amp;modello=1">Apri il modello nell'app</a>
+        <div class="testo"><h3>${esc(testo)}</h3><p>Si apre già compilato: cambi i prezzi, aggiungi il cliente e lo invii su WhatsApp. Il cliente lo accetta e firma dal suo telefono. Gratis, senza registrazione.</p></div>
+        <a class="btn medio" href="../app.html?mestiere=${m.id}&amp;modello=1">Apri il modello nell'app${ico("freccia")}</a>
       </div>`;
 }
+
+const faqHtml = (faq) =>
+  `<div class="faq">
+${faq.map(([q, a]) => `        <details><summary>${esc(q)}${ico("giu")}</summary><p>${esc(a)}</p></details>`).join("\n")}
+      </div>`;
 
 function paginaMestiere(m, i) {
   const nomeMin = m.nome.toLowerCase();
@@ -132,15 +153,15 @@ function paginaMestiere(m, i) {
   const correlati = [1, 2, 3, 4, 5, 6].map((k) => MESTIERI[(i + k) % MESTIERI.length]);
 
   return `${testa({ titolo: `${titolo} | PreventivoLampo`, descrizione, canonico: url, jsonld })}
-  <main class="articolo">
+  <main class="articolo" id="contenuto">
     <div class="wrap stretto">
-      <p class="breadcrumb"><a href="../">Home</a> › <a href="./">Modelli di preventivo</a> › ${esc(m.nome)}</p>
+      <nav class="briciole" aria-label="Percorso"><a href="../">Home</a> › <a href="./">Modelli di preventivo</a> › ${esc(m.nome)}</nav>
       <h1>Fac simile preventivo ${esc(nomeMin)}: esempio gratis con prezzi</h1>
-      <p style="font-size:19px">Ecco un esempio completo di <b>preventivo per ${esc(nomeMin)}</b>, con le voci di lavoro più comuni e prezzi indicativi aggiornati al ${ANNO}. Invece di scaricare un file Word da riempire a mano, puoi aprirlo direttamente nell'app, cambiare i prezzi e mandarlo al cliente in PDF su WhatsApp in un minuto.</p>
+      <p class="apertura">Ecco un esempio completo di <b>preventivo per ${esc(nomeMin)}</b>, con le voci di lavoro più comuni e prezzi indicativi aggiornati al ${ANNO}. Invece di scaricare un file Word da riempire a mano, puoi aprirlo direttamente nell'app, cambiare i prezzi e mandarlo al cliente in PDF su WhatsApp in un minuto.</p>
       ${boxCta(m, `Usa questo preventivo da ${nomeMin}`)}
 
       <h2>Esempio: ${esc(m.oggetto.toLowerCase())}</h2>
-      <div class="tabella-wrap"><table>
+      <div class="tabella-wrap"><table class="t-esempio">
         <thead><tr><th>Descrizione</th><th class="num">Q.tà</th><th>U.m.</th><th class="num">Prezzo</th><th class="num">Importo</th></tr></thead>
         <tbody>
 ${totali.righe.map((r) => `          <tr><td>${esc(r.descrizione)}</td><td class="num">${formatQta(r.qta)}</td><td>${esc(r.um)}</td><td class="num">${formatEuro(r.prezzo)}</td><td class="num">${formatEuro(r.importo)}</td></tr>`).join("\n")}
@@ -148,21 +169,21 @@ ${totali.righe.map((r) => `          <tr><td>${esc(r.descrizione)}</td><td class
         <tfoot>
           <tr><td colspan="4">Imponibile</td><td class="num">${formatEuro(totali.imponibile)}</td></tr>
           <tr><td colspan="4">IVA ${aliquota}%</td><td class="num">${formatEuro(totali.iva)}</td></tr>
-          <tr><td colspan="4">Totale IVA inclusa</td><td class="num">${formatEuro(totali.totale)}</td></tr>
+          <tr class="totale"><td colspan="4">Totale IVA inclusa</td><td class="num">${formatEuro(totali.totale)}</td></tr>
           <tr><td colspan="4">Acconto 30% all'accettazione</td><td class="num">${formatEuro(totali.acconto)}</td></tr>
         </tfoot>
       </table></div>
-      <p class="avviso">Prezzi indicativi medi: variano in base a zona, materiali, accessibilità del lavoro e urgenza. Usali come base e inserisci sempre i tuoi.</p>
+      <p class="avviso">${ico("info")}<span>Prezzi indicativi medi: variano in base a zona, materiali, accessibilità del lavoro e urgenza. Usali come base e inserisci sempre i tuoi.</span></p>
 
       <h2>Cosa scrivere in un preventivo da ${esc(nomeMin)}</h2>
-      <ul>
+      <ul class="punti">
 ${m.consigli.map((c) => `        <li>${esc(c)}</li>`).join("\n")}
         <li>Indica la validità (ad esempio 30 giorni) e le modalità di pagamento, con eventuale acconto.</li>
         <li>Lascia lo spazio per la firma "per accettazione": con l'app il cliente può firmare direttamente sul tuo telefono.</li>
       </ul>
 
       <h2>Prezzi indicativi ${esc(nomeMin)} ${ANNO}</h2>
-      <div class="tabella-wrap"><table>
+      <div class="tabella-wrap"><table class="t-prezzi">
         <thead><tr><th>Voce</th><th>Tipo</th><th>U.m.</th><th class="num">Prezzo indicativo</th></tr></thead>
         <tbody>
 ${voci.map((v) => `          <tr><td>${esc(v.descrizione)}</td><td>${v.tipo === "mat" ? "Materiale" : "Manodopera"}</td><td>${esc(v.um)}</td><td class="num">${formatEuro(v.prezzo)}</td></tr>`).join("\n")}
@@ -176,16 +197,13 @@ ${voci.map((v) => `          <tr><td>${esc(v.descrizione)}</td><td>${v.tipo === 
       ${boxCta(m, "Fai il preventivo in 60 secondi")}
 
       <h2>Domande frequenti</h2>
-      <div class="faq">
-${faq.map(([q, a]) => `        <details><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join("\n")}
-      </div>
+      ${faqHtml(faq)}
 
       <h2>Altri modelli di preventivo</h2>
-      <div class="mestieri" style="justify-content:flex-start">
-${correlati.map((c) => `        <a href="preventivo-${c.id}.html">Preventivo ${esc(c.nome.toLowerCase())}</a>`).join("\n")}
+      <div class="mestieri">
+${correlati.map((c) => `        <a href="preventivo-${c.id}.html">${iconaMestiere(c)}Preventivo ${esc(c.nome.toLowerCase())}</a>`).join("\n")}
         <a href="./">Tutti i modelli</a>
       </div>
-      <div style="height:40px"></div>
     </div>
   </main>${piede}`;
 }
@@ -197,15 +215,15 @@ function paginaIndice() {
     descrizione: `Fac simile di preventivo gratuiti per ${MESTIERI.length} mestieri: idraulico, elettricista, imbianchino, muratore e altri. Con prezzi indicativi ${ANNO}, da compilare e inviare in PDF.`,
     canonico: url,
   })}
-  <main class="articolo">
+  <main class="articolo" id="contenuto">
     <div class="wrap stretto">
-      <p class="breadcrumb"><a href="../">Home</a> › Modelli di preventivo</p>
+      <nav class="briciole" aria-label="Percorso"><a href="../">Home</a> › Modelli di preventivo</nav>
       <h1>Modelli di preventivo gratis per artigiani</h1>
-      <p style="font-size:19px">Scegli il tuo mestiere: trovi un esempio di preventivo completo, i prezzi indicativi ${ANNO} e i consigli su cosa scrivere. Ogni modello si apre nell'app già compilato, pronto da inviare in PDF.</p>
-      <div class="funzioni" style="margin-top:24px">
-${MESTIERI.map((m) => `        <a class="funzione" style="text-decoration:none;color:inherit" href="preventivo-${m.id}.html"><h3 style="margin-top:0">Preventivo ${esc(m.nome.toLowerCase())}</h3><p>${esc(m.oggetto)}</p></a>`).join("\n")}
-      </div>
-      <div class="box-cta"><div><h3>Il tuo mestiere non c'è?</h3><p>L'app funziona per qualsiasi lavoro: crei il tuo listino e fai preventivi in un minuto.</p></div><a class="btn primary big" href="../app.html">Prova gratis</a></div>
+      <p class="apertura">Scegli il tuo mestiere: trovi un esempio di preventivo completo, i prezzi indicativi ${ANNO} e i consigli su cosa scrivere. Ogni modello si apre nell'app già compilato, pronto da inviare in PDF.</p>
+      <ul class="elenco-mestieri">
+${MESTIERI.map((m) => `        <li><a href="preventivo-${m.id}.html"><span class="segno">${iconaMestiere(m)}</span><span class="corpo"><b>Preventivo ${esc(m.nome.toLowerCase())}</b><span class="s">${esc(m.oggetto)}</span></span>${ico("avanti")}</a></li>`).join("\n")}
+      </ul>
+      <div class="box-cta"><div class="testo"><h3>Il tuo mestiere non c'è?</h3><p>L'app funziona per qualsiasi lavoro: crei il tuo listino e fai preventivi in un minuto.</p></div><a class="btn medio" href="../app.html">Prova gratis${ico("freccia")}</a></div>
     </div>
   </main>${piede}`;
 }
@@ -221,7 +239,7 @@ const fileHome = path.join(pubblica, "index.html");
 let home = readFileSync(fileHome, "utf8");
 home = home.replace(
   /<!-- MESTIERI:INIZIO -->[\s\S]*?<!-- MESTIERI:FINE -->/,
-  `<!-- MESTIERI:INIZIO -->\n${MESTIERI.map((m) => `          <a href="modelli/preventivo-${m.id}.html">${esc(m.nome)}</a>`).join("\n")}\n          <!-- MESTIERI:FINE -->`,
+  `<!-- MESTIERI:INIZIO -->\n${MESTIERI.map((m) => `          <a href="modelli/preventivo-${m.id}.html">${iconaMestiere(m)}${esc(m.nome)}</a>`).join("\n")}\n          <!-- MESTIERI:FINE -->`,
 );
 home = home.replace(/<link rel="canonical" href="[^"]*">/, `<link rel="canonical" href="${SITO}/">`);
 home = home.replace(

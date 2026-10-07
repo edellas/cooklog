@@ -135,6 +135,9 @@ async function scaricaPdfDalMenu(nome, p = page) {
 
 // Attende che i fogli a comparsa abbiano finito di scorrere: si disegna sulla posizione definitiva.
 async function attendiAnimazioni(p) {
+  // un foglio appena aperto parte con la classe "entra" e inizia la transizione al frame dopo
+  await p.waitForFunction(() => !document.querySelector(".overlay.entra"));
+  await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   await p.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"));
 }
 
@@ -170,6 +173,30 @@ async function controllaAccessibilita(p, dove) {
   assert.deepEqual(problemi, [], `accessibilità (${dove}):\n${problemi.join("\n")}`);
 }
 
+// L'editor tiene i campi rari in "Altre opzioni" e le impostazioni in sezioni chiuse: si aprono quando servono.
+async function apri(p, selettore) {
+  const d = p.locator(selettore).first();
+  if (!(await d.evaluate((el) => el.open))) await d.locator(":scope > summary").click();
+}
+const apriAltreOpzioni = (p = page) => apri(p, "#altre-opzioni");
+const apriSezione = (p, sez) => apri(p, `details[data-sez="${sez}"]`);
+async function apriDettagliRiga(riga) {
+  const d = riga.locator("details.riga-dettagli");
+  if (!(await d.evaluate((el) => el.open))) await d.locator(":scope > summary").click();
+}
+async function impostaStato(p, stato) {
+  await p.click('[data-action="stato"]');
+  await p.click(`[data-action="imposta-stato"][data-stato="${stato}"]`);
+}
+// Il cliente ha firmato: l'app festeggia con un foglio; lo si chiude per continuare.
+async function chiudiFesta(p, nome) {
+  await p.waitForSelector(`text=${nome} ha firmato!`);
+  await attendiAnimazioni(p);
+  await p.click('.festa [data-action="chiudi-foglio"]');
+  await p.waitForSelector("#foglio", { state: "detached" });
+}
+const statoMostrato = (p) => p.textContent(".topbar .stato-btn");
+
 const passi = [];
 const passo = async (nome, fn) => {
   await fn();
@@ -201,7 +228,7 @@ try {
     await controllaAccessibilita(page, "benvenuto");
   });
 
-  await passo("onboarding in 2 passi: mestiere, dati, IVA", async () => {
+  await passo("onboarding in 3 passi: mestiere, dati e IVA, primo preventivo", async () => {
     await page.click('[data-m="idraulico"]');
     await page.click('[data-action="onb-avanti"]');
     await page.fill("#b-nome", "Idraulica Rossi di Mario Rossi");
@@ -213,22 +240,32 @@ try {
     await page.click('[data-action="onb-avanti"]');
     assert.equal(await page.inputValue("#b-nome"), "Idraulica Rossi di Mario Rossi");
     await page.check('input[name="b-iva"][value="10"]');
-    await page.click('[data-action="fine-benvenuto"]');
-    await page.waitForSelector(`text=N. ${num(1)}`);
+    await page.click('[data-action="onb-dati"]');
+    await page.waitForSelector("text=Facciamo il primo preventivo");
+    await controllaAccessibilita(page, "benvenuto, passo 3");
+    await page.click('[data-action="fine-benvenuto"][data-modo="vuoto"]');
+    await page.waitForSelector(`text=N° ${num(1)}`);
     creati++;
   });
 
   await passo("impostazioni pagamento: IBAN e link per l'acconto (solo https)", async () => {
     const editor = page.url();
     await page.goto(`${BASE}/app.html#/impostazioni`);
+    await apriSezione(page, "pagamenti");
     await page.fill('[data-az="iban"]', "IT60 X054 2811 1010 0000 0123 456");
     await page.fill('[data-az="linkPagamento"]', "javascript:alert(1)");
     await page.locator('[data-az="linkPagamento"]').blur();
     await page.waitForSelector("text=deve iniziare con https://");
     await page.fill('[data-az="linkPagamento"]', "https://paypal.me/idraulicarossi");
     await page.locator('[data-az="linkPagamento"]').blur();
+    // il preventivo lasciato vuoto non resta nella lista: si riparte da un preventivo nuovo, stesso numero
+    await page.goto(`${BASE}/app.html#/`);
+    await page.waitForSelector("text=Come funziona");
+    assert.equal(await page.locator(".voce-lista").count(), 0);
     await page.goto(editor);
-    await page.waitForSelector(`text=N. ${num(1)}`);
+    await page.waitForFunction(() => location.hash === "#/");
+    await page.goto(`${BASE}/app.html#/nuovo`);
+    await page.waitForSelector(`text=N° ${num(1)}`);
   });
 
   await passo("compila cliente e voci, totale corretto", async () => {
@@ -248,12 +285,14 @@ try {
     await ultima.locator('[data-r="prezzo"]').fill("38");
     // 85 + 40 + 95 = 220 imponibile, IVA 10% = 22 -> 242
     await page.waitForFunction(() => document.querySelector("#tot-valore").textContent === "€ 242,00");
-    await page.fill('[data-campo="acconto.valore"]', "30");
+    await page.click('[data-action="acconto"][data-v="30"]');
+    await page.waitForSelector("text=di acconto quando accetta");
     await controllaAccessibilita(page, "editor");
   });
 
   await passo("guadagno stimato dal costo dei materiali, visibile solo all'artigiano", async () => {
     const materiale = page.locator(".riga", { has: page.locator('[data-r="costo"]') }).first();
+    await apriDettagliRiga(materiale);
     await materiale.locator('[data-r="costo"]').fill("52");
     await page.waitForSelector("#margine");
     assert.match(await page.textContent("#margine"), /€ 168,00/);
@@ -265,9 +304,12 @@ try {
     await ultima.locator('[data-r="descrizione"]').fill("Sostituzione sifone");
     await ultima.locator('[data-r="prezzo"]').fill("45");
     await page.waitForFunction(() => document.querySelector("#tot-valore").textContent === "€ 291,50");
+    await apriDettagliRiga(ultima);
     await ultima.locator('[data-action="opzionale"]').click();
     await page.waitForFunction(() => document.querySelector("#tot-valore").textContent === "€ 242,00");
-    assert.match(await page.textContent("#riepilogo"), /1 voce facoltativa/);
+    assert.match(await page.textContent("#riepilogo"), /1 extra proposto/);
+    // la voce resta aperta anche dopo il ridisegno, e sulla riga si vede che è un extra
+    assert.match(await page.locator(".riga").last().textContent(), /Extra a scelta/);
     await page.screenshot({ path: path.join(tmp, "editor.png") });
   });
 
@@ -308,12 +350,18 @@ try {
     assert.match(testo, /voce facoltativa/);
     linkAccettazione = testo.match(/https?:\/\/\S+/)[0];
     assert.ok(linkAccettazione.startsWith(`${BASE}/accetta.html#z`));
+    await controllaAccessibilita(page, "foglio di invio");
+    // dal cliente si può anche farlo firmare subito: senza Pro la prima volta è gratis
+    assert.match(await page.textContent(".invio-tavolo"), /Fallo firmare qui[\s\S]*La prima volta è gratis/);
+    await apri(page, ".altri-modi");
     await page.click('[data-action="invio-copia-link"]');
-    await page.waitForSelector("text=Messaggio con link copiato");
+    await page.waitForSelector("text=Messaggio copiato");
     const appunti = await page.evaluate(() => navigator.clipboard.readText());
     assert.ok(appunti.includes(linkAccettazione));
-    await page.keyboard.press("Escape");
-    await page.waitForFunction(() => document.querySelector('[data-campo="stato"]').value === "inviato");
+    await page.waitForSelector("#foglio", { state: "detached" });
+    await page.waitForFunction(() => /In attesa/.test(document.querySelector(".topbar .stato-btn").textContent));
+    // finché il cliente non risponde, l'app chiede se ha accettato
+    await page.waitForSelector("text=Giulia Bianchi ha accettato?");
   });
 
   await passo("cliente (altro telefono): vede il preventivo, aggiunge la facoltativa, firma", async () => {
@@ -330,16 +378,25 @@ try {
     await c.waitForSelector("#acc-firma");
     // senza firma e senza spunta non si può confermare
     await c.click('[data-azione="conferma"]');
-    await c.waitForSelector("text=Firma nel riquadro");
+    await c.waitForSelector("text=Firmi nel riquadro bianco con il dito");
     await firma(c, "#acc-firma");
     await c.click('[data-azione="conferma"]');
-    await c.waitForSelector("text=Spunta la casella");
+    await c.waitForSelector("text=Tocchi la casella per confermare");
     await c.check("#acc-ok");
     await c.click('[data-azione="conferma"]');
-    await c.waitForSelector("text=Preventivo accettato");
-    assert.match(await c.textContent(".cp-successo"), /€ 291,50/);
+    // prima di tutto la conferma da mandare: finché non parte, l'artigiano non sa niente
+    await c.waitForSelector("text=Ha firmato. Ora invii la conferma");
+    const daInviare = await c.textContent(".cp-successo");
+    assert.match(daInviare, /€ 291,50/);
+    assert.match(daInviare, /Acconto alla firma\s*€ 87,45/);
+    assert.doesNotMatch(daInviare, /IT60/, "l'IBAN arriva dopo la conferma");
+    await controllaAccessibilita(c, "conferma da inviare");
+    const [wa] = await Promise.all([c.waitForEvent("popup"), c.click("#cp-invia-wa")]);
+    await wa.close();
+    await c.waitForSelector("text=Conferma inviata");
+    await c.waitForSelector(".cp-inviata .timbro");
     const successo = await c.textContent(".cp-successo");
-    assert.match(successo, /Acconto: € 87,45/);
+    assert.match(successo, /Ora può versare l'acconto di € 87,45/);
     assert.match(successo, /IT60 X054 2811 1010 0000 0123 456/);
     assert.equal(
       await c.getAttribute("text=Paga online >> xpath=ancestor-or-self::a", "href"),
@@ -365,19 +422,24 @@ try {
     assert.ok(t.includes("Firmato da Giulia Bianchi online"), t);
     assert.ok(immaginiPdf(file) >= 1, "manca l'immagine della firma");
     await c.reload();
-    await c.waitForSelector("text=Preventivo accettato");
+    await c.waitForSelector("text=Conferma inviata");
   });
 
   await passo("artigiano: riceve la conferma, verifica l'impronta e la registra", async () => {
     await page.goto(linkConferma);
-    await page.waitForSelector("text=Giulia Bianchi ha accettato");
+    // (l'editor dice "Giulia Bianchi ha accettato?": si aspetta la pagina della conferma vera)
+    await page.waitForSelector('[data-action="registra-accettazione"]');
+    assert.match(await page.textContent("main"), /Giulia Bianchi ha accettato/);
     assert.match(await page.textContent("main"), /esattamente/);
     assert.match(await page.textContent("main"), /Sostituzione sifone/);
     assert.match(await page.textContent("main"), /€ 291,50/);
     await page.click('[data-action="registra-accettazione"]');
-    await page.waitForSelector("text=Accettato online");
-    assert.equal(await page.inputValue('[data-campo="stato"]'), "accettato");
-    assert.equal(await page.textContent("#tot-valore"), "€ 291,50");
+    await chiudiFesta(page, "Giulia Bianchi");
+    await page.waitForSelector("text=Firmato online da Giulia Bianchi");
+    assert.match(await statoMostrato(page), /Accettato/);
+    assert.match(await page.textContent("#riepilogo"), /€ 291,50/);
+    // firmato: voci e prezzi bloccati finché non si sceglie di modificarlo
+    assert.equal(await page.locator("fieldset.blocco-modifica").evaluate((el) => el.disabled), true);
     const t = testoPdf(await scaricaPdfDalMenu("p1-online.pdf"));
     assert.ok(t.includes("Firmato da Giulia Bianchi online"));
     assert.ok(!t.includes("VOCI FACOLTATIVE"), "la facoltativa scelta ora è inclusa");
@@ -388,19 +450,19 @@ try {
 
   await passo("incassi: acconto in attesa, QR del bonifico sul PDF e sulla pagina del cliente", async () => {
     await page.goto(`${BASE}/app.html#/`);
-    await page.waitForSelector("#da-incassare");
-    const card = await page.textContent("#da-incassare");
-    assert.match(card, /Giulia Bianchi · € 291,50/);
-    assert.match(card, /Acconto di € 87,45 entro il/);
-    await page.click("#da-incassare a.ricontatto");
+    await page.waitForSelector("#da-fare");
+    const card = await page.textContent("#da-fare");
+    assert.match(card, /Acconto di Giulia Bianchi: € 87,45/);
+    assert.match(card, /Da ricevere entro il/);
+    await page.locator(".voce-lista", { hasText: "Giulia Bianchi" }).click();
     await page.waitForSelector("#sezione-incassi:not([hidden])");
     idP1 = page.url().match(/#\/p\/([^?]+)/)[1];
-    assert.match(await page.textContent("#sezione-incassi"), /Attesa acconto/);
+    assert.match(await page.textContent("#sezione-incassi"), /Aspetti l'acconto/);
     const t = testoPdf(await scaricaPdfDalMenu("p1-qr.pdf"));
     assert.ok(/con il QR/.test(t), `manca il QR nel PDF:\n${t}`);
     const c = cliente.page;
     await c.goto(linkAccettazione);
-    await c.waitForSelector("text=Preventivo accettato");
+    await c.waitForSelector("text=Conferma inviata");
     assert.equal(await c.locator(".qr svg").count(), 1, "QR SEPA per l'acconto");
     assert.match(await c.textContent(".cp-successo"), /Acconto preventivo n\. /);
   });
@@ -436,11 +498,17 @@ try {
 
   await passo("incassi: fine lavori, saldo scaduto, sollecito a tono crescente con link di pagamento", async () => {
     await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
-    await page.waitForSelector('[data-inc="fineLavori"]');
+    await page.waitForSelector("#sezione-incassi details.date-incasso");
+    await apri(page, "#sezione-incassi details.date-incasso");
     await page.fill('[data-inc="fineLavori"]', isoTra(-45));
     await page.locator('[data-inc="fineLavori"]').blur();
     await page.waitForSelector("#sezione-incassi .badge.scaduto");
-    assert.match(await page.textContent("#sezione-incassi"), /€ 204,05 scaduti/);
+    assert.match(await page.textContent("#sezione-incassi"), /€ 204,05 in ritardo/);
+    // la home mette chi deve pagare in cima, con il pulsante per sollecitarlo
+    await page.goto(`${BASE}/app.html#/`);
+    await page.waitForSelector("text=Giulia Bianchi ti deve € 204,05");
+    await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await page.waitForSelector('[data-action="sollecito"]');
     await controllaAccessibilita(page, "incassi");
     await page.click('[data-action="sollecito"]');
     await page.waitForSelector("#sol-testo");
@@ -464,9 +532,9 @@ try {
     );
     await page.click("#sol-wa");
     await page.waitForFunction(() =>
-      /Solleciti: .*promemoria cortese/.test(document.querySelector("#sezione-incassi").textContent),
+      /Solleciti mandati: .*promemoria cortese/.test(document.querySelector("#sezione-incassi").textContent),
     );
-    assert.match(await page.textContent('[data-action="sollecito"]'), /Sollecita: sollecito/);
+    assert.match(await page.textContent('[data-action="sollecito"]'), /Manda il sollecito/);
   });
 
   await passo("cliente: richiesta di pagamento con importo, QR del bonifico e pulsante 'Ho pagato'", async () => {
@@ -590,7 +658,9 @@ try {
     await firma(c, "#acc-firma");
     await c.check("#acc-ok");
     await c.click('[data-azione="conferma"]');
-    await c.waitForSelector("text=Preventivo accettato");
+    await c.waitForSelector("text=Ha firmato. Ora invii la conferma");
+    await c.click('[data-azione="gia-inviata"]');
+    await c.waitForSelector("text=Conferma inviata");
     assert.equal(await c.evaluate(() => window.__xss), undefined, "codice iniettato eseguito!");
     assert.equal(await c.locator('a[href^="javascript"]').count(), 0);
     assert.equal(await c.locator("text=Paga online").count(), 0, "un link di pagamento non https non va mostrato");
@@ -616,13 +686,15 @@ try {
     };
     await c.goto(`${BASE}/accetta.html#${await comprimi(JSON.stringify(scaduto))}`);
     await c.waitForSelector("text=Scaduto il");
-    assert.equal(await c.isDisabled('[data-azione="accetta"]'), true);
+    // scaduto: niente firma, solo la richiesta di un preventivo aggiornato
+    assert.equal(await c.locator('[data-azione="accetta"]').count(), 0);
+    await c.waitForSelector("text=un preventivo aggiornato");
   });
 
   await passo("limite piano gratuito: al 4° preventivo compare il paywall", async () => {
     for (let n = 2; n <= 4; n++) {
       await page.goto(`${BASE}/app.html#/nuovo`);
-      await page.waitForSelector(`text=N. ${num(n)}`);
+      await page.waitForSelector(`text=N° ${num(n)}`);
       creati++;
       await page.click('[data-action="aggiungi-riga"]');
       await page.locator('[data-r="descrizione"]').last().fill(`Lavoro ${n}`);
@@ -639,17 +711,18 @@ try {
     // Riesportare un preventivo già esportato resta consentito.
     await page.goto(`${BASE}/app.html#/`);
     await page.locator(".voce-lista", { hasText: num(2) }).click();
-    await page.waitForSelector(`text=N. ${num(2)}`);
+    await page.waitForSelector(`text=N° ${num(2)}`);
     await scaricaPdfDalMenu("p2-bis.pdf");
   });
 
   await passo("da ricontattare: promemoria con messaggio WhatsApp pronto", async () => {
     await page.goto(`${BASE}/app.html#/`);
     await page.locator(".voce-lista", { hasText: num(3) }).click();
-    await page.waitForSelector(`text=N. ${num(3)}`);
+    await page.waitForSelector(`text=N° ${num(3)}`);
     await page.fill('[data-campo="cliente.nome"]', "Luca Verdi");
     await page.fill('[data-campo="cliente.telefono"]', "3201112222");
-    await page.selectOption('[data-campo="stato"]', "inviato");
+    await impostaStato(page, "inviato");
+    await page.waitForSelector("text=Luca Verdi ha accettato?");
     await page.click(".back");
     await page.waitForSelector(".voce-lista");
     // simula un invio di 5 giorni fa
@@ -671,7 +744,7 @@ try {
       num(3),
     );
     await page.reload();
-    await page.waitForSelector("text=Da ricontattare");
+    await page.waitForSelector("text=Luca Verdi non ha ancora risposto");
     await page.evaluate(() => {
       window.open = (u) => {
         window.__aperto = u;
@@ -682,7 +755,7 @@ try {
     const aperto = await page.evaluate(() => window.__aperto);
     assert.match(aperto, /^https:\/\/wa\.me\/393201112222\?text=/);
     assert.match(decodeURIComponent(aperto), /Ha avuto modo di vederlo/);
-    await page.waitForFunction(() => !document.body.textContent.includes("Da ricontattare"));
+    await page.waitForFunction(() => !document.body.textContent.includes("Luca Verdi non ha ancora risposto"));
   });
 
   await passo("attivazione licenza: codice errato rifiutato, codice valido attiva Pro", async () => {
@@ -695,37 +768,83 @@ try {
     await page.waitForSelector("text=Pro attivo");
   });
 
-  await passo("Pro: firma sul posto, foto del lavoro nel PDF, niente dicitura gratuita", async () => {
+  await passo("Pro: firma al tavolo sul telefono dell'impresa, QR dell'acconto, foto nel PDF", async () => {
+    // lo schermo deve restare acceso mentre il cliente legge
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "wakeLock", {
+        configurable: true,
+        value: { request: async (t) => ((window.__schermo = t), { release: async () => {} }) },
+      });
+    });
     await page.goto(`${BASE}/app.html#/`);
     await page.locator(".voce-lista", { hasText: num(2) }).click();
-    await page.waitForSelector(`text=N. ${num(2)}`);
+    await page.waitForSelector(`text=N° ${num(2)}`);
+    await apriAltreOpzioni();
     await page.setInputFiles("#input-foto", [
       path.join(pubblica, "img", "icona-512.png"),
       path.join(pubblica, "img", "og.png"),
     ]);
     await page.waitForFunction(() => document.querySelectorAll(".foto-griglia figure").length === 2);
-    await page.click('[data-action="firma"]');
-    await firma(page, "#canvas-firma");
-    await page.click('[data-action="firma-conferma"]');
-    await page.waitForSelector("text=Firmato da");
-    assert.equal(await page.inputValue('[data-campo="stato"]'), "accettato");
+    await page.click('[data-action="invia"]');
+    await page.waitForSelector(".invio-tavolo");
+    await attendiAnimazioni(page);
+    await Promise.all([page.waitForURL(/accetta\.html\?presenta=1#z/), page.click(".invio-tavolo")]);
+    // la pagina vera del cliente, senza i passaggi che servono solo sul suo telefono
+    await page.waitForSelector('[data-azione="esci-presenta"]');
+    await page.waitForSelector("text=Ridia il telefono");
+    assert.equal(await page.locator("#cp-contatti, .cp-contatti").count(), 0);
+    assert.equal(await page.evaluate(() => window.__schermo), "screen");
+    await controllaAccessibilita(page, "firma al tavolo");
+    await page.click('[data-azione="accetta"]');
+    await page.fill("#acc-nome", "Giulia Bianchi");
+    await firma(page, "#acc-firma");
+    await page.check("#acc-ok");
+    await page.click('[data-azione="conferma"]');
+    await page.waitForSelector("text=Fatto, grazie Giulia Bianchi!");
+    await page.waitForSelector("text=Ora ridia il telefono");
+    // il telefono è dell'impresa: questo browser non resta segnato come "ha già accettato"
+    assert.deepEqual(
+      await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("pl-accettato-"))),
+      [],
+    );
+    await page.click('[data-azione="registra-qui"]');
+    await page.waitForSelector('[data-action="registra-accettazione"]');
+    assert.match(await page.textContent("main"), /esattamente/);
+    await page.click('[data-action="registra-accettazione"]');
+    await page.waitForSelector("text=Giulia Bianchi ha firmato!");
+    await attendiAnimazioni(page);
+    // è lì davanti: può pagare l'acconto subito inquadrando il QR
+    await page.click('.festa [data-action="mostra-qr"]');
+    await page.waitForSelector("text=Fai inquadrare il QR al cliente");
+    assert.equal(await page.locator(".qr-grande svg").count(), 1);
+    await attendiAnimazioni(page);
+    await page.click('#foglio [data-action="chiudi-foglio"]');
+    await page.waitForSelector("#foglio", { state: "detached" });
+    await page.waitForSelector("text=Firmato sul posto da Giulia Bianchi");
+    assert.match(await statoMostrato(page), /Accettato/);
     const pdf = await scaricaPdfDalMenu("p2-pro.pdf");
     const t = testoPdf(pdf);
     assert.ok(!t.includes("Creato gratis"), "il PDF Pro non deve avere la dicitura gratuita");
     assert.ok(t.includes("DOCUMENTAZIONE FOTOGRAFICA"));
-    assert.ok(t.includes("su dispositivo"));
+    assert.ok(t.includes("sul posto"), t);
     assert.ok(immaginiPdf(pdf) >= 3, "firma + 2 foto");
-    // togli una foto
+    // firmato: per togliere una foto bisogna sbloccarlo apposta, e si può annullare
+    await page.click('[data-action="sblocca"]');
+    await apriAltreOpzioni();
     await page.click('[data-action="togli-foto"] >> nth=0');
     await page.waitForFunction(() => document.querySelectorAll(".foto-griglia figure").length === 1);
+    await page.click("#toast button");
+    await page.waitForFunction(() => document.querySelectorAll(".foto-griglia figure").length === 2);
   });
 
   await passo("Pro: lettera di messa in mora e fascicolo del credito in PDF", async () => {
     await page.goto(`${BASE}/app.html#/impostazioni`);
+    await apriSezione(page, "crediti");
     await page.fill('[data-az="tassoMoraPrivati"]', "10,15%");
     await page.locator('[data-az="tassoMoraPrivati"]').blur();
     await page.waitForTimeout(400);
     await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await apri(page, "#sezione-incassi details.inc-recupero");
     await page.waitForSelector('[data-action="pdf-diffida"]');
     const t1 = testoPdf(await scarica(page, '[data-action="pdf-diffida"]', "messa-in-mora.pdf"));
     // generarla non vuol dire averla spedita: si registra solo confermando
@@ -773,7 +892,7 @@ try {
 
   await passo("calcolatore metri quadri per stanza", async () => {
     await page.goto(`${BASE}/app.html#/nuovo`);
-    await page.waitForSelector(`text=N. ${num(5)}`);
+    await page.waitForSelector(`text=N° ${num(5)}`);
     creati++;
     await page.click('[data-action="aggiungi-riga"]');
     await page.locator('[data-r="descrizione"]').last().fill("Tinteggiatura pareti e soffitto");
@@ -796,10 +915,11 @@ try {
   await passo("regime forfettario: niente IVA, dicitura di legge e bollo", async () => {
     await page.goto(`${BASE}/app.html#/impostazioni`);
     await controllaAccessibilita(page, "impostazioni");
+    await apriSezione(page, "fisco");
     await page.selectOption('[data-az="regime"]', "forfettario");
     await page.waitForSelector('[data-az="addebitaBollo"]');
     await page.goto(`${BASE}/app.html#/nuovo`);
-    await page.waitForSelector(`text=N. ${num(6)}`);
+    await page.waitForSelector(`text=N° ${num(6)}`);
     creati++;
     await page.click('[data-action="aggiungi-riga"]');
     await page.locator('[data-r="descrizione"]').last().fill("Consulenza tecnica");
@@ -813,7 +933,7 @@ try {
 
   await passo("molte voci: il PDF va su più pagine con numerazione", async () => {
     await page.goto(`${BASE}/app.html#/nuovo`);
-    await page.waitForSelector(`text=N. ${num(7)}`);
+    await page.waitForSelector(`text=N° ${num(7)}`);
     creati++;
     for (let k = 0; k < 40; k++) await page.click('[data-action="aggiungi-riga"]');
     const descrizioni = page.locator('[data-r="descrizione"]');
@@ -822,7 +942,15 @@ try {
         .nth(k)
         .fill(`Voce numero ${k + 1} con una descrizione abbastanza lunga da andare a capo nella tabella`);
     await page.waitForTimeout(600);
-    const t = testoPdf(await scaricaPdfDalMenu("p7-lungo.pdf"));
+    // voci senza prezzo: l'app chiede prima di farle uscire a 0 €
+    await page.click('[data-action="menu-preventivo"]');
+    await page.click('[data-action="scarica-pdf"]');
+    await page.waitForSelector("text=40 voci sono senza prezzo");
+    await attendiAnimazioni(page);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.click('[data-esito="si"]')]);
+    const file = path.join(tmp, "p7-lungo.pdf");
+    await download.saveAs(file);
+    const t = testoPdf(file);
     assert.ok(t.includes("Pagina 2 di"), "il PDF lungo deve avere più pagine");
     assert.ok(t.includes("Voce numero 40"));
   });
@@ -847,7 +975,7 @@ try {
     await page.reload();
     await page.waitForSelector(".voce-lista");
     await page.locator(".voce-lista", { hasText: "Giulia Bianchi" }).click();
-    await page.waitForSelector("text=Accettato online");
+    await page.waitForSelector("text=Firmato online da");
     const t = testoPdf(await scaricaPdfDalMenu("offline.pdf"));
     assert.ok(t.includes("€ 291,50"), "PDF offline non corretto");
     await context.setOffline(false);
@@ -855,6 +983,7 @@ try {
 
   await passo("backup esportabile senza licenza", async () => {
     await page.goto(`${BASE}/app.html#/impostazioni`);
+    await apriSezione(page, "dati");
     const [download] = await Promise.all([page.waitForEvent("download"), page.click('[data-action="backup-esporta"]')]);
     const file = path.join(tmp, "backup.json");
     await download.saveAs(file);
@@ -867,7 +996,7 @@ try {
     await page.goto(`${BASE}/app.html#/impostazioni`);
     await page.setInputFiles("#file-backup", path.join(tmp, "backup.json"));
     await page.click('[data-esito="si"]');
-    await page.waitForSelector(`text=Backup importato: ${creati} preventivi`);
+    await page.waitForSelector(`text=Copia ripristinata: ${creati} preventivi`);
     await page.waitForSelector("#lista-prev");
     assert.equal(await page.locator(".voce-lista").count(), creati);
   });
@@ -904,7 +1033,7 @@ try {
 
   await passo("link modello dalle pagine SEO apre un preventivo precompilato", async () => {
     await page.goto(`${BASE}/app.html?mestiere=elettricista&modello=1`);
-    await page.waitForSelector(`text=N. ${num(8)}`);
+    await page.waitForSelector(`text=N° ${num(8)}`);
     assert.equal(await page.inputValue('[data-campo="oggetto"]'), "Adeguamento impianto elettrico appartamento");
     assert.equal(await page.locator(".riga").count(), 5);
   });
@@ -919,6 +1048,8 @@ try {
 
   await passo("date proposte: il cliente sceglie quando iniziare firmando; agenda e calendario", async () => {
     await page.goto(`${BASE}/app.html#/nuovo`);
+    await page.waitForSelector("#altre-opzioni");
+    await apriAltreOpzioni();
     await page.waitForSelector('[data-action="data-aggiungi"]');
     creati++;
     await page.fill('[data-campo="cliente.nome"]', "Paolo Conti");
@@ -941,27 +1072,38 @@ try {
     await page.keyboard.press("Escape");
     const c = cliente.page;
     await c.goto(link);
-    await c.waitForSelector("text=Quando iniziamo?");
-    await c.click('[data-azione="accetta"]');
-    await c.waitForSelector('input[name="acc-data"]');
+    await c.waitForSelector("text=Quando preferisce iniziare?");
+    // la data si sceglie sulla pagina, prima di firmare; nel foglio della firma la si ritrova
     await c.check('input[name="acc-data"][value="1"]');
+    await c.click('[data-azione="accetta"]');
+    await c.waitForSelector(".cp-data-scelta");
+    assert.match(await c.textContent(".cp-data-scelta"), /pomeriggio/);
     await firma(c, "#acc-firma");
     await c.fill("#acc-nome", "Paolo Conti");
     await c.check("#acc-ok");
     await c.click('[data-azione="conferma"]');
-    await c.waitForSelector("text=Inizio lavori");
+    await c.waitForSelector("text=Ha firmato. Ora invii la conferma");
     const conferma = new URL(await c.getAttribute("#cp-invia-wa", "href")).searchParams.get("text");
     assert.match(conferma, /Per iniziare scelgo: .*pomeriggio/);
+    await c.click('[data-azione="gia-inviata"]');
+    await c.waitForSelector('[data-azione="ics"]');
     const ics = readFileSync(await scarica(c, '[data-azione="ics"]', "lavori.ics"), "utf8");
     assert.match(ics, new RegExp(`DTSTART:${d2.replace(/-/g, "")}T140000`));
     assert.match(ics, /BEGIN:VEVENT[\s\S]*END:VEVENT/);
     await page.goto(conferma.match(/https?:\/\/\S+/)[0]);
     await page.click('[data-action="registra-accettazione"]');
+    await chiudiFesta(page, "Paolo Conti");
+    // la data scelta si vede subito, in alto, anche se il resto del preventivo è bloccato
+    assert.match(await page.textContent(".banner.ok"), /Inizio: .*pomeriggio/);
+    await apriAltreOpzioni();
     await page.waitForSelector("text=Scelta dal cliente accettando online");
-    const icsApp = readFileSync(await scarica(page, '[data-action="appuntamento-ics"]', "lavoro-app.ics"), "utf8");
+    const icsApp = readFileSync(
+      await scarica(page, '.banner.ok [data-action="appuntamento-ics"]', "lavoro-app.ics"),
+      "utf8",
+    );
     assert.match(icsApp, /\r\nSUMMARY:Paolo Conti\r\n/);
     await page.goto(`${BASE}/app.html#/`);
-    await page.waitForSelector("text=Prossimi lavori");
+    await page.waitForSelector("text=In agenda");
     assert.match(await page.textContent("main"), /Paolo Conti/);
   });
 
@@ -1010,6 +1152,8 @@ try {
     await altra.click('[data-action="avviso-registra"]');
     await altra.waitForSelector("#sezione-incassi");
     // la prima finestra modifica il preventivo e poi torna indietro: deve unire, non sovrascrivere
+    await page.click('[data-action="sblocca"]');
+    await apriAltreOpzioni();
     await page.fill('[data-campo="tempi"]', "Tre giorni lavorativi");
     await page.click(".back");
     await page.waitForSelector(".voce-lista");
@@ -1024,6 +1168,8 @@ try {
     assert.equal(await page.inputValue('[data-campo="tempi"]'), "Tre giorni lavorativi");
     // Un pagamento eliminato in una finestra non deve ricomparire quando l'altra salva la sua copia
     const togli = '[aria-label="Elimina pagamento di € 10,00"]';
+    await page.click('[data-action="sblocca"]');
+    await apriAltreOpzioni();
     await page.fill('[data-campo="tempi"]', "Quattro giorni lavorativi");
     await altra.reload();
     await altra.waitForSelector(togli);

@@ -209,20 +209,34 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   doc.setTextColor(...accento);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(20);
-  doc.text("PREVENTIVO", W - MARGINE, y + 6, { align: "right" });
+  const variante = prev.variante && prev.variante.numero ? prev.variante : null;
+  doc.text(variante ? "LAVORI EXTRA" : "PREVENTIVO", W - MARGINE, y + 6, { align: "right" });
   doc.setFontSize(9.5);
   doc.setTextColor(...NERO);
   doc.text(`N. ${prev.numero}`, W - MARGINE, y + 12, { align: "right" });
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...GRIGIO);
   doc.text(`Data: ${formatData(prev.data)}`, W - MARGINE, y + 16.5, { align: "right" });
+  let yDestra = y + 16.5;
   if (Number(prev.validitaGiorni) > 0) {
-    doc.text(`Valido fino al: ${formatData(aggiungiGiorni(prev.data, prev.validitaGiorni))}`, W - MARGINE, y + 21, {
+    yDestra += 4.5;
+    doc.text(`Valido fino al: ${formatData(aggiungiGiorni(prev.data, prev.validitaGiorni))}`, W - MARGINE, yDestra, {
       align: "right",
     });
   }
+  if (variante) {
+    yDestra += 4.5;
+    doc.setTextColor(...NERO);
+    doc.text(
+      `Variante al preventivo n. ${variante.numero}${variante.data ? ` del ${formatData(variante.data)}` : ""}`,
+      W - MARGINE,
+      yDestra,
+      { align: "right" },
+    );
+    doc.setTextColor(...GRIGIO);
+  }
 
-  y = Math.max(yImpresa, y + 25) + 2;
+  y = Math.max(yImpresa, y + 25, yDestra + 4) + 2;
   doc.setDrawColor(...accento);
   doc.setLineWidth(0.6);
   doc.line(MARGINE, y, W - MARGINE, y);
@@ -592,7 +606,7 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
     doc.setTextColor(...GRIGIO);
     doc.text(
       doc.splitTextToSize(
-        `Firmato da ${prev.firma.nome || c.nome || "il cliente"} ${prev.firma.online ? "online (accettazione via link)" : "su dispositivo"}`,
+        `Firmato da ${prev.firma.nome || c.nome || "il cliente"} ${prev.firma.sulPosto ? "sul posto, sul dispositivo dell'impresa, dopo aver visto il preventivo" : prev.firma.online ? "online (accettazione via link)" : "su dispositivo"}`,
         W - MARGINE - xFirma,
       ),
       xFirma,
@@ -887,11 +901,13 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   };
 
   const iva = totali.forfettario ? "" : " IVA inclusa";
-  const modo = prev.accettazioneOnline
-    ? "online, con firma apposta tramite il link ricevuto"
-    : prev.firma && prev.firma.img
-      ? "sottoscrivendolo"
-      : "";
+  const modo = prev.firma?.sulPosto
+    ? "firmandolo di persona"
+    : prev.accettazioneOnline
+      ? "online, con firma apposta tramite il link ricevuto"
+      : prev.firma && prev.firma.img
+        ? "sottoscrivendolo"
+        : "";
   // Si chiede solo ciò che è davvero scaduto, quota per quota con la sua data.
   const richiesta = daChiedere(prev, stato);
   const dovuto = stato.importoScaduto;

@@ -546,3 +546,12 @@ test("promemoria nel calendario: preavviso scelto tra quelli ammessi", () => {
   assert.match(strano, /TRIGGER:-PT12H/);
   assert.doesNotMatch(strano, /ATTENDEE/);
 });
+
+test("promemoria settimanale nel calendario: ripetizione solo tra quelle ammesse", () => {
+  const base = { id: "conti", titolo: "Conti", data: "2026-10-09", fascia: "promemoria" };
+  const ics = creaIcs({ ...base, ripeti: "settimanale" });
+  assert.match(ics, /RRULE:FREQ=WEEKLY/);
+  assert.match(ics, /DTSTART:20261009T173000/);
+  assert.doesNotMatch(creaIcs(base), /RRULE/);
+  assert.doesNotMatch(creaIcs({ ...base, ripeti: "FREQ=DAILY\r\nATTENDEE:x" }), /RRULE|ATTENDEE/);
+});

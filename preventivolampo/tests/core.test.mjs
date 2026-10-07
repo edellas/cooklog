@@ -15,6 +15,8 @@ import {
   registraEsportazione,
   telefonoWhatsApp,
   testoWhatsApp,
+  preventivoVuoto,
+  STATI,
 } from "../public/js/core.js";
 import { MESTIERI, vociListino } from "../public/js/mestieri.js";
 
@@ -227,4 +229,16 @@ test("WhatsApp anche verso i numeri fissi italiani (WhatsApp Business)", () => {
   assert.equal(telefonoWhatsApp("035 123456"), "39035123456");
   assert.equal(telefonoWhatsApp("02 1234 5678"), "390212345678");
   assert.equal(telefonoWhatsApp("+39 035 123456"), "39035123456");
+});
+
+test("nuovo preventivo: anticipo predefinito dalle impostazioni, entro 0-100%", () => {
+  const num = { numero: "2026-001", anno: 2026, progressivo: 1 };
+  assert.deepEqual(preventivoVuoto({ accontoDefault: 30 }, num).acconto, { tipo: "perc", valore: 30 });
+  assert.deepEqual(preventivoVuoto({}, num).acconto, { tipo: "perc", valore: 0 });
+  assert.equal(preventivoVuoto({ accontoDefault: 400 }, num).acconto.valore, 100);
+  assert.equal(preventivoVuoto({ accontoDefault: "x" }, num).acconto.valore, 0);
+  assert.equal(preventivoVuoto({}, num).variante, null);
+  // gli stati si leggono come li dice l'artigiano
+  assert.equal(STATI.bozza, "Da inviare");
+  assert.equal(STATI.inviato, "In attesa");
 });

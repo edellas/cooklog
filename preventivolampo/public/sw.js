@@ -1,12 +1,12 @@
 // Service worker: l'app funziona anche senza connessione (cantieri, cantine, zone senza campo).
 // Cambia VERSIONE a ogni pubblicazione importante per forzare l'aggiornamento della cache.
-const VERSIONE = "pl-v4";
+const VERSIONE = "pl-v5";
 const FILE_APP = [
   "app.html",
   "accetta.html",
   "css/app.css",
-  "fonts/inter-latin.woff2",
-  "fonts/inter-latin-ext.woff2",
+  "fonts/archivo-latin.woff2",
+  "fonts/archivo-latin-ext.woff2",
   "js/app.js",
   "js/accetta.js",
   "js/core.js",

@@ -57,9 +57,9 @@ const esc = (v) =>
 // ------------------------------------------------------------------
 const stile = document.createElement("style");
 stile.textContent = `
-:root { --plb-bg: #0f172a; --plb-fg: #f1f5f9; --plb-linea: rgba(241, 245, 249, 0.28); --plb-hover: rgba(241, 245, 249, 0.12); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --plb-bg: #1c2433; } }
-:root[data-theme="dark"] { --plb-bg: #1c2433; }
+:root { --plb-bg: #1a1d21; --plb-fg: #f4f2ed; --plb-linea: rgba(241, 245, 249, 0.28); --plb-hover: rgba(241, 245, 249, 0.12); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --plb-bg: #262a2f; } }
+:root[data-theme="dark"] { --plb-bg: #262a2f; }
 .pl-barra { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 16px; background: var(--plb-bg); color: var(--plb-fg); font-size: 12.5px; font-weight: 600; }
 .pl-barra b { flex: none; letter-spacing: 0.07em; text-transform: uppercase; font-size: 10.5px; padding: 3px 7px; border-radius: 99px; background: var(--amber); color: #111; }
 .pl-barra span { flex: 1; min-width: 0; opacity: 0.8; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -76,6 +76,8 @@ stile.textContent = `
 .pl-visore .messaggio { max-width: 560px; width: 100%; white-space: pre-line; overflow-wrap: anywhere; }
 .pl-visore .btn { max-width: 560px; width: 100%; justify-content: center; text-align: center; }
 .pl-entra { margin-bottom: 6px; }
+/* Nell'anteprima "Prova come il cliente" fa già vedere la pagina del cliente. */
+[data-action="guarda-cliente"] { display: none !important; }
 .pl-qr-avviso { margin-top: 6px; font-size: 12px; font-weight: 650; color: var(--warn); text-align: center; }
 `;
 document.head.appendChild(stile);
@@ -105,7 +107,8 @@ const AZIENDA_ESEMPIO = {
   tassoMoraPrivati: "",
   tassoMoraImprese: "",
   linkRecensioni: "https://example.com/recensioni",
-  pagamento: "Acconto del 30% all'accettazione, saldo a fine lavori tramite bonifico bancario.",
+  accontoDefault: 30,
+  pagamento: "Bonifico bancario, saldo entro 15 giorni dalla fine dei lavori.",
   condizioni:
     "Il preventivo comprende esclusivamente le voci indicate. Eventuali lavori aggiuntivi o imprevisti saranno concordati e preventivati a parte.",
 };
@@ -316,6 +319,47 @@ function creaEsempio() {
         },
       ],
     };
+  }
+  aggiungi(
+    12,
+    { nome: "Elena Moretti", indirizzo: "Via Tasso 21", citta: "24121 Bergamo (BG)", telefono: "347 1115555" },
+    "Sostituzione sanitari e rubinetteria bagno",
+    [
+      ["Diritto di chiamata / uscita", 1],
+      ["Manodopera idraulico", 10],
+      ["Sostituzione miscelatore lavabo (manodopera)", 1],
+      ["Miscelatore lavabo monocomando", 1],
+    ],
+    {
+      stato: "accettato",
+      inviatoIl: ora - 11 * giorno,
+      firma: firma("Elena Moretti", 10, 9, true),
+      accettazioneOnline: { il: ora - 10 * giorno, hash: "esempio-2", facoltativeAggiunte: [] },
+      appuntamento: { data: isoTra(-2), fascia: "mattina", da: "cliente", il: ora - 10 * giorno },
+    },
+  );
+  {
+    // Lavori iniziati due giorni fa: è saltato fuori un tubo da cambiare, mandati da firmare oggi.
+    const orig = preventivi.at(-1);
+    orig.incasso = { pagamenti: [pagamento(orig, 0.3, 9)] };
+    aggiungi(
+      0,
+      { nome: "Elena Moretti", indirizzo: "Via Tasso 21", citta: "24121 Bergamo (BG)", telefono: "347 1115555" },
+      "Lavori extra: sostituzione tratto di tubo di scarico",
+      [
+        ["Manodopera idraulico", 3],
+        ["Materiale di consumo (raccordi, guarnizioni, teflon)", 2],
+      ],
+      {
+        stato: "inviato",
+        inviatoIl: ora - 2 * 3600e3,
+        acconto: { tipo: "perc", valore: 0 },
+        clienteId: orig.clienteId,
+        variante: { di: orig.id, numero: orig.numero, data: orig.data },
+        note: `Lavori aggiuntivi al preventivo n. ${orig.numero}, già accettato: per il resto valgono le condizioni concordate.`,
+      },
+    );
+    clienti.pop(); // stesso cliente del preventivo originale
   }
   aggiungi(
     0,
@@ -531,6 +575,28 @@ function vaiA(pagina, chiave, codice) {
   if (memoria.set(chiave, codice)) location.href = pagina;
   else location.href = `${pagina}#${PERCORSI[chiave]}${codice}`;
 }
+
+// Firma al tavolo: l'app apre la pagina del cliente in modalità "presenta"; il codice passa come negli altri giri.
+window.addEventListener("pl-presenta", (e) => {
+  const codice = String(e.detail || "").split("#")[1];
+  if (!codice) return;
+  e.preventDefault();
+  vaiA("accetta.html?presenta=1", "pl-anteprima-apri", codice);
+});
+// ...e il cliente ridà il telefono: "Sono l'impresa: registra la firma" torna all'app con la conferma.
+document.addEventListener(
+  "click",
+  (e) => {
+    const a = e.target.closest?.('a[data-azione="registra-qui"]');
+    if (!a) return;
+    const codice = (a.getAttribute("href") || "").split("?d=")[1];
+    if (!codice) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    vaiA("app.html", "pl-anteprima-conferma", codice);
+  },
+  true,
+);
 
 function aggiungiPulsantiDemo() {
   const linkWa = document.querySelector('[data-action="invio-link"]');

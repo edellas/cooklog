@@ -6,15 +6,19 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://plausible.io https://cloud.umami.is; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://plausible.io https://cloud.umami.is https://api-gateway.umami.dev; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Termini e condizioni - PreventivoLampo</title>
   <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#f4f2ed" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#131518" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="img/icona.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="css/sito.css">
 </head>
 <body>
-  <header class="header"><div class="wrap"><a class="logo" href="./"><img src="img/icona.svg" alt="" width="32" height="32">PreventivoLampo</a><nav><a class="btn small primary" href="app.html">Apri l'app</a></nav></div></header>
-  <main class="articolo testo-legale">
+  <a class="salta" href="#contenuto">Vai al contenuto</a>
+  <header class="testata carta"><div class="wrap"><a class="marchio" href="./"><svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1a1d21"/><path d="M36.5 7 15 36h14.5l-4 21L49 27H34.5z" fill="#ffc21a"/></svg><span>PreventivoLampo</span></a><nav aria-label="Sezioni"><a href="app.html">Apri l'app</a></nav></div></header>
+  <main class="articolo testo-legale" id="contenuto">
     <div class="wrap stretto">
       <h1>Termini e condizioni</h1>
-      <p>Ultimo aggiornamento: ottobre 2026. Usando PreventivoLampo (il "Servizio") accetti questi termini. Il Servizio è fornito da <span data-t="nome">[Nome e Cognome / Ragione sociale]</span>, <span data-t="indirizzo">[Indirizzo]</span>, P.IVA <span data-t="piva">[Partita IVA]</span>.</p>
+      <p class="apertura">Ultimo aggiornamento: ottobre 2026. Usando PreventivoLampo (il "Servizio") accetti questi termini. Il Servizio è fornito da <span data-t="nome">[Nome e Cognome / Ragione sociale]</span>, <span data-t="indirizzo">[Indirizzo]</span>, P.IVA <span data-t="piva">[Partita IVA]</span>.</p>
 
       <h2>1. Il Servizio</h2>
       <p>PreventivoLampo è un'applicazione web per creare preventivi in PDF, inviarli e raccogliere la firma di accettazione del cliente. Il preventivo non è un documento fiscale: il Servizio non emette fatture e non trasmette documenti al Sistema di Interscambio.</p>
@@ -39,10 +43,9 @@
 
       <h2>8. Contatti</h2>
       <p>Per qualsiasi domanda: <span data-t="email">supporto@preventivolampo.it</span>.</p>
-      <div style="height:40px"></div>
     </div>
   </main>
-  <footer><div class="wrap"><span>© PreventivoLampo</span><nav><a href="./">Home</a><a href="privacy.html">Privacy</a><a href="termini.html">Termini</a></nav></div></footer>
+  <footer class="piede"><div class="wrap"><span>© <span data-config="anno">2026</span> PreventivoLampo</span><nav aria-label="Informazioni"><a href="./">Home</a><a href="modelli/">Modelli di preventivo</a><a href="privacy.html">Privacy</a><a href="termini.html">Termini</a></nav></div></footer>
   <script type="module" src="js/sito.js"></script>
 </body>
 </html>
