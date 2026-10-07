@@ -28,6 +28,7 @@ import {
   verificaImpronta,
   voceDaConferma,
   dataDaConferma,
+  giorniSaldoDi,
   urlSicuro,
   creaLinkRichiesta,
   leggiAvviso,
@@ -149,6 +150,8 @@ function incassoModificabile(prev) {
 function fissaAccordo(prev) {
   const i = incassoModificabile(prev);
   if (i.accontoPattuito == null) i.accontoPattuito = totaliDi(prev).acconto;
+  // Anche il termine del saldo resta quello firmato (quello del link, se il cliente ha firmato online).
+  if (i.giorniSaldo == null) i.giorniSaldo = prev.link?.gs ?? giorniSaldoDi(prev, state.azienda);
 }
 
 function mostraIncassi(prev) {
@@ -268,7 +271,11 @@ function unisciVersione(prev, nelDb) {
     });
     prev.incasso = {
       ...a,
-      pagamenti: unisciLista(a.pagamenti, b.pagamenti, (x) => x.id),
+      // I pagamenti eliminati in una delle due finestre non ricompaiono.
+      pagamenti: unisciLista(a.pagamenti, b.pagamenti, (x) => x.id).filter(
+        (x) => !a.pagamentiEliminati.includes(x.id) && !b.pagamentiEliminati.includes(x.id),
+      ),
+      pagamentiEliminati: [...new Set([...a.pagamentiEliminati, ...b.pagamentiEliminati])].slice(-200),
       solleciti: unisciLista(a.solleciti, b.solleciti, (x) => x.il),
       segnalazioni,
       fineLavori: a.fineLavori || b.fineLavori,
@@ -502,8 +509,7 @@ function htmlRicontatti() {
 function descriviIncasso(prev, s) {
   if (s.segnalazioniAttesa.length) return `Dice di aver pagato ${core.formatEuro(s.daVerificare)}: da verificare`;
   if (!s.accettato) return "Pagamento su un preventivo non ancora accettato";
-  if (s.fase === "scaduto")
-    return `${core.formatEuro(s.importoScaduto)} scaduti da ${s.giorniRitardo} ${s.giorniRitardo === 1 ? "giorno" : "giorni"}`;
+  if (s.fase === "scaduto") return `Scaduti ${inc.riassuntoScaduto(s)}`;
   if (s.fase === "attesa-acconto")
     return s.scadenzaAcconto
       ? `${nomeAnticipo(prev)} di ${core.formatEuro(s.prossima.importo)} entro il ${core.formatData(s.scadenzaAcconto)}`
@@ -825,6 +831,7 @@ function viewEditor(id, q = new URLSearchParams()) {
             <input data-campo="cliente.indirizzo" placeholder="Via e numero civico" value="${esc(c.indirizzo)}" aria-label="Indirizzo">
             <input data-campo="cliente.citta" placeholder="CAP, città e provincia" value="${esc(c.citta)}" aria-label="Città">
             <input data-campo="cliente.cfpiva" placeholder="Codice fiscale o Partita IVA" value="${esc(c.cfpiva)}" aria-label="Codice fiscale o partita IVA">
+            <label class="check small"><input type="checkbox" data-campo="cliente.impresa" ${inc.clienteImpresa(c) ? "checked" : ""}> <span>È un'impresa o un ente pubblico (per gli interessi di mora; condomini e privati no)</span></label>
           </div>
         </details>
       </section>
@@ -943,14 +950,19 @@ function htmlIncassi(prev) {
         <div class="row wrap" style="margin-top:8px"><button class="btn small primary" data-action="segnalazione-ok" data-rif="${esc(x.rif)}" data-il="${x.il}">${ICONE.check} È arrivato</button><button class="btn small" data-action="segnalazione-no" data-rif="${esc(x.rif)}" data-il="${x.il}">Non è arrivato</button></div></div></div>`,
       )
       .join("")}
-    ${scad ? `<div class="banner bad"><span class="ico">⏰</span><div><b>${esc(core.formatEuro(s.importoScaduto))} scaduti</b> dal ${esc(core.formatData(s.scadutoDal))} (${s.giorniRitardo} ${s.giorniRitardo === 1 ? "giorno" : "giorni"}). Manda un sollecito: il primo è gentile, poi il tono sale.</div></div>` : ""}
+    ${scad ? `<div class="banner bad"><span class="ico">⏰</span><div><b>${esc(core.formatEuro(s.importoScaduto))} scaduti</b>${esc(inc.descriviScadenza(s))}. Manda un sollecito: il primo è gentile, poi il tono sale.</div></div>` : ""}
     ${s.fase === "attesa-acconto" && s.accettato ? `<div class="banner warn"><span class="ico">🛡️</span><div>Inizia i lavori dopo aver ricevuto ${prev.caparra ? "la caparra" : "l'acconto"}: è la protezione migliore contro chi firma e poi non paga.</div></div>` : ""}
     ${!s.accettato ? `<div class="banner info"><span class="ico">ℹ️</span><div>Pagamento registrato su un preventivo non accettato: se il cliente ha accettato, registra l'accettazione o cambia lo stato in "Accettato" per seguire le scadenze.</div></div>` : ""}
     ${s.fase === "storico" ? `<div class="banner info"><span class="ico">🗂️</span><div>Questo lavoro è stato accettato prima del registro incassi: registra i pagamenti già ricevuti o la data di fine lavori e l'app seguirà le scadenze.</div></div>` : ""}
     <div class="grid2">
       <button class="btn primary" data-action="registra-pagamento">${ICONE.piu} Pagamento</button>
-      <button class="btn" data-action="mostra-qr" aria-label="Mostra il QR per pagare">${ICONE.euro} Mostra QR</button>
+      <button class="btn" data-action="mostra-qr" aria-label="Mostra il QR da far inquadrare al cliente">${ICONE.euro} Mostra QR</button>
     </div>
+    ${
+      s.accettato && s.prossima && s.prossima.data && s.prossima.data >= core.oggiISO()
+        ? `<button class="btn ghost block small" data-action="promemoria-scadenza">${ICONE.sveglia} Ricordami la scadenza del ${esc(core.formatData(s.prossima.data))} nel calendario</button>`
+        : ""
+    }
     ${
       s.pagamenti.length
         ? `<div class="inc-lista">${s.pagamenti
@@ -1460,6 +1472,8 @@ function suInputEditor(e) {
   const campo = el.dataset.campo;
   if (campo === "caparra") {
     prev.caparra = el.value === "1";
+  } else if (campo === "cliente.impresa") {
+    prev.cliente.impresa = el.checked;
   } else if (campo && CAMPI_EDITOR.has(campo)) {
     const valore = CAMPI_NUMERICI.has(campo) ? core.parseNumero(el.value) : el.value;
     impostaPercorso(prev, campo, valore);
@@ -1904,7 +1918,7 @@ async function preparaLink(prev) {
   if (l.troppoLungo) return null;
   if (!prev.link || prev.link.hash !== l.hash) {
     if (prev.link) prev.linkPrecedenti = [prev.link.hash, ...(prev.linkPrecedenti || [])].slice(0, 20);
-    prev.link = { hash: l.hash, il: Date.now() };
+    prev.link = { hash: l.hash, il: Date.now(), gs: giorniSaldoDi(prev, state.azienda) };
     await salvaPreventivo(prev);
   }
   return l.url;
@@ -3049,6 +3063,22 @@ const azioni = {
 
   // Incassi
   "registra-pagamento": () => foglioPagamento(),
+  // L'app non può mandare notifiche da sola (niente server): il promemoria lo fa il calendario del telefono.
+  "promemoria-scadenza": () => {
+    const prev = state.corrente;
+    const s = incassoDi(prev);
+    if (!s.prossima || !s.prossima.data) return;
+    const ics = inc.creaIcs({
+      id: `${prev.id}-scadenza`,
+      titolo: `Controlla il pagamento di ${core.nomeCliente(prev.cliente)}: ${core.formatEuro(s.prossima.importo)}`,
+      data: s.prossima.data,
+      fascia: "mattina",
+      anticipo: "PT0M",
+      descrizione: `${inc.causale(prev, s.prossima.tipo)} - scadenza ${core.formatData(s.prossima.data)}. Se non è arrivato, dall'app manda un sollecito.`,
+    });
+    scaricaBlob(new Blob([ics], { type: "text/calendar" }), nomeFile("Promemoria-pagamento", prev, "ics"));
+    toast("Aprilo per aggiungerlo al calendario", "ok");
+  },
   "incassi-tutti": () => {
     state.incassiTutti = !state.incassiTutti;
     const el = $("#da-incassare");
@@ -3068,6 +3098,7 @@ const azioni = {
     )
       return;
     i.pagamenti = i.pagamenti.filter((x) => x.id !== pag.id);
+    i.pagamentiEliminati = [...i.pagamentiEliminati, pag.id];
     // Se veniva da un avviso del cliente, l'avviso torna "da verificare".
     for (const x of i.segnalazioni) if (pag.rif && x.rif === pag.rif) x.stato = "attesa";
     await salvaIncasso(prev, "Pagamento eliminato");

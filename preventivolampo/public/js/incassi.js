@@ -104,6 +104,10 @@ export function normalizzaIncasso(x) {
     recensioneChiestaIl: istante(o.recensioneChiestaIl) || null,
     // Accettato prima che esistesse il registro incassi: niente scadenze finché non lo aggiorni.
     storico: o.storico === true,
+    // Pagamenti eliminati: servono a non farli ricomparire unendo la copia di un'altra finestra.
+    pagamentiEliminati: lista(o.pagamentiEliminati)
+      .filter((x) => typeof x === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(x))
+      .slice(-200),
     // Acconto concordato al momento dell'accettazione (le modifiche successive non lo cambiano).
     accontoPattuito: o.accontoPattuito == null || o.accontoPattuito === "" ? null : importoValido(o.accontoPattuito),
   };
@@ -309,8 +313,8 @@ const ITALIANO_GIORNI = (n) => `${n} ${n === 1 ? "giorno" : "giorni"}`;
 
 export function descriviScadenza(stato) {
   if (stato.importoScaduto > 0) {
-    if (stato.quote.length > 1)
-      return `, scaduto in parte dal ${formatData(stato.quote[0].dal)} e in parte dal ${formatData(stato.quote[1].dal)}`;
+    const date = [...new Set(stato.quote.map((q) => q.dal))];
+    if (date.length > 1) return `, scaduto in parte dal ${formatData(date[0])} e in parte dal ${formatData(date[1])}`;
     return `, scaduto il ${formatData(stato.scadutoDal)}${stato.giorniRitardo > 1 ? ` (da ${ITALIANO_GIORNI(stato.giorniRitardo)})` : ""}`;
   }
   return stato.prossima && stato.prossima.data ? `, in scadenza il ${formatData(stato.prossima.data)}` : "";
@@ -413,9 +417,20 @@ export function interessiQuote(quote, tassoAnnuo, oggi = oggiISO()) {
   return round2((quote || []).reduce((t, q) => t + interessiMora(q.importo, tassoAnnuo, giorniTra(q.dal, oggi)), 0));
 }
 
-// Partita IVA (11 cifre) = cliente impresa: interessi del D.Lgs. 231/2002; altrimenti privato.
+// Cliente impresa o P.A.: interessi del D.Lgs. 231/2002; altrimenti privato (tasso legale).
+// Vale la scelta esplicita sul cliente; in mancanza, una partita IVA (11 cifre). I codici fiscali
+// numerici che iniziano per 8 o 9 sono di condomini e associazioni: non sono imprese.
 export function clienteImpresa(cliente) {
-  return /^(IT)?\d{11}$/i.test(String((cliente && cliente.cfpiva) || "").replace(/\s+/g, ""));
+  if (cliente && typeof cliente.impresa === "boolean") return cliente.impresa;
+  return /^(IT)?[0-7]\d{10}$/i.test(String((cliente && cliente.cfpiva) || "").replace(/\s+/g, ""));
+}
+
+// Testo dello scaduto per elenchi brevi: "€ 300 da 36 giorni + € 700 da 10 giorni".
+export function riassuntoScaduto(stato, oggi = oggiISO()) {
+  const gg = (n) => `${n} ${n === 1 ? "giorno" : "giorni"}`;
+  if (stato.quote.length > 1 && new Set(stato.quote.map((q) => q.dal)).size > 1)
+    return stato.quote.map((q) => `${formatEuro(q.importo)} da ${gg(Math.max(giorniTra(q.dal, oggi), 0))}`).join(" + ");
+  return `${formatEuro(stato.importoScaduto)} da ${gg(stato.giorniRitardo)}`;
 }
 
 // ------------------------------------------------------------------
@@ -502,7 +517,18 @@ function piega(riga) {
   return pezzi.join("\r\n ");
 }
 
-export function creaIcs({ id, titolo, data, fascia, luogo = "", descrizione = "", ora = new Date() }) {
+// anticipo: quando suona il promemoria rispetto all'inizio ("-PT12H" la sera prima, "PT0M" all'ora di inizio).
+const ANTICIPI = new Set(["-PT12H", "-PT1H", "PT0M"]);
+export function creaIcs({
+  id,
+  titolo,
+  data,
+  fascia,
+  luogo = "",
+  descrizione = "",
+  ora = new Date(),
+  anticipo = "-PT12H",
+}) {
   if (!dataValida(data)) return "";
   const giorno = data.replace(/-/g, "");
   const p = (n) => String(n).padStart(2, "0");
@@ -527,7 +553,7 @@ export function creaIcs({ id, titolo, data, fascia, luogo = "", descrizione = ""
     "BEGIN:VALARM",
     "ACTION:DISPLAY",
     "DESCRIPTION:Promemoria",
-    "TRIGGER:-PT12H",
+    `TRIGGER:${ANTICIPI.has(anticipo) ? anticipo : "-PT12H"}`,
     "END:VALARM",
     "END:VEVENT",
     "END:VCALENDAR",

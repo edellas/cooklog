@@ -2,7 +2,7 @@
 
 ## Prima di tutto, la verità
 
-Il prodotto è pronto e funziona: 70 controlli automatici superati (41 test unitari e 29 passaggi nel browser, compresi i tentativi di attacco). **Nessuno però può garantirti 10.000 € al mese**, e chi lo fa ti sta vendendo qualcosa. I soldi non li fa il codice: li fanno i clienti che lo scoprono, lo provano e pagano. Quella parte (distribuzione) dipende da te, e questo piano ti dice esattamente cosa fare.
+Il prodotto è pronto e funziona: 111 controlli automatici superati (74 test unitari e 37 passaggi nel browser, compresi i tentativi di attacco). **Nessuno però può garantirti 10.000 € al mese**, e chi lo fa ti sta vendendo qualcosa. I soldi non li fa il codice: li fanno i clienti che lo scoprono, lo provano e pagano. Quella parte (distribuzione) dipende da te, e questo piano ti dice esattamente cosa fare.
 
 Quello che posso darti è: un'idea con domanda reale e misurabile, costi quasi nulli, un prodotto finito e i numeri per capire in poche settimane se sta funzionando.
 

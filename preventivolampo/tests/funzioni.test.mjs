@@ -201,4 +201,6 @@ test("PDF: caratteri fuori dal font standard resi leggibili, non storpiati", asy
   assert.equal(testoPdf("Łódź ✓ ≥ 10 😀"), "Lódz v >= 10 ");
   assert.equal(testoPdf("Città più € “ok” — àèìòù ñ"), "Città più € “ok” — àèìòù ñ", "l'italiano resta com'è");
   assert.equal(testoPdf("riga1\nriga2"), "riga1\nriga2");
+  // tab e spazi "strani" incollati da Word o dal web diventano spazi normali, non spariscono
+  assert.equal(testoPdf("Posa\tpiastrelle\u00a0e\u2009stucco"), "Posa piastrelle e stucco");
 });

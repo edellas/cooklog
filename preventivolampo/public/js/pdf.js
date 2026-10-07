@@ -65,7 +65,8 @@ const ammesso = (ch) => {
 export function testoPdf(t) {
   if (typeof t !== "string") return t;
   let out = "";
-  for (const ch of t) {
+  // Tabulazioni (testo incollato da Excel) e spazi speciali diventano spazi normali.
+  for (const ch of t.replace(/\r\n?/g, "\n").replace(/[\t\v\f\p{Zs}]/gu, " ")) {
     if (ammesso(ch)) out += ch;
     else if (SOSTITUZIONI[ch]) out += SOSTITUZIONI[ch];
     else for (const b of ch.normalize("NFD").replace(/\p{M}/gu, "")) if (ammesso(b)) out += b;
@@ -385,17 +386,21 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
   doc.text(formatEuro(totali.totale), W - MARGINE - 2, y + 1.4, { align: "right" });
   y += 10;
 
-  if (totali.acconto > 0) {
+  // L'acconto concordato all'accettazione resta quello anche se dopo il preventivo cambia.
+  const pattuito = normalizzaIncasso(prev.incasso).accontoPattuito;
+  const accontoPdf = Math.min(pattuito ?? totali.acconto, totali.totale);
+  const saldoPdf = Math.round((totali.totale - accontoPdf) * 100) / 100;
+  if (accontoPdf > 0) {
     doc.setTextColor(...NERO);
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
     doc.text(prev.caparra ? "Caparra confirmatoria all'accettazione" : "Acconto all'accettazione", xEt, y);
-    doc.text(formatEuro(totali.acconto), W - MARGINE - 2, y, { align: "right" });
+    doc.text(formatEuro(accontoPdf), W - MARGINE - 2, y, { align: "right" });
     y += 5;
     doc.setFont("helvetica", "normal");
     const gs = normalizzaIncasso(prev.incasso).giorniSaldo ?? (Math.round(Number(azienda.giorniSaldo)) || 0);
     doc.text(gs > 0 ? `Saldo entro ${gs} giorni dalla fine lavori` : "Saldo a fine lavori", xEt, y);
-    doc.text(formatEuro(totali.saldo), W - MARGINE - 2, y, { align: "right" });
+    doc.text(formatEuro(saldoPdf), W - MARGINE - 2, y, { align: "right" });
     y += 6;
   }
   y += 3;
@@ -479,13 +484,16 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
       azienda.iban
         ? `IBAN: ${azienda.iban}${azienda.intestatarioIban ? " - intestato a " + azienda.intestatarioIban : ""}`
         : "",
-      totali.acconto > 0 && prev.caparra ? FRASE_CAPARRA : "",
+      accontoPdf > 0 && prev.caparra ? FRASE_CAPARRA : "",
     ]
       .filter(Boolean)
       .join("\n"),
   );
   // QR del bonifico per l'acconto: il cliente lo inquadra con l'app della banca.
-  const qrAcconto = totali.acconto > 0 ? payloadPerImporto(azienda, totali.acconto, causale(prev, "acconto")) : null;
+  // Nel fascicolo, se l'acconto è già stato versato, non si propone di pagarlo di nuovo.
+  const accontoVersato = fascicolo && fascicolo.stato && fascicolo.stato.accontoPagato;
+  const qrAcconto =
+    accontoPdf > 0 && !accontoVersato ? payloadPerImporto(azienda, accontoPdf, causale(prev, "acconto")) : null;
   if (qrAcconto) {
     spazio(42);
     y +=
@@ -494,7 +502,7 @@ export function creaPdf({ prev, azienda, totali, pro, config, linkAccettazione =
         y,
         larghezza,
         payload: qrAcconto,
-        titolo: `Paga ${prev.caparra ? "la caparra" : "l'acconto"} di ${formatEuro(totali.acconto)} con il QR`,
+        titolo: `Paga ${prev.caparra ? "la caparra" : "l'acconto"} di ${formatEuro(accontoPdf)} con il QR`,
         righe: [
           "Inquadra il codice con l'app della tua banca: il bonifico si compila da solo (se la tua app non legge i QR SEPA, usa l'IBAN qui sopra).",
           `Beneficiario: ${azienda.intestatarioIban || azienda.ragioneSociale} - Causale: ${causale(prev, "acconto")}`,
@@ -913,8 +921,12 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
         : ""
     };`,
   );
+  // Si citano solo i solleciti mandati per le somme scadute adesso (non quelli per un acconto già pagato).
+  const dal = stato.scadutoDal ? new Date(stato.scadutoDal + "T00:00:00").getTime() : Infinity;
   const giorniSolleciti = [
-    ...new Set(stato.solleciti.filter((s) => s.canale !== "lettera").map((s) => oggiISO(new Date(s.il)))),
+    ...new Set(
+      stato.solleciti.filter((s) => s.canale !== "lettera" && s.il >= dal).map((s) => oggiISO(new Date(s.il))),
+    ),
   ];
   if (giorniSolleciti.length)
     punto(
@@ -952,9 +964,9 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   doc.setFont("helvetica", "normal");
   doc.setDrawColor(...GRIGIO);
   doc.setLineWidth(0.3);
-  // Firma e riquadro QR devono stare insieme sopra la riga "Allegato" (in fondo alla pagina).
+  // La firma resta con i saluti; il riquadro QR, se non ci sta, va a pagina nuova (mai sopra "Allegato").
   const payload = payloadPerImporto(a, dovuto, richiesta.causale);
-  if (y > H - (payload ? 74 : 34)) {
+  if (y > H - 34) {
     doc.addPage();
     y = MARGINE;
   }
@@ -963,6 +975,10 @@ export function creaDiffida({ prev, azienda, totali, stato, config, oggi = oggiI
   doc.setTextColor(...GRIGIO);
   doc.text("Firma", MARGINE, y + 14);
   y += 22;
+  if (payload && y + 36 > H - 16) {
+    doc.addPage();
+    y = MARGINE;
+  }
 
   if (payload) {
     riquadroQr(doc, {

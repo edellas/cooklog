@@ -19,7 +19,7 @@ Modello di business: **freemium** (3 preventivi PDF al mese gratis, con la scrit
 | 27 pagine "modello di preventivo" | `public/modelli/` | Pagine per Google ("fac simile preventivo idraulico"…): portano clienti gratis |
 | Verifica licenze | `lib/licenza.mjs` + `netlify/functions/` + `functions/api/` | Controlla il codice Pro con Polar o Lemon Squeezy |
 | Configurazione | `public/js/config.js` | **L'unico file che devi modificare**: link di pagamento, prezzi, email, dati titolare |
-| Test | `tests/` | 41 test unitari + 29 passaggi end-to-end nel browser (artigiano e cliente su due "telefoni") |
+| Test | `tests/` | 74 test unitari + 37 passaggi end-to-end nel browser (artigiano e cliente su due "telefoni", più un telefono touch per la pagina di pagamento) |
 
 Scelte che rendono il progetto semplice da gestire da soli:
 
@@ -36,7 +36,7 @@ Scelte che rendono il progetto semplice da gestire da soli:
 - **Calcolatore metri quadri** per stanza: pareti, soffitto e pavimento, meno porte e finestre.
 - **Guadagno nascosto.** Il costo d'acquisto dei materiali e il margine si vedono solo nell'app, mai nel PDF o nel link.
 - **Dettatura di più voci in una frase**, abbinate al listino ("sostituzione miscelatore, poi 2 ore di manodopera").
-- **Pagamento dell'acconto.** Il cliente che accetta vede il QR del bonifico, l'IBAN (da copiare) e il link di pagamento online dell'artigiano (solo https).
+- **Pagamento dell'acconto.** Il cliente che accetta vede il link di pagamento online dell'artigiano (solo https), il pulsante "Copia dati del bonifico" (beneficiario, IBAN, importo e causale in un tocco, da incollare nell'app della banca) e l'IBAN. Il QR del bonifico c'è, ma dal telefono parte chiuso ("Paghi da un altro dispositivo?"): uno schermo non si può inquadrare da solo, e non tutte le app bancarie italiane leggono i QR SEPA.
 - **Data di inizio scelta dal cliente.** L'artigiano propone fino a 3 date; il cliente ne sceglie una mentre firma. La data finisce in agenda ("Prossimi lavori"), nel PDF e nel calendario del telefono (file .ics). Nel link di conferma viaggia solo il numero della data scelta, quindi il cliente non può inventarne un'altra.
 
 ### "E se il cliente firma ma non paga?" — Incassi protetti
@@ -45,7 +45,7 @@ Tre livelli, tutti senza server:
 
 1. **Prevenire**
    - **Caparra confirmatoria (art. 1385 c.c.)** al posto del semplice acconto, con la dicitura su PDF e pagina del cliente. Se il cliente non rispetta l'accordo, l'artigiano può recedere e trattenerla.
-   - **QR del bonifico SEPA** (standard EPC, "QR bonifico") su PDF, pagina del cliente e telefono dell'artigiano: si inquadra con l'app della banca e importo, IBAN e causale si compilano da soli. L'IBAN viene controllato (mod 97) nelle impostazioni: un errore nelle cifre manderebbe i soldi altrove.
+   - **QR del bonifico SEPA** (standard EPC, "QR bonifico") dove serve davvero: sul PDF stampato o aperto al PC, a schermo intero sul telefono dell'artigiano quando il cliente paga di persona ("Mostra QR"), e sulla pagina del cliente aperta da computer. Si inquadra con l'app della banca e importo, IBAN e causale si compilano da soli. L'IBAN viene controllato (mod 97) nelle impostazioni: un errore nelle cifre manderebbe i soldi altrove.
    - Un avviso "inizia i lavori solo dopo l'acconto" finché l'acconto non è arrivato.
 2. **Seguire**
    - **Registro incassi** per preventivo: pagamenti con metodo e nota, data di fine lavori, scadenza del saldo (0-90 giorni). L'importo scaduto si calcola da solo.
@@ -53,7 +53,8 @@ Tre livelli, tutti senza server:
    - **Pulsante "Ho pagato" per il cliente**: manda all'artigiano un avviso su WhatsApp. L'artigiano lo apre, controlla sul conto e lo registra con un tocco. Un'impronta impedisce di registrare due volte lo stesso avviso, e l'avviso non conta come incasso finché non viene confermato.
 3. **Recuperare**
    - **Solleciti in tre toni** (cortese, sollecito, ultimo avviso) con importo, scadenza e IBAN già scritti, modificabili prima dell'invio. Il registro dei solleciti tiene date e canali, e suggerisce di aspettare una settimana tra un messaggio e l'altro.
-   - **Link di pagamento** per il cliente: importo, già pagato, QR, IBAN e causale da copiare, pulsante "Ho pagato".
+   - **Link di pagamento** per il cliente: importo, già pagato, "Paga online", "Copia dati del bonifico", IBAN e causale da copiare, QR per chi paga da un altro dispositivo, pulsante "Ho pagato".
+   - **"Ricordami la scadenza"**: mette la prossima scadenza di pagamento nel calendario del telefono dell'artigiano (file .ics con promemoria), così il controllo arriva anche senza notifiche dal server.
    - **Lettera di sollecito e costituzione in mora** (art. 1219 c.c., termine di 15 giorni, interessi se l'artigiano inserisce il tasso), pronta da firmare e inviare con PEC o raccomandata (Pro).
    - **Fascicolo del credito** (Pro): il preventivo firmato più un riepilogo con prova dell'accettazione (data, ora, nome, impronta del documento accettato online), pagamenti, solleciti e importo scaduto. È quello che serve a un avvocato per un decreto ingiuntivo.
 

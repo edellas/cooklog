@@ -140,20 +140,34 @@ function aggiornaTotali() {
 // ------------------------------------------------------------------
 // Pagamento: QR del bonifico, IBAN, link e "Ho pagato"
 // ------------------------------------------------------------------
+// Dal telefono il QR serve poco (lo schermo non si può inquadrare da solo): lì vengono prima
+// "Paga online" e "Copia dati del bonifico"; il QR resta a portata per chi paga da un altro
+// dispositivo o dal PC.
+const daTelefono = () => window.matchMedia?.("(pointer: coarse)").matches ?? false;
+
+function datiBonifico(a, importo, causaleTesto) {
+  return [
+    `Beneficiario: ${a.intestatarioIban || a.ragioneSociale || ""}`,
+    `IBAN: ${String(a.iban || "").replace(/\s+/g, "")}`,
+    `Importo: ${formatEuro(importo)}`,
+    `Causale: ${causaleTesto}`,
+  ].join("\n");
+}
+
 function htmlPaga(a, importo, causaleTesto) {
   const payload = ibanValido(a.iban)
     ? payloadEpc({ nome: a.intestatarioIban || a.ragioneSociale, iban: a.iban, importo, causale: causaleTesto })
     : null;
+  const qr = payload
+    ? `<div class="qr-box"><div class="qr">${svgQr(payload, { etichetta: `QR per pagare ${formatEuro(importo)} con bonifico` })}</div>
+        <div class="muted xsmall">Inquadra il QR con l'app della tua banca da un altro telefono o dal PC: importo, IBAN e causale si compilano da soli. Se la tua app non legge i QR SEPA, usa i dati qui sopra.</div></div>`
+    : "";
   return `
-    ${
-      payload
-        ? `<div class="qr-box"><div class="qr">${svgQr(payload, { etichetta: `QR per pagare ${formatEuro(importo)} con bonifico` })}</div>
-        <div class="muted xsmall">Inquadra il QR con l'app della tua banca: importo, IBAN e causale si compilano da soli. Se la tua app non legge i QR SEPA, copia l'IBAN qui sotto.</div></div>`
-        : ""
-    }
     ${a.linkPagamento ? `<a class="btn primary block" href="${esc(a.linkPagamento)}" target="_blank" rel="noopener noreferrer">${ICONE.euro} Paga online <span class="xsmall" style="opacity:.8">(${esc(new URL(a.linkPagamento).hostname)})</span></a>` : ""}
+    ${a.iban ? `<button class="btn ${a.linkPagamento ? "" : "primary "}block" data-azione="copia-bonifico" data-testo="${esc(datiBonifico(a, importo, causaleTesto))}">${ICONE.copia} Copia dati del bonifico</button>` : ""}
     ${a.iban ? `<div class="cp-iban"><div><div class="muted xsmall">IBAN${a.intestatarioIban ? ` · ${esc(a.intestatarioIban)}` : ""}</div><b class="tnum">${esc(a.iban)}</b></div><button class="btn small" data-azione="copia-iban">${ICONE.copia} Copia</button></div>` : ""}
-    <div class="cp-iban"><div><div class="muted xsmall">Causale</div><b>${esc(causaleTesto)}</b></div><button class="btn small" data-azione="copia-causale" data-testo="${esc(causaleTesto)}">${ICONE.copia} Copia</button></div>`;
+    <div class="cp-iban"><div><div class="muted xsmall">Causale</div><b>${esc(causaleTesto)}</b></div><button class="btn small" data-azione="copia-causale" data-testo="${esc(causaleTesto)}">${ICONE.copia} Copia</button></div>
+    ${qr ? `<details class="cp-qr"${daTelefono() ? "" : " open"}><summary>Paghi da un altro dispositivo? Mostra il QR</summary>${qr}</details>` : ""}`;
 }
 
 function htmlSegnalato(seg) {
@@ -292,7 +306,7 @@ function pagina() {
           ? `<section class="card stack">
         <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.orologio}</span><div><h2>Quando iniziamo?</h2><div class="muted xsmall">Scegli una data quando accetti</div></div></div>
         <div class="row wrap">${dateValide()
-          .map((d) => `<span class="chip">${esc(testoAppuntamento(d))}</span>`)
+          .map(({ d }) => `<span class="chip">${esc(testoAppuntamento(d))}</span>`)
           .join("")}</div>
       </section>`
           : ""
@@ -310,7 +324,7 @@ function pagina() {
           : ""
       }
       ${sezioneContatti(a, `Buongiorno, ho una domanda sul preventivo n. ${p.numero}.`)}
-      <p class="muted xsmall cp-avviso">Documento inviato da ${esc(nomeSenzaPunto(a.ragioneSociale) || "un'impresa")}${a.citta ? `, ${esc(a.citta)}` : ""}. ${esc(CONFIG.nomeProdotto)} non verifica l'identità di chi invia il preventivo né gli importi: accetta ed effettua pagamenti solo se conosci chi te l'ha mandato.</p>
+      <p class="muted xsmall cp-avviso">Documento inviato da ${a.citta ? `${esc(a.ragioneSociale || "un'impresa")}, ${esc(nomeSenzaPunto(a.citta))}` : esc(nomeSenzaPunto(a.ragioneSociale) || "un'impresa")}. ${esc(CONFIG.nomeProdotto)} non verifica l'identità di chi invia il preventivo né gli importi: accetta ed effettua pagamenti solo se conosci chi te l'ha mandato.</p>
       ${p.conMarchio ? `<p class="xsmall cp-marchio">Creato con <a href="${esc(CONFIG.sito)}" target="_blank" rel="noopener">${esc(CONFIG.nomeProdotto)}</a> · preventivi dal telefono in 60 secondi</p>` : ""}
     </main>
     <footer class="barra-totale">
@@ -331,8 +345,9 @@ function pagina() {
 const FRASE_CAPARRA_BREVE =
   "L'anticipo è versato come caparra confirmatoria (art. 1385 c.c.): se il cliente non rispetta l'accordo l'impresa può trattenerla; se non lo rispetta l'impresa, il cliente può chiederne il doppio.";
 
-// Date proposte ancora valide: quelle già passate non si possono scegliere.
-const dateValide = () => stato.prev.disponibilita.filter((d) => d.data >= oggiISO());
+// Date proposte ancora valide: quelle già passate non si possono scegliere. L'indice resta quello
+// della lista completa, così la scelta non cambia se la mezzanotte passa mentre il cliente firma.
+const dateValide = () => stato.prev.disponibilita.map((d, i) => ({ d, i })).filter(({ d }) => d.data >= oggiISO());
 
 function foglioFirma() {
   if (scaduto()) return;
@@ -347,7 +362,7 @@ function foglioFirma() {
         date.length
           ? `<div class="scelta" role="radiogroup" aria-label="Quando preferisci iniziare">
           <div class="muted small">Quando preferisci che iniziamo?</div>
-          ${date.map((d, i) => `<label><input type="radio" name="acc-data" value="${i}"><span>${esc(testoAppuntamento(d))}</span></label>`).join("")}
+          ${date.map(({ d, i }) => `<label><input type="radio" name="acc-data" value="${i}"><span>${esc(testoAppuntamento(d))}</span></label>`).join("")}
           <label><input type="radio" name="acc-data" value="-1" checked><span>Decidiamo insieme<small>L'impresa ti contatterà per fissare la data</small></span></label>
         </div>`
           : ""
@@ -371,7 +386,7 @@ async function conferma() {
   const scelte = [...stato.scelte].sort((x, y) => x - y);
   const firma = stato.pad.codificata();
   const ap = Number($('input[name="acc-data"]:checked')?.value ?? -1);
-  const appuntamento = Number.isInteger(ap) && ap >= 0 ? dateValide()[ap] || null : null;
+  const appuntamento = Number.isInteger(ap) && ap >= 0 ? p.disponibilita[ap] || null : null;
   const link = await creaLinkConferma(BASE, {
     id: p.id,
     numero: p.numero,
@@ -441,7 +456,7 @@ function successo(appena = false) {
       ${
         t.acconto > 0
           ? `<section class="card stack">
-        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.euro}</span><div><h2>${esc(nomeAnticipo(p))}: ${esc(formatEuro(t.acconto))}</h2><div class="muted xsmall">Da versare all'accettazione${a.iban || a.linkPagamento ? "" : ": l'impresa ti dirà come"}</div></div></div>
+        <div class="sezione-titolo" style="margin:0"><span class="ico">${ICONE.euro}</span><div><h2>${esc(nomeAnticipo(p))}: <span class="tnum" style="white-space:nowrap">${esc(formatEuro(t.acconto))}</span></h2><div class="muted xsmall">Da versare all'accettazione${a.iban || a.linkPagamento ? "" : ": l'impresa ti dirà come"}</div></div></div>
         ${htmlPaga(a, t.acconto, causale(p, "acconto"))}
         <div id="cp-pagato" class="stack">${seg ? htmlSegnalato(seg) : `<button class="btn soft block" data-azione="ho-pagato">${ICONE.check} Ho pagato: avvisa l'impresa</button>`}</div>
       </section>`
@@ -541,6 +556,7 @@ async function scaricaPdf() {
     };
     const data = dataScelta();
     if (data) p.appuntamento = { ...data, da: "cliente" };
+    p.incasso = { giorniSaldo: stato.prev.giorniSaldo };
     const a = stato.prev.azienda;
     const blob = creaPdfBlob({
       prev: p,
@@ -586,6 +602,12 @@ document.addEventListener("click", async (e) => {
     toast((await copiaTesto(azienda().iban.replace(/\s/g, ""))) ? "IBAN copiato" : "Copia non riuscita");
   if (azione === "copia-causale")
     toast((await copiaTesto(el.dataset.testo || "")) ? "Causale copiata" : "Copia non riuscita");
+  if (azione === "copia-bonifico")
+    toast(
+      (await copiaTesto(el.dataset.testo || ""))
+        ? "Dati copiati: incollali nell'app della banca"
+        : "Copia non riuscita",
+    );
   if (azione === "ho-pagato") foglioHoPagato();
   if (azione === "hp-conferma") confermaHoPagato();
   if (azione === "copia-avviso") {

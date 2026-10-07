@@ -483,8 +483,31 @@ try {
       "https://paypal.me/idraulicarossi",
     );
     assert.equal(await c.locator('[data-azione="ho-pagato"]').count(), 1);
+    const dati = await c.getAttribute('[data-azione="copia-bonifico"]', "data-testo");
+    assert.match(
+      dati,
+      /^Beneficiario: Idraulica Rossi di Mario Rossi\nIBAN: IT60X0542811101000000123456\nImporto: € 204,05\nCausale: /,
+    );
+    assert.equal(await c.locator("details.cp-qr[open]").count(), 1, "dal computer il QR si vede subito");
     await controllaAccessibilita(c, "richiesta di pagamento");
     await c.screenshot({ path: path.join(tmp, "richiesta-pagamento.png") });
+    // Dal telefono il cliente non può inquadrare il proprio schermo: QR chiuso, prima i dati da copiare
+    const mobile = await nuovoTelefono({ isMobile: true, hasTouch: true });
+    await mobile.page.goto(linkPagamento);
+    await mobile.page.waitForSelector("text=Richiesta di pagamento");
+    assert.equal(await mobile.page.locator("details.cp-qr:not([open])").count(), 1, "sul telefono il QR parte chiuso");
+    assert.equal(await mobile.page.locator(".qr svg").isVisible(), false);
+    await mobile.page.click("details.cp-qr > summary");
+    assert.equal(await mobile.page.locator(".qr svg").isVisible(), true);
+    const ordine = await mobile.page.$$eval("[data-azione], .btn", (els) =>
+      els.map((e) => e.dataset.azione || e.textContent.trim()),
+    );
+    assert.ok(
+      ordine.findIndex((x) => /Paga online/.test(x)) < ordine.indexOf("copia-bonifico"),
+      "prima il pagamento online, poi i dati del bonifico",
+    );
+    await mobile.page.screenshot({ path: path.join(tmp, "richiesta-pagamento-telefono.png"), fullPage: true });
+    await mobile.context.close();
   });
 
   await passo("sicurezza: richiesta di pagamento e avviso costruiti ad arte non eseguono codice", async () => {
@@ -942,7 +965,7 @@ try {
     assert.match(await page.textContent("main"), /Paolo Conti/);
   });
 
-  await passo("doppio tocco e due finestre: nessun pagamento doppio, nessun pagamento perso", async () => {
+  await passo("doppio tocco e due finestre: nessun pagamento doppio, perso o resuscitato", async () => {
     await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
     await page.waitForSelector('[data-action="registra-pagamento"]');
     const incassato = async () =>
@@ -999,6 +1022,23 @@ try {
       "pagamento dell'altra finestra perso",
     );
     assert.equal(await page.inputValue('[data-campo="tempi"]'), "Tre giorni lavorativi");
+    // Un pagamento eliminato in una finestra non deve ricomparire quando l'altra salva la sua copia
+    const togli = '[aria-label="Elimina pagamento di € 10,00"]';
+    await page.fill('[data-campo="tempi"]', "Quattro giorni lavorativi");
+    await altra.reload();
+    await altra.waitForSelector(togli);
+    await altra.click(togli);
+    await altra.waitForSelector('[data-esito="si"]');
+    await attendiAnimazioni(altra);
+    await altra.click('[data-esito="si"]');
+    await altra.waitForFunction((sel) => !document.querySelector(sel), togli);
+    await page.click(".back");
+    await page.waitForSelector(".voce-lista");
+    await page.goto(`${BASE}/app.html#/p/${idP1}?sez=incassi`);
+    await page.reload();
+    await page.waitForSelector("#sezione-incassi");
+    assert.equal(await page.locator(togli).count(), 0, "il pagamento eliminato è ricomparso");
+    assert.equal(await page.inputValue('[data-campo="tempi"]'), "Quattro giorni lavorativi");
     await altra.close();
   });
 

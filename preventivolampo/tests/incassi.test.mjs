@@ -22,6 +22,8 @@ import {
   interessiQuote,
   daChiedere,
   clienteImpresa,
+  descriviScadenza,
+  riassuntoScaduto,
 } from "../public/js/incassi.js";
 import { matriceQr, rettangoliQr, svgQr } from "../public/js/qr.js";
 
@@ -499,4 +501,48 @@ test("cliente impresa (partita IVA) o privato", () => {
   assert.equal(clienteImpresa({ cfpiva: "IT 01234567890" }), true);
   assert.equal(clienteImpresa({ cfpiva: "RSSMRA80A01H501U" }), false);
   assert.equal(clienteImpresa({}), false);
+  // codice fiscale numerico di condomini e associazioni: non è detto che siano imprese
+  assert.equal(clienteImpresa({ cfpiva: "91234567890" }), false);
+  assert.equal(clienteImpresa({ cfpiva: "80012345678" }), false);
+  // la scelta fatta a mano nel preventivo vince sulla regola automatica
+  assert.equal(clienteImpresa({ cfpiva: "91234567890", impresa: true }), true);
+  assert.equal(clienteImpresa({ cfpiva: "01234567890", impresa: false }), false);
+});
+
+test("scadenze: due quote scadute lo stesso giorno non diventano 'in parte e in parte'", () => {
+  const stessoGiorno = {
+    importoScaduto: 1000,
+    scadutoDal: "2026-09-01",
+    giorniRitardo: 30,
+    quote: [
+      { tipo: "acconto", importo: 300, dal: "2026-09-01" },
+      { tipo: "saldo", importo: 700, dal: "2026-09-01" },
+    ],
+  };
+  assert.match(descriviScadenza(stessoGiorno), /^, scaduto il 0?1\/09\/2026 \(da 30 giorni\)$/);
+  assert.match(riassuntoScaduto(stessoGiorno, "2026-10-01"), /1\.000,00.* da 30 giorni$/);
+
+  const dueDate = {
+    ...stessoGiorno,
+    quote: [
+      { tipo: "acconto", importo: 300, dal: "2026-08-26" },
+      { tipo: "saldo", importo: 700, dal: "2026-09-21" },
+    ],
+    scadutoDal: "2026-08-26",
+    giorniRitardo: 36,
+  };
+  assert.match(descriviScadenza(dueDate), /in parte dal 26\/08\/2026 e in parte dal 21\/09\/2026/);
+  const r = riassuntoScaduto(dueDate, "2026-10-01");
+  assert.match(r, /300,00.* da 36 giorni \+ .*700,00.* da 10 giorni/);
+  assert.match(riassuntoScaduto({ ...stessoGiorno, importoScaduto: 300, giorniRitardo: 1, quote: [] }), /da 1 giorno$/);
+});
+
+test("promemoria nel calendario: preavviso scelto tra quelli ammessi", () => {
+  const base = { id: "p1-scadenza", titolo: "Controlla il pagamento", data: "2026-10-20", fascia: "mattina" };
+  assert.match(creaIcs({ ...base, anticipo: "PT0M" }), /TRIGGER:PT0M/);
+  assert.match(creaIcs(base), /TRIGGER:-PT12H/);
+  // un valore estraneo non entra nel file
+  const strano = creaIcs({ ...base, anticipo: "-PT1H\r\nATTENDEE:mailto:x@example.com" });
+  assert.match(strano, /TRIGGER:-PT12H/);
+  assert.doesNotMatch(strano, /ATTENDEE/);
 });

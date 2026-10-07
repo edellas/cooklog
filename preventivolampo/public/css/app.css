@@ -554,6 +554,7 @@ canvas.firma { width: 100%; aspect-ratio: 2.5 / 1; background: #fff; border: 1.5
 .scelta label { padding: 11px 13px; }
 
 /* ---------- QR del bonifico ---------- */
+.cp-qr > summary { padding: 8px 0; }
 .qr-box { display: flex; gap: 14px; align-items: center; }
 .qr { flex: none; width: 132px; padding: 6px; border-radius: 14px; background: #fff; border: 1px solid var(--line); }
 .qr svg { display: block; width: 100%; height: auto; }
