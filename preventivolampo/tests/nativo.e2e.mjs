@@ -352,6 +352,8 @@ try {
       assert.ok(risposta, JSON.stringify(avvisi));
       assert.equal(risposta.extra.rotta, `#/p/${idPreventivo}`);
       assert.equal(risposta.smallIcon, "ic_stat_lampo");
+    // niente orario esatto: Android 12+ altrimenti chiederebbe il permesso "Sveglie e promemoria" ogni volta
+    assert.equal(risposta.isExactNotification, false);
       assert.ok(Date.parse(risposta.schedule.at) > Date.now());
       await aspettaChiamata(page, "LocalNotifications", "createChannel", (o) => o.id === "promemoria");
       await aspettaChiamata(page, "Haptics", "notification", (o) => o.type === "SUCCESS");

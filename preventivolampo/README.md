@@ -15,11 +15,12 @@ Modello di business: **freemium** (3 preventivi PDF al mese gratis, con la scrit
 |---|---|---|
 | Sito di vendita | `public/index.html` | Landing con prezzi, FAQ, link ai modelli |
 | App | `public/app.html` + `public/js/` | L'app vera e propria (funziona offline, si installa sul telefono) |
+| App per iPhone e Android | `mobile/` | La stessa app negli store, con avvisi sul telefono, copia di sicurezza automatica e acquisti nell'app: vedi **[mobile/README.md](mobile/README.md)** |
 | Pagina del cliente | `public/accetta.html` + `public/js/accetta.js` | Dove il cliente vede, accetta e firma il preventivo ricevuto via link |
 | 27 pagine "modello di preventivo" | `public/modelli/` | Pagine per Google ("fac simile preventivo idraulico"…): portano clienti gratis |
 | Verifica licenze | `lib/licenza.mjs` + `netlify/functions/` + `functions/api/` | Controlla il codice Pro con Polar o Lemon Squeezy |
 | Configurazione | `public/js/config.js` | **L'unico file che devi modificare**: link di pagamento, prezzi, email, dati titolare |
-| Test | `tests/` | 80 test unitari + 37 passaggi end-to-end nel browser (artigiano e cliente su due "telefoni", più un telefono touch per la pagina di pagamento) |
+| Test | `tests/` | 86 test unitari, 37 passaggi end-to-end nel browser (artigiano e cliente su due "telefoni") e 14 dell'app nativa simulata; in GitHub Actions anche le app vere su emulatore Android e simulatore iPhone |
 
 Scelte che rendono il progetto semplice da gestire da soli:
 
@@ -184,13 +185,14 @@ Poi registra il sito su [Google Search Console](https://search.google.com/search
 ## 5. Test
 
 ```bash
-npm test          # 80 test: IVA/forfettario/acconti, facoltative, margine, superfici, dettatura, incassi,
+npm test          # 86 test: IVA/forfettario/acconti, facoltative, margine, superfici, dettatura, incassi, avvisi,
                   # link di accettazione (compressione, sanificazione, manomissioni), firma, backup, licenze
 npm run test:e2e  # 37 passaggi nel browser con artigiano e cliente su due "telefoni": onboarding,
                   # preventivo, PDF, accettazione online completa, firma al tavolo, incassi e solleciti,
                   # attacchi XSS, link manomessi,
                   # foto, calcolatore, ricontatti, limite gratuito, Pro, forfettario, offline,
                   # backup, schermi stretti, accessibilità di base e zero violazioni CSP
+npm run test:nativo  # 14 passaggi dell'app iOS/Android con un finto ponte Capacitor (serve npm ci in mobile/)
 npm run lint      # controllo statico (richiede eslint: npm i -g eslint)
 ```
 
@@ -203,6 +205,19 @@ Altri script: `npm run icone` (icone PNG dal simbolo), `node scripts/genera-scre
 - **Partita IVA.** Un abbonamento ricorrente è un'attività abituale: serve la partita IVA (il regime forfettario va benissimo per iniziare). Chiedi al commercialista il codice ATECO per la vendita di software/servizi online e come registrare i versamenti del Merchant of Record (che ti paga come rivenditore estero). Costo tipico: qualche centinaio di euro l'anno.
 - **Privacy e termini** sono in `public/privacy.html` e `public/termini.html`: compila i dati del titolare in `config.js` e falli rileggere da un professionista quando i ricavi crescono.
 - I **prezzi indicativi** dei listini (`public/js/mestieri.js`) sono medie di mercato: l'app li presenta come base da modificare.
+
+## 7. App per iPhone e Android
+
+In `mobile/` ci sono i progetti Android Studio e Xcode, fatti con Capacitor. Contengono la stessa app web,
+con in più le funzioni del telefono:
+- avvisi per le scadenze e i lavori;
+- PDF aperti e condivisi con le app del telefono;
+- dettatura e rubrica;
+- copia di sicurezza automatica;
+- acquisti Pro dagli store.
+
+Come compilarle, cosa preparare prima degli store (dominio, firma, link verificati, RevenueCat) e come
+vengono provate: **[mobile/README.md](mobile/README.md)**.
 
 ## Limiti attuali (e prossimi passi)
 

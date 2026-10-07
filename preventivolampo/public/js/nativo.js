@@ -398,6 +398,9 @@ export async function programmaAvvisi(lista) {
         : { at: a.quando, allowWhileIdle: true },
       extra: { rotta: a.rotta },
       channelId: "promemoria",
+      // Un promemoria può arrivare con qualche minuto di ritardo. Con l'orario esatto Android 12+ aprirebbe
+      // la schermata "Sveglie e promemoria" a ogni riprogrammazione.
+      isExactNotification: false,
       smallIcon: "ic_stat_lampo",
       iconColor: "#FFC21A",
       autoCancel: true,
