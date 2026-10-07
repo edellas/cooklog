@@ -25,6 +25,16 @@ const [device] = await android.devices();
 if (!device) throw new Error("Nessun emulatore collegato (adb devices)");
 console.log("Telefono:", device.model(), device.serial());
 const foto = (nome) => device.screenshot({ path: path.join(cartella, `${nome}.png`) });
+// La foto rimpicciolita finisce anche nel log della CI (in base64), per guardarla senza scaricare gli artefatti.
+function fotoNelLog(nome) {
+  const png = path.join(cartella, `${nome}.png`);
+  try {
+    const jpg = execSync(`convert "${png}" -resize 360x -quality 55 jpg:-`, { maxBuffer: 16 * 1024 * 1024 });
+    console.log(`FOTO ${nome} data:image/jpeg;base64,${jpg.toString("base64")}`);
+  } catch (e) {
+    console.log(`(foto ${nome} non convertita: ${e.message.split("\n")[0]})`);
+  }
+}
 const passo = async (nome, fn) => {
   await fn();
   console.log("ok -", nome);
@@ -113,10 +123,25 @@ try {
       classe: document.documentElement.className,
     }));
     console.log(info);
+    console.log(
+      "  schermo:",
+      JSON.stringify(
+        await page.evaluate(() => ({
+          dpr: globalThis.devicePixelRatio,
+          css: [globalThis.innerWidth, globalThis.innerHeight],
+          visibile: [globalThis.visualViewport?.width, globalThis.visualViewport?.height],
+          schermo: [globalThis.screen.width, globalThis.screen.height],
+          webview: navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0],
+          barra: document.querySelector(".barra-totale")?.getBoundingClientRect().toJSON(),
+        })),
+      ),
+    );
+    console.log("  android:", (await device.shell("wm size; wm density")).toString().replace(/\s+/g, " "));
     assert.equal(info.nativa, true);
     assert.equal(info.piattaforma, "android");
     assert.match(info.classe, /nativa-android/);
     await foto("01-benvenuto");
+    fotoNelLog("01-benvenuto");
   });
 
   await passo("primo preventivo e link per il cliente sul sito pubblico", async () => {
@@ -196,6 +221,7 @@ try {
   console.log("\nApp Android: tutte le prove superate.");
 } catch (err) {
   await foto("errore").catch(() => {});
+  fotoNelLog("errore");
   console.error("FALLITO:", err.message, "\n" + errori.join("\n"));
   // Gli ultimi messaggi di Android sull'app (WebView, Capacitor, errori), per capire cosa è successo.
   let log = "";

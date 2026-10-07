@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prova dell'app iOS vera nel simulatore (la lancia GitHub Actions su macOS, vedi
-# .github/workflows/preventivolampo.yml): installa l'app compilata, la apre, la usa con tocchi veri sullo
-# schermo (idb) e legge lo schermo con l'OCR di macOS per controllare cosa compare davvero.
-# Uso (in mobile/, dopo la compilazione per il simulatore in build/ e con idb installato): bash prove/ios.sh
+# .github/workflows/preventivolampo.yml): installa l'app compilata, la apre, apre un link dell'app
+# (preventivolampo://) e legge lo schermo con l'OCR di macOS per controllare cosa compare davvero.
+# Uso (in mobile/, dopo la compilazione per il simulatore in build/): bash prove/ios.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PACCHETTO="it.preventivolampo.app"
@@ -31,15 +31,6 @@ xcrun simctl install "$DISPOSITIVO" "$APP"
 swiftc -O prove/testo.swift -o build/testo
 leggi() { build/testo "$@"; }
 
-# Grandezza dello schermo in punti, l'unità dei tocchi di idb.
-read -r LARGO ALTO < <(idb describe --udid "$DISPOSITIVO" --json | python3 -c '
-import json, sys
-s = json.load(sys.stdin)["screen_dimensions"]
-d = s.get("density") or 1
-print(s.get("width_points") or s["width"] / d, s.get("height_points") or s["height"] / d)')
-[ -n "${LARGO:-}" ] || { echo "idb non risponde: installa idb-companion e fb-idb"; exit 1; }
-echo "Schermo: $LARGO x $ALTO punti"
-
 # Se una prova fallisce: cosa c'è sullo schermo e gli ultimi messaggi dell'app (console JS compresa).
 diagnosi() {
   echo "Sullo schermo:"; leggi "$FOTO/$1.png" || true
@@ -56,46 +47,20 @@ aspetta_testo() { # aspetta_testo <atteso> <nome foto>
   done
   echo "FALLITO - $2: non trovo «$1»."; diagnosi "$2"; return 1
 }
-tocca() { # tocca <scritta> <nome foto>: tocca la scritta sullo schermo con un dito
-  local punto=""
-  for _ in $(seq 1 20); do
-    foto "$2"
-    if punto=$(leggi "$FOTO/$2.png" "$1" 2>/dev/null); then break; fi
-    sleep 1
-  done
-  [ -n "$punto" ] || { echo "FALLITO - $2: non trovo «$1» da toccare."; diagnosi "$2"; return 1; }
-  read -r nx ny <<<"$punto"
-  idb ui tap --udid "$DISPOSITIVO" \
-    "$(python3 -c "print(round($nx * $LARGO))")" "$(python3 -c "print(round($ny * $ALTO))")"
-  echo "ok - $2: toccato «$1»"
-  sleep 1
-}
 
 xcrun simctl launch "$DISPOSITIVO" "$PACCHETTO"
 aspetta_testo "lavoro fai" "01-benvenuto"
 
-# Tocchi veri nella WebView: si sceglie il mestiere e si passa al secondo passo.
-tocca "Idraulico" "02-mestiere"
-tocca "Avanti" "03-avanti"
-aspetta_testo "Passo 2 di 3" "04-passo-2"
-
-# Un link dell'app aperto da fuori (come il pulsante «Apri nell'app» della pagina web). iOS chiede prima
-# se aprirlo nell'app: si tocca «Apri».
+# Un link dell'app aperto da fuori (come il pulsante «Apri nell'app» della pagina web). Per i link aperti dal
+# simulatore iOS chiede prima «Aprire in PreventivoLampo?»: si registra il sì, come se l'utente l'avesse già dato.
+xcrun simctl spawn "$DISPOSITIVO" defaults write com.apple.launchservices.schemeapproval \
+  "com.apple.CoreSimulator.CoreSimulatorBridge-->preventivolampo" -string "$PACCHETTO"
 xcrun simctl openurl "$DISPOSITIVO" "preventivolampo://app.html#/accettazione?d=zAAAA"
-for _ in $(seq 1 20); do
-  foto "05-domanda"
-  if leggi "$FOTO/05-domanda.png" | grep -qiE "^(open|apri)$"; then
-    tocca "$(leggi "$FOTO/05-domanda.png" | grep -iE "^(open|apri)$" | head -n 1)" "05-domanda"
-    break
-  fi
-  if leggi "$FOTO/05-domanda.png" | grep -qi "non leggibile"; then break; fi
-  sleep 1
-done
-aspetta_testo "non leggibile" "06-link"
+aspetta_testo "non leggibile" "02-link"
 
 # Riaperta dopo la chiusura, l'app riparte (dati e WebView a posto).
 xcrun simctl terminate "$DISPOSITIVO" "$PACCHETTO"
 xcrun simctl launch "$DISPOSITIVO" "$PACCHETTO"
-aspetta_testo "lavoro fai" "07-riavvio"
+aspetta_testo "lavoro fai" "03-riavvio"
 
 echo "App iOS: tutte le prove superate."

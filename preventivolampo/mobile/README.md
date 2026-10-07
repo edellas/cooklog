@@ -102,9 +102,8 @@ Per cambiare icona o schermata di avvio modifica `scripts/genera-icone.mjs` e la
 - **GitHub Actions** (`.github/workflows/preventivolampo.yml`), a ogni modifica di `preventivolampo/`:
   - compila l'APK di debug e lo prova su un emulatore Android: Playwright si collega alla WebView dell'app
     installata e usa i plugin veri;
-  - compila l'app iOS per il simulatore, la usa con tocchi veri sullo schermo ([idb](https://fbidb.io)) e
-    controlla cosa compare con l'OCR di macOS: benvenuto, scelta del mestiere, link dell'app aperto da fuori,
-    riapertura;
+  - compila l'app iOS per il simulatore, la apre e controlla cosa compare con l'OCR di macOS: benvenuto, link
+    dell'app aperto da fuori, riapertura;
   - APK e foto dello schermo restano tra gli artefatti della run.
 
 ## Limiti

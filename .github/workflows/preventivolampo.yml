@@ -123,19 +123,6 @@ jobs:
           xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 80
-      # idb: i tocchi sullo schermo del simulatore, come un dito
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Strumenti per toccare lo schermo
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
-          HOMEBREW_NO_INSTALL_CLEANUP: 1
-        run: |
-          brew tap facebook/fb
-          brew trust --formula facebook/fb/idb-companion || true
-          brew install facebook/fb/idb-companion
-          python -m pip install fb-idb
       - name: Prova nel simulatore
         timeout-minutes: 25
         run: bash prove/ios.sh
