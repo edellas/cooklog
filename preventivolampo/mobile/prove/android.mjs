@@ -47,29 +47,46 @@ page.on("pageerror", (e) => errori.push("JS: " + e.message));
 page.on("crash", () => errori.push("La WebView si è chiusa da sola (crash)"));
 page.on("close", () => console.log("(la pagina della WebView si è chiusa)"));
 
-// Dopo aver scritto in un campo la tastiera resta aperta e Android sposta la parte visibile della pagina:
-// come farebbe l'artigiano, la si chiude prima di toccare i pulsanti in basso.
-async function chiudiTastiera() {
-  const prima = await page.evaluate(() => {
+// Dopo aver scritto in un campo la tastiera resta aperta e copre i pulsanti in basso (com'è giusto):
+// come farebbe l'artigiano, la si chiude con il tasto Indietro prima di toccarli.
+const misura = () =>
+  page.evaluate(() => {
     const v = globalThis.visualViewport;
-    const b = document.querySelector(".barra-totale")?.getBoundingClientRect();
+    const b = (
+      document.querySelector(".barra-totale") || document.querySelector("body:not(.no-tabbar) .tabbar")
+    )?.getBoundingClientRect();
+    const css = globalThis.getComputedStyle(document.documentElement);
     return {
       attivo: document.activeElement?.tagName,
       finestra: globalThis.innerHeight,
       visibile: v && { alto: v.offsetTop, altezza: v.height, scala: v.scale },
       barra: b && { top: b.top, bottom: b.bottom },
+      margini: ["top", "bottom"].map((l) => css.getPropertyValue(`--safe-area-inset-${l}`).trim() || "-").join("/"),
     };
   });
-  console.log("  tastiera:", JSON.stringify(prima));
-  await page.evaluate(() => document.activeElement?.blur?.());
-  await page.waitForFunction(
-    () => {
-      const v = globalThis.visualViewport;
-      return !v || (v.offsetTop === 0 && Math.abs(v.height - globalThis.innerHeight) < 2 && v.scale === 1);
-    },
-    null,
-    { timeout: 10000 },
-  );
+const tastieraAperta = async () =>
+  /mInputShown=true|mIsInputViewShown=true/.test((await device.shell("dumpsys input_method")).toString());
+
+async function chiudiTastiera() {
+  console.log("  con la tastiera:", JSON.stringify(await misura()));
+  if (await tastieraAperta()) await device.shell("input keyevent KEYCODE_BACK");
+  // la barra in basso deve tornare tutta visibile, sopra la barra di sistema
+  await page
+    .waitForFunction(
+      () => {
+        const v = globalThis.visualViewport;
+        const b = (
+          document.querySelector(".barra-totale") || document.querySelector("body:not(.no-tabbar) .tabbar")
+        )?.getBoundingClientRect();
+        return !v || !b || b.bottom <= v.offsetTop + v.height + 1;
+      },
+      null,
+      { timeout: 15000 },
+    )
+    .catch(async () => {
+      throw new Error("La barra in basso resta nascosta: " + JSON.stringify(await misura()));
+    });
+  console.log("  senza tastiera:", JSON.stringify(await misura()));
   await page.waitForTimeout(400);
 }
 
@@ -181,10 +198,14 @@ try {
   await foto("errore").catch(() => {});
   console.error("FALLITO:", err.message, "\n" + errori.join("\n"));
   // Gli ultimi messaggi di Android sull'app (WebView, Capacitor, errori), per capire cosa è successo.
-  const log = await device.shell("logcat -d -t 600").catch(() => "");
+  let log = "";
+  try {
+    log = execSync("adb logcat -d -t 3000", { maxBuffer: 64 * 1024 * 1024 }).toString();
+  } catch (e) {
+    log = "logcat non disponibile: " + e.message;
+  }
   console.error(
     log
-      .toString()
       .split("\n")
       .filter((r) => /Capacitor|chromium|cr_|AndroidRuntime|preventivolampo|WebView|FATAL/i.test(r))
       .slice(-120)
