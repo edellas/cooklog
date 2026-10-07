@@ -215,6 +215,8 @@ async function caricaTutto() {
     }
   }
   state.preventivi = preventivi;
+  nelArchivio.clear();
+  for (const p of preventivi) nelArchivio.add(p.id);
   state.clienti = clienti;
   state.listino = listino;
   state.licenza = licenza;
@@ -248,6 +250,7 @@ async function salvaAziendaSubito() {
 //    solleciti, firma e accettazione;
 // 3. le altre finestre vengono avvisate e ricaricano i dati quando tornano visibili.
 const daSalvare = new Set();
+const nelArchivio = new Set(); // preventivi già salvati almeno una volta (per riconoscere quelli eliminati altrove)
 const canale = typeof BroadcastChannel === "function" ? new BroadcastChannel("preventivolampo") : null;
 
 function unisciLista(mia, altra, chiave) {
@@ -290,9 +293,16 @@ function unisciVersione(prev, nelDb) {
 
 async function salvaPreventivo(prev) {
   const nelDb = await db.leggi("preventivi", prev.id).catch(() => null);
+  if (!nelDb && nelArchivio.has(prev.id)) {
+    // Eliminato in un'altra finestra: non lo si ricrea.
+    daSalvare.delete(prev.id);
+    state.preventivi = state.preventivi.filter((p) => p.id !== prev.id);
+    return;
+  }
   if (nelDb && (nelDb.updatedAt || 0) > (prev.updatedAt || 0)) unisciVersione(prev, nelDb);
   prev.updatedAt = Math.max(Date.now(), (nelDb && nelDb.updatedAt + 1) || 0);
   await db.salva("preventivi", prev);
+  nelArchivio.add(prev.id);
   daSalvare.delete(prev.id);
   const i = state.preventivi.findIndex((p) => p.id === prev.id);
   if (i >= 0) state.preventivi[i] = prev;
@@ -988,6 +998,7 @@ function htmlIncassi(prev) {
 }
 
 function aggiornaIncassi() {
+  incassiDaRidisegnare = false;
   const prev = state.corrente;
   const el = $("#sezione-incassi");
   if (!prev || !el) return;
@@ -1468,6 +1479,7 @@ function suInputEditor(e) {
       if (el.value && !inc.dataValida(el.value)) return;
       i.fineLavori = el.value;
       if (el.value) i.storico = false;
+      incassiDaRidisegnare = true;
     }
     if (el.dataset.inc === "giorniSaldo") i.giorniSaldo = Number(el.value);
     salvaDopo(prev);
@@ -2952,6 +2964,8 @@ const azioni = {
       return;
     clearTimeout(timerSalva);
     await db.elimina("preventivi", prev.id);
+    nelArchivio.delete(prev.id);
+    canale?.postMessage({ id: prev.id });
     state.preventivi = state.preventivi.filter((p) => p.id !== prev.id);
     state.corrente = null;
     vai("#/");
@@ -3152,8 +3166,15 @@ document.addEventListener("change", (e) => {
   } else if (e.target.dataset.az) suInputImpostazioni(e);
 });
 
+// Dopo aver cambiato la fine lavori la sezione Incassi si ridisegna quando il focus esce dalla
+// sezione (non mentre si scrive la data né passando al menu "Saldo entro").
+let incassiDaRidisegnare = false;
 document.addEventListener("focusout", (e) => {
-  if (state.corrente && e.target.dataset && e.target.dataset.inc === "fineLavori") setTimeout(aggiornaIncassi, 0);
+  const sezione = $("#sezione-incassi");
+  if (!state.corrente || !incassiDaRidisegnare || !sezione || !sezione.contains(e.target)) return;
+  if (e.relatedTarget && sezione.contains(e.relatedTarget)) return;
+  incassiDaRidisegnare = false;
+  setTimeout(aggiornaIncassi, 0);
 });
 
 window.addEventListener("hashchange", render);
