@@ -8,4 +8,5 @@ export const STORAGE_KEYS = {
   savedPosts: 'cooklog.saved.posts',
   likedPosts: 'cooklog.liked.posts',
   aiUsage: 'cooklog.ai.usage',
+  arena: 'cooklog.arena.v1',
 } as const;

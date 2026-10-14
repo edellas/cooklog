@@ -1,3 +1,4 @@
+import { CooklogColors } from '@/constants/cooklogTheme';
 import { FeedActionButton } from '@/src/components/FeedActionButton';
 import type { FoodPost } from '@/src/types';
 import { Image } from 'expo-image';
@@ -10,8 +11,11 @@ export function FoodPostCard({
   onToggleSave,
   onOpenRecipe,
   onOpenComments,
+  badge,
 }: {
   post: FoodPost;
+  /** Etichetta in evidenza (es. "Virale di oggi"). */
+  badge?: string;
   screenHeight: number;
   onToggleLike: () => void;
   onToggleSave: () => void;
@@ -28,6 +32,11 @@ export function FoodPostCard({
     <View style={[styles.container, { height: screenHeight }]}>
       <Image source={{ uri: post.mediaUrl }} style={styles.image} contentFit="cover" />
       <View style={styles.overlay} />
+      {badge ? (
+        <View style={styles.badge}>
+          <Text style={styles.badgeLabel}>{badge}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.meta}>
         <Text style={styles.author}>@{post.authorName}</Text>
@@ -91,6 +100,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   recipeButtonLabel: { color: '#1B4332', fontWeight: '700', fontSize: 14 },
+  badge: {
+    position: 'absolute',
+    top: 56,
+    left: 16,
+    borderRadius: 10,
+    backgroundColor: CooklogColors.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  badgeLabel: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
   actions: {
     position: 'absolute',
     right: 12,

@@ -32,6 +32,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="arena"
+        options={{
+          title: 'Arena',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="flame.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="add"
         options={{
           title: 'Aggiungi',
