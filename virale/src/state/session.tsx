@@ -5,6 +5,9 @@ import type { Me } from '../types';
 
 type Session = {
   me: Me | null | undefined;
+  /** L'account non si è potuto leggere (rete assente): si mostra "Riprova", non il benvenuto. */
+  error: string | null;
+  retry: () => void;
   setMe: (me: Me | null) => void;
   /** Cresce a ogni cambiamento che le altre schermate devono vedere (nuovo post, nuova copertina). */
   version: number;
@@ -15,14 +18,17 @@ const Ctx = createContext<Session | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
-  useEffect(() => {
-    void getMe()
+  const retry = useCallback(() => {
+    setError(null);
+    getMe()
       .then(setMe)
-      .catch(() => setMe(null));
+      .catch((e: Error) => setError(e.message));
   }, []);
+  useEffect(retry, [retry]);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
-  const value = useMemo(() => ({ me, setMe, version, bump }), [me, version, bump]);
+  const value = useMemo(() => ({ me, setMe, error, retry, version, bump }), [me, error, retry, version, bump]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

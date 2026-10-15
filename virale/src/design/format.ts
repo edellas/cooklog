@@ -1,18 +1,21 @@
 export function formatCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace('.', ',').replace(',0', '')} Mln`;
+  // 999.950 arrotondato sarebbe "1000k": da lì in su si scrive in milioni.
+  if (n >= 999_500) return `${(n / 1_000_000).toFixed(1).replace('.', ',').replace(',0', '')} Mln`;
   if (n >= 10_000) return `${Math.round(n / 1000)}k`;
   if (n >= 1_000) return `${(n / 1000).toFixed(1).replace('.', ',').replace(',0', '')}k`;
   return String(n);
 }
 
+/** Tempo trascorso in forma breve: "ora", "5 min", "3 h", "2 g". Mai "ieri", che si legge male in "ieri fa". */
 export function timeAgo(iso: string, now = Date.now()): string {
-  const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60000));
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const m = Math.max(0, Math.floor((now - t) / 60000));
   if (m < 1) return 'ora';
   if (m < 60) return `${m} min`;
-  const h = Math.round(m / 60);
+  const h = Math.floor(m / 60);
   if (h < 24) return `${h} h`;
-  const d = Math.round(h / 24);
-  return d === 1 ? 'ieri' : `${d} g`;
+  return `${Math.floor(h / 24)} g`;
 }
 
 const DAYS = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];

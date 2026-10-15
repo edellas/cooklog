@@ -34,8 +34,11 @@ returns boolean language sql immutable as $$
      and jsonb_array_length(m) between 1 and 10
      and not exists (
        select 1 from jsonb_array_elements(m) x
-       where not (x->>'kind' in ('image', 'video') and coalesce(x->>'url', '') ~ '^https://')
-          or (x->>'kind' = 'video' and coalesce((x->>'duration_ms')::int, 0) > 61000)
+       where jsonb_typeof(x) <> 'object'
+          -- coalesce: un elemento senza "kind" darebbe NULL e passerebbe il controllo.
+          or not coalesce(x->>'kind' in ('image', 'video') and coalesce(x->>'url', '') ~ '^https://', false)
+          -- La durata arriva in millisecondi, anche con decimali (iOS): si confronta come numero.
+          or (x->>'kind' = 'video' and jsonb_typeof(x->'duration_ms') = 'number' and (x->>'duration_ms')::numeric > 61000)
      );
 $$;
 
@@ -100,9 +103,10 @@ create index if not exists idx_blocks_blocked on public.blocks (blocked_id);
 
 create table if not exists public.reports (
   id uuid primary key default gen_random_uuid(),
-  post_id uuid references public.posts(id) on delete cascade,
-  reported_user_id uuid not null references public.profiles(id) on delete cascade,
-  reporter_id uuid not null references public.profiles(id) on delete cascade,
+  -- "set null": chi viene segnalato non cancella le tracce eliminando post o account.
+  post_id uuid references public.posts(id) on delete set null,
+  reported_user_id uuid references public.profiles(id) on delete set null,
+  reporter_id uuid references public.profiles(id) on delete set null,
   reason text not null check (reason in ('spam', 'nudo', 'violenza', 'odio', 'molestie', 'minori', 'falso', 'altro')),
   note text check (length(note) <= 300),
   status text not null default 'open' check (status in ('open', 'removed', 'dismissed')),
@@ -112,6 +116,9 @@ create table if not exists public.reports (
   unique (post_id, reporter_id)
 );
 create index if not exists idx_reports_open on public.reports (status, created_at) where status = 'open';
+create index if not exists idx_reports_post on public.reports (post_id);
+create index if not exists idx_reports_reporter on public.reports (reporter_id);
+create index if not exists idx_reports_reported on public.reports (reported_user_id);
 
 alter table public.blocks enable row level security;
 alter table public.reports enable row level security;
@@ -121,31 +128,66 @@ create policy "blocks own" on public.blocks for select to authenticated using (a
 
 /** Un utente può agire (pubblicare, commentare, votare) solo se ha un profilo e non è stato espulso. */
 create or replace function public.is_active(p_uid uuid)
-returns boolean language sql stable security definer set search_path = public as $$
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
   select exists (select 1 from profiles where id = p_uid and banned_at is null);
 $$;
 
 /** Vero se uno dei due ha bloccato l'altro: in quel caso non si vedono più a vicenda. */
+-- Chi chiama può chiedere solo dei blocchi che lo riguardano: i blocchi altrui sono privati.
 create or replace function public.is_blocked_pair(a uuid, b uuid)
-returns boolean language sql stable security definer set search_path = public as $$
-  select a is not null and b is not null and exists (
-    select 1 from blocks where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a)
-  );
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select a is not null and b is not null
+     and (auth.uid() is null or auth.uid() in (a, b))
+     and exists (select 1 from blocks where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a));
 $$;
 
-/** Un post è visibile a chi guarda se non è nascosto, l'autore non è espulso e non c'è un blocco tra i due. */
+/**
+ * Un post è visibile a chi guarda se non è nascosto, l'autore non è espulso, non c'è un blocco tra i due
+ * e chi guarda non l'ha segnalato (un post segnalato sparisce subito per chi lo segnala).
+ */
 create or replace function public.can_see(p_post_id uuid, p_viewer uuid)
-returns boolean language sql stable security definer set search_path = public as $$
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
   select exists (
     select 1 from posts p join profiles a on a.id = p.author_id
     where p.id = p_post_id and p.hidden_at is null and a.banned_at is null
       and not public.is_blocked_pair(p_viewer, p.author_id)
+      and not exists (select 1 from reports r where r.post_id = p_post_id and r.reporter_id = p_viewer)
   );
 $$;
 
+-- Campi che decide sempre il server, qualunque cosa mandi il client: date, ruoli, contatori, stato.
+create or replace function public.force_server_fields()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if tg_table_name = 'profiles' then
+    new.created_at := now();
+    new.is_moderator := false;
+    new.banned_at := null;
+    new.terms_accepted_at := now();
+  elsif tg_table_name = 'posts' then
+    new.created_at := now();
+    new.like_count := 0;
+    new.comment_count := 0;
+    new.save_count := 0;
+    new.share_count := 0;
+    new.hidden_at := null;
+    new.hidden_reason := null;
+  else
+    new.created_at := now();
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trg_profiles_server_fields on public.profiles;
+create trigger trg_profiles_server_fields before insert on public.profiles for each row execute function public.force_server_fields();
+drop trigger if exists trg_posts_server_fields on public.posts;
+create trigger trg_posts_server_fields before insert on public.posts for each row execute function public.force_server_fields();
+drop trigger if exists trg_comments_server_fields on public.comments;
+create trigger trg_comments_server_fields before insert on public.comments for each row execute function public.force_server_fields();
+
 -- Contatori mantenuti dal database: il client non può gonfiarli.
 create or replace function public.bump_post_counter()
-returns trigger language plpgsql security definer set search_path = public as $$
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_col text := tg_argv[0];
   v_post uuid := coalesce(new.post_id, old.post_id);
@@ -159,6 +201,19 @@ drop trigger if exists trg_likes_count on public.post_likes;
 create trigger trg_likes_count after insert or delete on public.post_likes for each row execute function public.bump_post_counter('like_count');
 drop trigger if exists trg_saves_count on public.post_saves;
 create trigger trg_saves_count after insert or delete on public.post_saves for each row execute function public.bump_post_counter('save_count');
+-- Condivisioni: una per persona e post, così il contatore (e il segnale di gara) non si gonfia a forza di tocchi.
+create table if not exists public.post_shares (
+  post_id uuid not null references public.posts(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+create index if not exists idx_post_shares_user on public.post_shares (user_id);
+alter table public.post_shares enable row level security;
+drop trigger if exists trg_shares_count on public.post_shares;
+create trigger trg_shares_count after insert or delete on public.post_shares for each row execute function public.bump_post_counter('share_count');
+create index if not exists idx_post_likes_user on public.post_likes (user_id);
+create index if not exists idx_comments_user on public.comments (user_id);
 drop trigger if exists trg_comments_count on public.comments;
 create trigger trg_comments_count after insert or delete on public.comments for each row execute function public.bump_post_counter('comment_count');
 
@@ -170,10 +225,15 @@ alter table public.comments enable row level security;
 alter table public.follows enable row level security;
 
 drop policy if exists "profiles readable" on public.profiles;
-create policy "profiles readable" on public.profiles for select to anon, authenticated using (true);
+create policy "profiles readable" on public.profiles for select to authenticated using (true);
 drop policy if exists "profiles insert own" on public.profiles;
-create policy "profiles insert own" on public.profiles for insert to authenticated
-  with check (auth.uid() = id and is_moderator = false and banned_at is null);
+-- Data di creazione, ruolo ed espulsione li impone il trigger force_server_fields: un client non può
+-- retrodatare l'account (per votare subito) né nominarsi moderatore.
+create policy "profiles insert own" on public.profiles for insert to authenticated with check (auth.uid() = id);
+-- Dei profili altrui si leggono solo i campi pubblici.
+revoke select, insert on public.profiles from anon, authenticated;
+grant select (id, username, display_name, bio, created_at) on public.profiles to authenticated;
+grant insert (id, username, display_name, bio, terms_accepted_at) on public.profiles to authenticated;
 drop policy if exists "profiles update own" on public.profiles;
 create policy "profiles update own" on public.profiles for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
 -- Ruolo di moderatore ed espulsione non si cambiano dal client: dal client si aggiornano solo nome e bio.
@@ -181,31 +241,57 @@ create policy "profiles update own" on public.profiles for update to authenticat
 revoke update on public.profiles from anon, authenticated;
 grant update (display_name, bio) on public.profiles to authenticated;
 drop policy if exists "posts readable" on public.posts;
-create policy "posts readable" on public.posts for select to anon, authenticated using (true);
+-- Un post nascosto, rimosso, di un utente espulso o bloccato non si legge nemmeno interrogando la tabella.
+create policy "posts readable" on public.posts for select to authenticated using (author_id = auth.uid() or public.can_see(id, auth.uid()));
 drop policy if exists "posts insert own" on public.posts;
--- I contatori partono da zero: un client non può inserire un post con 10.000 like.
+-- Contatori, data e stato li impone il trigger: un client non può inserire un post con 10.000 like o datato nel futuro.
 create policy "posts insert own" on public.posts for insert to authenticated
-  with check (auth.uid() = author_id and public.is_active(auth.uid()) and hidden_at is null
-              and like_count = 0 and comment_count = 0 and save_count = 0 and share_count = 0);
+  with check (auth.uid() = author_id and public.is_active(auth.uid()));
+revoke all on public.posts from anon;
+revoke insert, update on public.posts from authenticated;
+grant insert (author_id, media, caption) on public.posts to authenticated;
 drop policy if exists "posts delete own" on public.posts;
 create policy "posts delete own" on public.posts for delete to authenticated using (auth.uid() = author_id);
 
+-- Mi piace e salvataggi: si aggiungono e si tolgono, mai si modificano (spostare un like su un altro post
+-- aggirava i contatori).
 drop policy if exists "likes own" on public.post_likes;
-create policy "likes own" on public.post_likes for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id and public.is_active(auth.uid()));
+drop policy if exists "likes select own" on public.post_likes;
+drop policy if exists "likes insert own" on public.post_likes;
+drop policy if exists "likes delete own" on public.post_likes;
+create policy "likes select own" on public.post_likes for select to authenticated using (auth.uid() = user_id);
+create policy "likes insert own" on public.post_likes for insert to authenticated
+  with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
+create policy "likes delete own" on public.post_likes for delete to authenticated using (auth.uid() = user_id);
 drop policy if exists "saves own" on public.post_saves;
-create policy "saves own" on public.post_saves for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id and public.is_active(auth.uid()));
+drop policy if exists "saves select own" on public.post_saves;
+drop policy if exists "saves insert own" on public.post_saves;
+drop policy if exists "saves delete own" on public.post_saves;
+create policy "saves select own" on public.post_saves for select to authenticated using (auth.uid() = user_id);
+create policy "saves insert own" on public.post_saves for insert to authenticated
+  with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
+create policy "saves delete own" on public.post_saves for delete to authenticated using (auth.uid() = user_id);
+revoke all on public.post_likes, public.post_saves, public.post_shares from anon;
+revoke update on public.post_likes, public.post_saves, public.post_shares from authenticated;
 drop policy if exists "comments readable" on public.comments;
-create policy "comments readable" on public.comments for select to anon, authenticated using (true);
+create policy "comments readable" on public.comments for select to authenticated
+  using (public.can_see(post_id, auth.uid()) and public.is_active(user_id) and not public.is_blocked_pair(auth.uid(), user_id));
+revoke all on public.comments from anon;
+revoke insert, update on public.comments from authenticated;
+grant insert (post_id, user_id, body) on public.comments to authenticated;
 drop policy if exists "comments insert own" on public.comments;
 create policy "comments insert own" on public.comments for insert to authenticated
   with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
 drop policy if exists "comments delete own" on public.comments;
 create policy "comments delete own" on public.comments for delete to authenticated using (auth.uid() = user_id);
 drop policy if exists "follows readable" on public.follows;
-create policy "follows readable" on public.follows for select to authenticated using (true);
+create policy "follows readable" on public.follows for select to authenticated using (auth.uid() in (follower_id, followee_id));
 drop policy if exists "follows own" on public.follows;
 create policy "follows own" on public.follows for insert to authenticated
-  with check (auth.uid() = follower_id and public.is_active(auth.uid()) and not public.is_blocked_pair(follower_id, followee_id));
+  with check (auth.uid() = follower_id and public.is_active(auth.uid()) and public.is_active(followee_id)
+              and not public.is_blocked_pair(follower_id, followee_id));
+revoke all on public.follows from anon;
+revoke update on public.follows from authenticated;
 drop policy if exists "unfollow own" on public.follows;
 create policy "unfollow own" on public.follows for delete to authenticated using (auth.uid() = follower_id);
 
@@ -253,10 +339,13 @@ $$;
 create table if not exists public.arena_entries (
   id uuid primary key default gen_random_uuid(),
   contest_day date not null,
-  post_id uuid not null references public.posts(id) on delete cascade,
+  -- Se il post viene eliminato la candidatura resta (squalificata): così non se ne fa una seconda lo stesso giorno.
+  post_id uuid references public.posts(id) on delete set null,
   author_id uuid not null references public.profiles(id) on delete cascade,
   tier smallint not null default 0,
   status text not null default 'active' check (status in ('active', 'parked', 'finalist', 'disqualified')),
+  -- 'segnalazioni' (tasso di segnalazioni oltre soglia: un moderatore può annullarla), 'moderazione', 'ritirato'.
+  disqualified_reason text,
   last_score numeric,
   -- Chiave casuale indicizzata: permette di campionare candidati in O(log n) anche con centinaia di migliaia di contenuti.
   rand_key double precision not null default random(),
@@ -264,7 +353,24 @@ create table if not exists public.arena_entries (
   unique (contest_day, author_id),
   unique (contest_day, post_id)
 );
-create index if not exists idx_arena_entries_pick on public.arena_entries (contest_day, status, tier, rand_key);
+-- Campionamento in O(log n): due indici parziali con i predicati esatti usati da arena_pick.
+drop index if exists public.idx_arena_entries_pick;
+create index if not exists idx_arena_pick_lower on public.arena_entries (contest_day, rand_key) where status in ('active', 'finalist') and tier = 0;
+create index if not exists idx_arena_pick_upper on public.arena_entries (contest_day, rand_key) where status in ('active', 'finalist') and tier >= 1;
+create index if not exists idx_arena_entries_post on public.arena_entries (post_id);
+create index if not exists idx_arena_entries_author on public.arena_entries (author_id, contest_day);
+
+-- Eliminare un post in gara lo ritira: la candidatura resta, squalificata.
+create or replace function public.withdraw_entry_on_delete()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  update arena_entries set status = 'disqualified', disqualified_reason = 'ritirato'
+   where post_id = old.id and status <> 'disqualified';
+  return old;
+end;
+$$;
+drop trigger if exists trg_posts_withdraw on public.posts;
+create trigger trg_posts_withdraw before delete on public.posts for each row execute function public.withdraw_entry_on_delete();
 
 -- Contatori "shardati": i finalisti ricevono migliaia di viste al secondo, una sola riga
 -- diventerebbe un collo di bottiglia per i lock. Ogni vista incrementa uno shard a caso.
@@ -320,6 +426,8 @@ create table if not exists public.daily_viral (
   created_at timestamptz not null default now()
 );
 create index if not exists idx_daily_viral_author on public.daily_viral (author_id, featured_on desc);
+create index if not exists idx_daily_viral_post on public.daily_viral (post_id);
+create index if not exists idx_daily_viral_entry on public.daily_viral (entry_id);
 
 -- ---------------------------------------------------------------------------
 -- RLS: lettura pubblica per autenticati, scritture solo tramite le funzioni qui sotto
@@ -331,8 +439,9 @@ alter table public.arena_views enable row level security;
 alter table public.arena_tier_results enable row level security;
 alter table public.daily_viral enable row level security;
 
+-- Le candidature non si leggono dalla tabella (punteggi e autori resterebbero esposti): solo tramite le funzioni.
 drop policy if exists "arena entries readable" on public.arena_entries;
-create policy "arena entries readable" on public.arena_entries for select to authenticated using (true);
+revoke all on public.arena_entries, public.arena_entry_stats, public.arena_tier_results, public.arena_config from anon, authenticated;
 drop policy if exists "arena views own" on public.arena_views;
 create policy "arena views own" on public.arena_views for select to authenticated using (auth.uid() = viewer_id);
 drop policy if exists "daily viral readable" on public.daily_viral;
@@ -347,7 +456,7 @@ returns numeric language sql immutable as $$
 $$;
 
 create or replace function public.arena_entry_totals(p_entry_id uuid)
-returns public.arena_entry_stats language sql stable security definer set search_path = public as $$
+returns public.arena_entry_stats language sql stable security definer set search_path = public, pg_temp as $$
   select p_entry_id, 0::smallint,
          coalesce(sum(views), 0)::int, coalesce(sum(completes), 0)::int, coalesce(sum(rewatches), 0)::int,
          coalesce(sum(likes), 0)::int, coalesce(sum(comments), 0)::int,
@@ -373,7 +482,7 @@ $$;
 -- ---------------------------------------------------------------------------
 create or replace function public.arena_submit(p_post_id uuid)
 returns public.arena_entries
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
   v_cfg public.arena_config := public.arena_cfg();
@@ -389,7 +498,8 @@ begin
   end if;
   if exists (
     select 1 from daily_viral
-    where author_id = v_uid and featured_on > v_day - v_cfg.winner_cooldown_days
+    -- Stessa finestra di arena_close_day: il post di oggi uscirebbe domani (v_day + 1).
+    where author_id = v_uid and featured_on > v_day + 1 - v_cfg.winner_cooldown_days
   ) then
     raise exception 'Hai già vinto di recente: potrai ripartecipare tra qualche giorno.';
   end if;
@@ -409,35 +519,53 @@ $$;
 -- Campiona fino a p_n candidati di un intervallo di livelli partendo da un punto casuale dell'indice.
 create or replace function public.arena_pick(p_day date, p_viewer uuid, p_min_tier int, p_max_tier int, p_n int)
 returns setof public.arena_entries
-language plpgsql volatile set search_path = public as $$
+language plpgsql volatile set search_path = public, pg_temp as $$
 declare
   v_start double precision := random();
 begin
-  return query
-  with candidates as (
-    (select e.* from arena_entries e
-      where e.contest_day = p_day and e.status in ('active', 'finalist')
-        and e.tier between p_min_tier and p_max_tier and e.rand_key >= v_start
-        and e.author_id <> p_viewer
-        and public.can_see(e.post_id, p_viewer)
-        and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
-      order by e.rand_key limit p_n)
-    union all
-    (select e.* from arena_entries e
-      where e.contest_day = p_day and e.status in ('active', 'finalist')
-        and e.tier between p_min_tier and p_max_tier and e.rand_key < v_start
-        and e.author_id <> p_viewer
-        and public.can_see(e.post_id, p_viewer)
-        and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
-      order by e.rand_key limit p_n)
-  )
-  select * from candidates limit p_n;
+  -- Due rami con predicati letterali (tier = 0 / tier >= 1): solo così il piano usa gli indici parziali
+  -- e legge pochi elementi dell'indice invece di tutte le candidature del giorno.
+  if p_max_tier = 0 then
+    return query
+    with candidates as (
+      (select e.* from arena_entries e
+        where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier = 0 and e.rand_key >= v_start
+          and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+        order by e.rand_key limit p_n)
+      union all
+      (select e.* from arena_entries e
+        where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier = 0 and e.rand_key < v_start
+          and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+        order by e.rand_key limit p_n)
+    )
+    select * from candidates limit p_n;
+  else
+    return query
+    with candidates as (
+      (select e.* from arena_entries e
+        where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier >= 1 and e.rand_key >= v_start
+          and e.tier between p_min_tier and p_max_tier
+          and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+        order by e.rand_key limit p_n)
+      union all
+      (select e.* from arena_entries e
+        where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier >= 1 and e.rand_key < v_start
+          and e.tier between p_min_tier and p_max_tier
+          and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+        order by e.rand_key limit p_n)
+    )
+    select * from candidates limit p_n;
+  end if;
 end;
 $$;
 
 -- Un post composto come lo legge l'app: autore, media, contatori, e cosa ne pensa chi guarda.
 create or replace function public.post_json(p_post_id uuid, p_viewer uuid)
-returns jsonb language sql stable security definer set search_path = public as $$
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'id', p.id,
     'author', jsonb_build_object('id', pr.id, 'username', pr.username, 'display_name', pr.display_name),
@@ -450,6 +578,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'share_count', p.share_count,
     'liked', exists (select 1 from post_likes l where l.post_id = p.id and l.user_id = p_viewer),
     'saved', exists (select 1 from post_saves v where v.post_id = p.id and v.user_id = p_viewer),
+    'following', exists (select 1 from follows f where f.follower_id = p_viewer and f.followee_id = p.author_id),
     'contest', (
       select jsonb_build_object('entry_id', e.id, 'tier', e.tier, 'status', e.status)
       from arena_entries e where e.post_id = p.id and e.contest_day = public.arena_today()
@@ -462,7 +591,7 @@ $$;
 -- I Provini ("Per te"): prima i post in gara scelti alla cieca, poi post recenti fuori gara.
 create or replace function public.feed_for_you(p_limit int default 6, p_exclude uuid[] default '{}')
 returns table (entry_id uuid, post jsonb)
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 #variable_conflict use_column
 declare
   v_uid uuid := auth.uid();
@@ -473,7 +602,7 @@ declare
   v_ids uuid[];
   v_n int;
 begin
-  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
 
   with upper_pool as (
     select p.id, p.tier from public.arena_pick(v_day, v_uid, 1, 32767, 200) p
@@ -511,7 +640,8 @@ begin
       and public.can_see(p.id, v_uid)
       and p.created_at > now() - interval '3 days'
       and not (p.id = any (coalesce(p_exclude, '{}')))
-      and not exists (select 1 from arena_entries e where e.post_id = p.id and e.id = any (coalesce(v_ids, '{}')))
+      -- I post in gara oggi si vedono solo nei Provini, serviti alla cieca: mai nel ripiego.
+      and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
     order by p.like_count desc, p.created_at desc
     limit v_limit - v_n;
   end if;
@@ -520,7 +650,7 @@ $$;
 
 -- "Seguiti": i post di chi segui, dal più recente.
 create or replace function public.feed_following(p_limit int default 30)
-returns setof jsonb language sql stable security definer set search_path = public as $$
+returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select public.post_json(p.id, auth.uid())
   from posts p
   join follows f on f.followee_id = p.author_id and f.follower_id = auth.uid()
@@ -530,7 +660,7 @@ returns setof jsonb language sql stable security definer set search_path = publi
 $$;
 
 create or replace function public.get_post(p_post_id uuid)
-returns jsonb language sql stable security definer set search_path = public as $$
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   -- L'autore vede sempre i propri post; gli altri solo se visibili.
   select public.post_json(p_post_id, auth.uid())
   where public.can_see(p_post_id, auth.uid())
@@ -539,11 +669,12 @@ $$;
 
 -- Commenti di un post, senza quelli di utenti bloccati o espulsi.
 create or replace function public.get_comments(p_post_id uuid)
-returns setof jsonb language sql stable security definer set search_path = public as $$
+returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('id', c.id, 'post_id', c.post_id, 'body', c.body, 'created_at', c.created_at,
                             'author', jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name))
   from comments c join profiles a on a.id = c.user_id
   where c.post_id = p_post_id and a.banned_at is null and not public.is_blocked_pair(auth.uid(), c.user_id)
+    and (public.can_see(p_post_id, auth.uid()) or exists (select 1 from posts where id = p_post_id and author_id = auth.uid()))
   order by c.created_at
   limit 300;
 $$;
@@ -551,32 +682,52 @@ $$;
 -- Segnala un post. Con 3 segnalazioni aperte da persone diverse il post sparisce subito
 -- (e va in revisione): la community non deve aspettare il moderatore.
 create or replace function public.report_post(p_post_id uuid, p_reason text, p_note text default null)
-returns void language plpgsql security definer set search_path = public as $$
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
+  v_cfg public.arena_config := public.arena_cfg();
   v_author uuid;
   v_open int;
+  v_new boolean;
+  v_entry uuid;
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
-  select author_id into v_author from posts where id = p_post_id;
+  -- Lock sul post: tre segnalazioni simultanee contano tutte e tre.
+  select author_id into v_author from posts where id = p_post_id for update;
   if v_author is null then raise exception 'Post non trovato.'; end if;
   if v_author = v_uid then raise exception 'Non puoi segnalare un tuo post.'; end if;
 
   insert into reports (post_id, reported_user_id, reporter_id, reason, note)
   values (p_post_id, v_author, v_uid, p_reason, nullif(trim(coalesce(p_note, '')), ''))
-  on conflict (post_id, reporter_id) do nothing;
+  on conflict (post_id, reporter_id) do nothing
+  returning true into v_new;
+  if v_new is null then return; end if;
 
-  select count(distinct reporter_id) into v_open from reports where post_id = p_post_id and status = 'open';
+  -- Per nascondere subito un post contano solo account con più di 24 ore: tre account appena creati
+  -- non possono far sparire il primo in classifica a pochi minuti dalla mezzanotte.
+  select count(distinct r.reporter_id) into v_open
+    from reports r join profiles pr on pr.id = r.reporter_id
+   where r.post_id = p_post_id and r.status = 'open' and pr.created_at <= now() - v_cfg.min_viewer_account_age;
   if v_open >= 3 then
     -- Solo nascosto, non squalificato: se il moderatore dà ragione al post, torna in gara da dove era.
-    -- Così tre utenti d'accordo non possono eliminare un concorrente.
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'segnalazioni') where id = p_post_id;
+  end if;
+
+  -- La segnalazione pesa nella gara solo se è vera (c'è la riga in reports) e viene da chi il post l'ha visto nei Provini.
+  select e.id into v_entry from arena_entries e
+   where e.post_id = p_post_id and e.contest_day = public.arena_today() and e.status in ('active', 'finalist');
+  if v_entry is not null
+     and exists (select 1 from arena_views v where v.entry_id = v_entry and v.viewer_id = v_uid)
+     and exists (select 1 from profiles where id = v_uid and created_at <= now() - v_cfg.min_viewer_account_age) then
+    insert into arena_entry_stats as st (entry_id, shard, reports) values (v_entry, floor(random() * v_cfg.stat_shards)::smallint, 1)
+    on conflict (entry_id, shard) do update set reports = st.reports + 1;
+    perform public.arena_evaluate(v_entry);
   end if;
 end;
 $$;
 
 create or replace function public.block_user(p_user_id uuid)
-returns void language sql security definer set search_path = public as $$
+returns void language sql security definer set search_path = public, pg_temp as $$
   insert into blocks (blocker_id, blocked_id) select auth.uid(), p_user_id
   where auth.uid() is not null and auth.uid() <> p_user_id
   on conflict do nothing;
@@ -585,12 +736,12 @@ returns void language sql security definer set search_path = public as $$
 $$;
 
 create or replace function public.unblock_user(p_user_id uuid)
-returns void language sql security definer set search_path = public as $$
+returns void language sql security definer set search_path = public, pg_temp as $$
   delete from blocks where blocker_id = auth.uid() and blocked_id = p_user_id;
 $$;
 
 create or replace function public.list_blocked()
-returns setof jsonb language sql stable security definer set search_path = public as $$
+returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name)
   from blocks b join profiles a on a.id = b.blocked_id
   where b.blocker_id = auth.uid()
@@ -600,7 +751,7 @@ $$;
 -- Elimina il proprio account e tutto ciò che contiene (post, commenti, like, follow, gare).
 -- I file nello Storage li cancella l'app prima di chiamare questa funzione.
 create or replace function public.delete_my_account()
-returns void language plpgsql security definer set search_path = public, auth as $$
+returns void language plpgsql security definer set search_path = public, auth, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
 begin
@@ -613,7 +764,7 @@ $$;
 -- Moderazione: coda delle segnalazioni, solo per i moderatori (profiles.is_moderator)
 -- ---------------------------------------------------------------------------
 create or replace function public.mod_queue()
-returns setof jsonb language plpgsql stable security definer set search_path = public as $$
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
   if not exists (select 1 from profiles where id = auth.uid() and is_moderator) then raise exception 'Solo per i moderatori.'; end if;
   return query
@@ -634,7 +785,7 @@ $$;
 -- action: 'dismiss' (nessun problema, il post torna visibile), 'remove' (post rimosso),
 -- 'ban' (post rimosso e utente espulso: tutti i suoi post spariscono e non può più agire).
 create or replace function public.mod_resolve(p_post_id uuid, p_action text)
-returns void language plpgsql security definer set search_path = public as $$
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
   v_author uuid;
@@ -649,32 +800,43 @@ begin
 
   if p_action = 'dismiss' then
     update posts set hidden_at = null, hidden_reason = null where id = p_post_id and hidden_reason = 'segnalazioni';
+    -- Le segnalazioni respinte non pesano più: se avevano fatto squalificare il post, torna in gara dal suo livello.
+    update arena_entry_stats set reports = 0
+     where entry_id in (select id from arena_entries where post_id = p_post_id and contest_day = public.arena_today());
+    update arena_entries set status = case when tier >= array_length((public.arena_cfg()).tier_thresholds, 1) then 'finalist' else 'active' end,
+                             disqualified_reason = null
+     where post_id = p_post_id and contest_day = public.arena_today() and status = 'disqualified' and disqualified_reason = 'segnalazioni';
   else
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = 'moderazione' where id = p_post_id;
-    update arena_entries set status = 'disqualified' where post_id = p_post_id;
+    update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where post_id = p_post_id;
   end if;
 
   if p_action = 'ban' then
     update profiles set banned_at = now() where id = v_author;
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = v_author;
-    update arena_entries set status = 'disqualified' where author_id = v_author and contest_day = public.arena_today();
+    update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where author_id = v_author and contest_day = public.arena_today();
   end if;
 end;
 $$;
 
+-- Una condivisione per persona e post: il contatore lo tiene il trigger su post_shares.
 create or replace function public.register_share(p_post_id uuid)
-returns void language sql security definer set search_path = public as $$
-  update posts set share_count = share_count + 1 where id = p_post_id and auth.uid() is not null;
+returns void language sql security definer set search_path = public, pg_temp as $$
+  insert into post_shares (post_id, user_id)
+  select p_post_id, auth.uid()
+  where auth.uid() is not null and public.is_active(auth.uid()) and public.can_see(p_post_id, auth.uid())
+  on conflict do nothing;
 $$;
 
 create or replace function public.get_profile(p_username text)
-returns jsonb language plpgsql stable security definer set search_path = public as $$
+returns jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
   v_pr profiles;
 begin
   select * into v_pr from profiles where username = p_username;
-  if not found or (v_pr.id <> coalesce(v_uid, v_pr.id) and (v_pr.banned_at is not null or public.is_blocked_pair(v_uid, v_pr.id))) then
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if not found or (v_pr.id <> v_uid and (v_pr.banned_at is not null or public.is_blocked_pair(v_uid, v_pr.id))) then
     raise exception 'Profilo non trovato.';
   end if;
   return jsonb_build_object(
@@ -689,7 +851,7 @@ begin
     ),
     'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) order by p.created_at desc)
                        from (select id, created_at from posts where author_id = v_pr.id
-                             and (v_pr.id = v_uid or hidden_at is null) order by created_at desc limit 60) p), '[]'),
+                             and (v_pr.id = v_uid or public.can_see(id, v_uid)) order by created_at desc limit 60) p), '[]'),
     'saved', case when v_pr.id = v_uid then
                coalesce((select jsonb_agg(public.post_json(s.post_id, v_uid) order by s.created_at desc)
                          from (select post_id, created_at from post_saves where user_id = v_uid and public.can_see(post_id, v_uid)
@@ -697,7 +859,9 @@ begin
              else '[]'::jsonb end,
     'entry', (select jsonb_build_object('entry_id', e.id, 'post_id', e.post_id, 'tier', e.tier, 'status', e.status,
                                         'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day)
-              from arena_entries e where e.author_id = v_pr.id and e.contest_day = public.arena_today())
+              -- La propria candidatura è privata: degli altri non si vedono livello e viste.
+              from arena_entries e where e.author_id = v_pr.id and v_pr.id = v_uid and e.post_id is not null
+                and e.contest_day = public.arena_today())
   );
 end;
 $$;
@@ -707,7 +871,7 @@ $$;
 -- ---------------------------------------------------------------------------
 create or replace function public.arena_evaluate(p_entry_id uuid)
 returns void
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_cfg public.arena_config := public.arena_cfg();
   v_entry public.arena_entries;
@@ -720,14 +884,14 @@ declare
   v_levels int := array_length(v_cfg.tier_thresholds, 1);
 begin
   -- Lock della riga: due viste concorrenti non possono promuovere due volte.
-  select * into v_entry from arena_entries where id = p_entry_id for update;
+  select * into v_entry from arena_entries where id = p_entry_id for no key update;
   if not found or v_entry.status not in ('active', 'finalist') then return; end if;
 
   v_stats := public.arena_entry_totals(p_entry_id);
 
   if v_stats.views >= v_cfg.report_min_views
      and v_stats.reports::numeric / v_stats.views > v_cfg.max_report_rate then
-    update arena_entries set status = 'disqualified' where id = p_entry_id;
+    update arena_entries set status = 'disqualified', disqualified_reason = 'segnalazioni' where id = p_entry_id;
     return;
   end if;
 
@@ -776,15 +940,20 @@ create or replace function public.arena_record_view(
   p_reported boolean default false
 )
 returns boolean
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
   v_cfg public.arena_config := public.arena_cfg();
   v_dwell int := least(greatest(coalesce(p_dwell_ms, 0), 0), v_cfg.max_dwell_ms);
   v_views int;
   v_entry public.arena_entries;
+  v_liked boolean;
+  v_commented boolean;
+  v_saved boolean;
+  v_shared boolean;
+  v_completed boolean;
 begin
-  if v_uid is null then return false; end if;
+  if v_uid is null or not public.is_active(v_uid) then return false; end if;
 
   -- Solo contenuti serviti a questo utente, solo una volta, solo il giorno stesso.
   update arena_views set recorded_at = now()
@@ -797,12 +966,22 @@ begin
     return false;
   end if;
 
+  -- I segnali si leggono dal database, non da ciò che dice il client: mi piace, commento, salvataggio
+  -- e condivisione contano solo se esistono davvero. Le segnalazioni passano da report_post.
+  select * into v_entry from arena_entries where id = p_entry_id;
+  v_liked := exists (select 1 from post_likes where post_id = v_entry.post_id and user_id = v_uid);
+  v_commented := exists (select 1 from comments where post_id = v_entry.post_id and user_id = v_uid);
+  v_saved := exists (select 1 from post_saves where post_id = v_entry.post_id and user_id = v_uid);
+  v_shared := exists (select 1 from post_shares where post_id = v_entry.post_id and user_id = v_uid);
+  -- Completamento e ri-visione li misura il telefono, ma devono essere compatibili col tempo passato sul post.
+  v_completed := v_dwell >= v_cfg.complete_dwell_ms or (coalesce(p_completed, false) and v_dwell >= v_cfg.skip_dwell_ms);
+
   insert into arena_entry_stats as s (entry_id, shard, views, completes, rewatches, likes, comments, saves, shares, skips, reports, dwell_ms)
   values (
     p_entry_id, floor(random() * v_cfg.stat_shards)::smallint, 1,
-    coalesce(p_completed, v_dwell >= v_cfg.complete_dwell_ms)::int, coalesce(p_rewatched, false)::int,
-    coalesce(p_liked, false)::int, coalesce(p_commented, false)::int, coalesce(p_saved, false)::int,
-    coalesce(p_shared, false)::int, (v_dwell < v_cfg.skip_dwell_ms)::int, coalesce(p_reported, false)::int, v_dwell
+    v_completed::int, (coalesce(p_rewatched, false) and v_dwell >= 2 * v_cfg.complete_dwell_ms)::int,
+    v_liked::int, v_commented::int, v_saved::int,
+    v_shared::int, (v_dwell < v_cfg.skip_dwell_ms)::int, 0, v_dwell
   )
   on conflict (entry_id, shard) do update set
     views = s.views + 1,
@@ -816,12 +995,11 @@ begin
     reports = s.reports + excluded.reports,
     dwell_ms = s.dwell_ms + excluded.dwell_ms;
 
-  select * into v_entry from arena_entries where id = p_entry_id;
   select coalesce(sum(views), 0) into v_views from arena_entry_stats where entry_id = p_entry_id;
-  -- I finalisti non vengono rivalutati a ogni vista (eviterebbe il lock sulla riga calda),
-  -- solo quando arriva una segnalazione.
+  -- I finalisti non vengono rivalutati a ogni vista (eviterebbe il lock sulla riga calda): solo a fine livello,
+  -- quando si raggiungono le viste minime per il controllo delle segnalazioni, o quando ne arriva una (report_post).
   if (v_entry.status = 'active' and v_views >= coalesce(v_cfg.tier_thresholds[v_entry.tier + 1], 2147483647))
-     or (p_reported and v_views >= v_cfg.report_min_views) then
+     or v_views = v_cfg.report_min_views then
     perform public.arena_evaluate(p_entry_id);
   end if;
   return true;
@@ -833,10 +1011,10 @@ $$;
 -- ---------------------------------------------------------------------------
 create or replace function public.arena_my_entry()
 returns table (entry_id uuid, post_id uuid, tier smallint, status text, views int, contest_day date)
-language sql stable security definer set search_path = public as $$
+language sql stable security definer set search_path = public, pg_temp as $$
   select e.id, e.post_id, e.tier, e.status, (public.arena_entry_totals(e.id)).views, e.contest_day
   from arena_entries e
-  where e.author_id = auth.uid() and e.contest_day = public.arena_today();
+  where e.author_id = auth.uid() and e.contest_day = public.arena_today() and e.post_id is not null;
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -844,13 +1022,15 @@ $$;
 -- ---------------------------------------------------------------------------
 create or replace function public.arena_close_day(p_day date)
 returns uuid
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_cfg public.arena_config := public.arena_cfg();
   v_winner record;
   v_total_entries int;
   v_total_views bigint;
 begin
+  -- Due esecuzioni contemporanee (cron doppio) non devono scontrarsi: la seconda aspetta e trova il vincitore.
+  perform pg_advisory_xact_lock(hashtext('arena_close_day:' || p_day::text));
   if exists (select 1 from daily_viral where contest_day = p_day) then
     return (select entry_id from daily_viral where contest_day = p_day);
   end if;
@@ -890,7 +1070,7 @@ $$;
 -- 7) Il virale di oggi: identico per tutti => cacheabile su CDN, costo trascurabile anche con milioni di utenti
 -- ---------------------------------------------------------------------------
 create or replace function public.get_today_cover()
-returns jsonb language sql stable security definer set search_path = public as $$
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
@@ -899,7 +1079,7 @@ $$;
 
 -- L'Archivio: le copertine uscite, dalla più recente.
 create or replace function public.get_cover_archive(p_limit int default 60)
-returns setof jsonb language sql stable security definer set search_path = public as $$
+returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
@@ -908,6 +1088,13 @@ returns setof jsonb language sql stable security definer set search_path = publi
   limit least(greatest(p_limit, 1), 120);
 $$;
 
+-- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
+revoke execute on all functions in schema public from public, anon, authenticated;
+-- Usate dalle regole RLS e dai controlli delle tabelle: devono restare eseguibili da chi è autenticato.
+grant execute on function public.is_active(uuid) to authenticated;
+grant execute on function public.can_see(uuid, uuid) to authenticated;
+grant execute on function public.is_blocked_pair(uuid, uuid) to authenticated;
+grant execute on function public.valid_media(jsonb) to authenticated;
 -- Permessi: i client chiamano solo queste funzioni.
 revoke all on function public.arena_close_day(date) from public, anon, authenticated;
 revoke all on function public.arena_evaluate(uuid) from public, anon, authenticated;
@@ -919,12 +1106,12 @@ grant execute on function public.feed_for_you(int, uuid[]) to authenticated;
 grant execute on function public.feed_following(int) to authenticated;
 grant execute on function public.arena_record_view(uuid, int, boolean, boolean, boolean, boolean, boolean, boolean, boolean) to authenticated;
 grant execute on function public.arena_my_entry() to authenticated;
-grant execute on function public.get_post(uuid) to anon, authenticated;
+grant execute on function public.get_post(uuid) to authenticated;
 grant execute on function public.get_profile(text) to authenticated;
 grant execute on function public.register_share(uuid) to authenticated;
-grant execute on function public.get_today_cover() to anon, authenticated;
-grant execute on function public.get_cover_archive(int) to anon, authenticated;
-grant execute on function public.get_comments(uuid) to anon, authenticated;
+grant execute on function public.get_today_cover() to authenticated;
+grant execute on function public.get_cover_archive(int) to authenticated;
+grant execute on function public.get_comments(uuid) to authenticated;
 grant execute on function public.report_post(uuid, text, text) to authenticated;
 grant execute on function public.block_user(uuid) to authenticated;
 grant execute on function public.unblock_user(uuid) to authenticated;

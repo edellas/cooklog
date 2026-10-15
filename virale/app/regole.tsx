@@ -2,6 +2,7 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../src/components/Icon';
+import { SheetClose } from '../src/components/SheetClose';
 import { TierLadder } from '../src/components/TierLadder';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
@@ -19,6 +20,7 @@ export default function RulesSheet() {
   const insets = useSafeAreaInsets();
   return (
     <ScrollView style={styles.root} contentContainerStyle={{ padding: space[5], paddingTop: space[6], paddingBottom: insets.bottom + space[8], gap: space[6] }}>
+      <SheetClose />
       <View style={{ gap: space[2] }}>
         <Txt variant="heading">Come si diventa copertina</Txt>
         <Txt variant="body" tone={color.paperDim}>

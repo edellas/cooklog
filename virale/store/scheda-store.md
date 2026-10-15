@@ -25,7 +25,7 @@ Su Virale ogni giorno un solo post diventa la Copertina: la prima cosa che vede 
 COME FUNZIONA
 • Pubblichi foto e video, come sempre: fino a 10 per post, con una didascalia.
 • Se vuoi, candidi il post alla gara del giorno. Uno al giorno a testa.
-• I post in gara arrivano a piccoli gruppi di persone, senza nome dell'autore e senza numeri visibili: conta solo come vengono guardati.
+• I post in gara arrivano a piccoli gruppi di persone scelte dall'app, non tra i tuoi follower: conta solo come vengono guardati.
 • I migliori salgono di gradino — Provino, Bozza, Impaginato, In macchina, Finale — davanti a un pubblico sempre più grande.
 • A mezzanotte il migliore della finale diventa la Copertina di domani ed entra per sempre nell'Archivio.
 

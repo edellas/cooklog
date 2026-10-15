@@ -1,4 +1,3 @@
-import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,6 +11,7 @@ import { timeAgo } from '../src/design/format';
 import { color, radius, space } from '../src/design/tokens';
 import { getModQueue, isDemo, modResolve, REPORT_REASONS, type ModItem } from '../src/services/api';
 import { useSession } from '../src/state/session';
+import { useGoBack } from '../src/state/useGoBack';
 
 const label = (r: string) => REPORT_REASONS.find((x) => x.key === r)?.label ?? r;
 
@@ -22,11 +22,14 @@ const label = (r: string) => REPORT_REASONS.find((x) => x.key === r)?.label ?? r
  */
 export default function Moderation() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const goBack = useGoBack();
   const toast = useToast();
   const { bump } = useSession();
   const [items, setItems] = useState<ModItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  /** "Espelli" è definitivo: chiede un secondo tocco. */
+  const [confirmBan, setConfirmBan] = useState<string | null>(null);
 
   const load = useCallback(() => {
     void getModQueue()
@@ -36,17 +39,30 @@ export default function Moderation() {
   useEffect(load, [load]);
 
   const act = async (item: ModItem, action: 'dismiss' | 'remove' | 'ban') => {
-    await modResolve(item.post.id, action);
-    haptic('light');
-    bump();
-    setItems((list) => (list ?? []).filter((x) => x.post.id !== item.post.id));
-    toast(action === 'dismiss' ? 'Post ripristinato.' : action === 'remove' ? 'Post rimosso.' : `@${item.post.author.username} espulso.`);
+    if (busy) return;
+    if (action === 'ban' && confirmBan !== item.post.id) {
+      setConfirmBan(item.post.id);
+      return;
+    }
+    try {
+      setBusy(item.post.id);
+      setConfirmBan(null);
+      await modResolve(item.post.id, action);
+      haptic('light');
+      bump();
+      setItems((list) => (list ?? []).filter((x) => x.post.id !== item.post.id));
+      toast(action === 'dismiss' ? 'Post ripristinato.' : action === 'remove' ? 'Post rimosso.' : `@${item.post.author.username} espulso.`);
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.bar}>
-        <Press style={styles.round} onPress={() => router.back()} accessibilityLabel="Indietro">
+        <Press style={styles.round} onPress={goBack} accessibilityRole="button" accessibilityLabel="Indietro">
           <Icon name="indietro" />
         </Press>
         <Txt variant="title">Moderazione</Txt>
@@ -93,19 +109,23 @@ export default function Moderation() {
                   Prima segnalazione {timeAgo(item.firstAt) === 'ora' ? 'adesso' : `${timeAgo(item.firstAt)} fa`}{item.hidden ? ' · già nascosto' : ''}
                 </Txt>
                 <View style={styles.actions}>
-                  <Press style={[styles.btn, styles.ok]} onPress={() => void act(item, 'dismiss')} accessibilityRole="button">
+                  <Press style={[styles.btn, styles.ok]} onPress={() => void act(item, 'dismiss')} disabled={busy !== null} accessibilityRole="button">
                     <Txt variant="meta" tone={color.canvas} style={styles.bold}>
                       Va bene
                     </Txt>
                   </Press>
-                  <Press style={[styles.btn, styles.rm]} onPress={() => void act(item, 'remove')} accessibilityRole="button">
+                  <Press style={[styles.btn, styles.rm]} onPress={() => void act(item, 'remove')} disabled={busy !== null} accessibilityRole="button">
                     <Txt variant="meta" style={styles.bold}>
                       Rimuovi
                     </Txt>
                   </Press>
-                  <Press style={[styles.btn, styles.ban]} onPress={() => void act(item, 'ban')} accessibilityRole="button">
-                    <Txt variant="meta" tone={color.matita} style={styles.bold}>
-                      Espelli
+                  <Press
+                    style={[styles.btn, styles.ban, confirmBan === item.post.id && styles.banOn]}
+                    onPress={() => void act(item, 'ban')}
+                    disabled={busy !== null}
+                    accessibilityRole="button">
+                    <Txt variant="meta" tone={confirmBan === item.post.id ? color.paper : color.matita} style={styles.bold}>
+                      {confirmBan === item.post.id ? 'Conferma: espelli per sempre' : 'Espelli'}
                     </Txt>
                   </Press>
                 </View>
@@ -124,10 +144,11 @@ const styles = StyleSheet.create({
   round: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
   card: { flexDirection: 'row', gap: space[3], backgroundColor: color.raised, borderRadius: radius.card, padding: space[3] },
   thumb: { width: 84, height: 126 },
-  actions: { flexDirection: 'row', gap: space[2], marginTop: space[2], flexWrap: 'wrap' },
-  btn: { borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7 },
+  actions: { flexDirection: 'row', gap: space[4], rowGap: space[2], marginTop: space[2], flexWrap: 'wrap' },
+  btn: { borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 10 },
   ok: { backgroundColor: color.verde },
   rm: { backgroundColor: color.line },
   ban: { borderWidth: 1, borderColor: color.matita },
+  banOn: { backgroundColor: color.matita },
   bold: { fontFamily: 'SchibstedGrotesk_700Bold' },
 });

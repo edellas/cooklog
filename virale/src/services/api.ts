@@ -9,12 +9,15 @@ import {
   shiftDay,
   simulateCrowd,
   submitEntry,
+  submissionsOpen,
   type ArenaState,
   type EntryStatus,
   type ViewSignal,
 } from '../engine/engine';
 import { COMMENTERS, CREATORS, DEMO_FOLLOWING, LAUNCH_DAY, PAST_COVERS, SEED_POSTS, TODAY_COVER } from '../data/seed';
 import type { Author, Comment, Cover, FeedCard, Me, MediaItem, MyEntry, NewPost, Post, Profile } from '../types';
+import { Platform } from 'react-native';
+
 import { getJson, removeKey, setJson } from './storage';
 import { isSupabaseConfigured, supabase } from './supabase';
 
@@ -25,6 +28,14 @@ export const TIERS = DEFAULT_ARENA_CONFIG.tierThresholds;
 
 /** Nomi dei livelli: il percorso di un provino fino alla copertina. */
 export const TIER_NAMES = ['Provino', 'Bozza', 'Impaginato', 'In macchina', 'Finale'] as const;
+
+/**
+ * Le candidature chiudono alle 20 (ora di Roma). In demo restano aperte, perché la mezzanotte
+ * si può simulare in qualsiasi momento.
+ */
+export function contestOpen(now = new Date()): boolean {
+  return isDemo || submissionsOpen(now);
+}
 
 export function issueNumber(day: string): number {
   return Math.round((Date.parse(`${day}T12:00:00Z`) - Date.parse(`${LAUNCH_DAY}T12:00:00Z`)) / 86400000) + 1;
@@ -46,6 +57,7 @@ type PostJson = {
   share_count: number;
   liked: boolean;
   saved: boolean;
+  following?: boolean;
   contest?: { entry_id: string; tier: number; status: EntryStatus } | null;
 };
 
@@ -62,6 +74,7 @@ function fromJson(p: PostJson): Post {
     shareCount: p.share_count,
     likedByMe: p.liked,
     savedByMe: p.saved,
+    followingAuthor: Boolean(p.following),
     contest: p.contest ? { entryId: p.contest.entry_id, tier: p.contest.tier, status: p.contest.status } : undefined,
   };
 }
@@ -77,6 +90,17 @@ async function rpc<T>(fn: string, args?: Record<string, unknown>): Promise<T> {
   return data as T;
 }
 
+/** Le scritture sullo stesso oggetto (mi piace, salva, segui) partono in ordine: un tocco rapido non arriva prima del precedente. */
+const lanes = new Map<string, Promise<unknown>>();
+function inOrder<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const run = (lanes.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn);
+  lanes.set(key, run);
+  void run.finally(() => {
+    if (lanes.get(key) === run) lanes.delete(key);
+  }).catch(() => undefined);
+  return run;
+}
+
 async function uid(): Promise<string> {
   const { data } = await db().auth.getSession();
   const id = data.session?.user.id;
@@ -84,16 +108,33 @@ async function uid(): Promise<string> {
   return id;
 }
 
+const EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/gif': 'gif',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+};
+
+/** Percorso nel bucket "media" a partire dall'URL pubblico di un file. */
+function storagePath(url: string): string | null {
+  const marker = '/object/public/media/';
+  const i = url.indexOf(marker);
+  return i >= 0 ? decodeURIComponent(url.slice(i + marker.length).split('?')[0]) : null;
+}
+
 async function upload(userId: string, item: NewPost['media'][number], index: number): Promise<MediaItem> {
   const buffer = await (await fetch(item.uri)).arrayBuffer();
-  const ext = item.kind === 'video' ? 'mp4' : 'jpg';
-  const path = `${userId}/${Date.now()}-${index}.${ext}`;
-  const { error } = await db()
-    .storage.from('media')
-    .upload(path, buffer, { contentType: item.mimeType ?? (item.kind === 'video' ? 'video/mp4' : 'image/jpeg') });
+  const contentType = item.mimeType ?? (item.kind === 'video' ? 'video/mp4' : 'image/jpeg');
+  const path = `${userId}/${Date.now()}-${index}.${EXT[contentType] ?? (item.kind === 'video' ? 'mp4' : 'jpg')}`;
+  const { error } = await db().storage.from('media').upload(path, buffer, { contentType });
   if (error) throw new Error(error.message);
   const url = db().storage.from('media').getPublicUrl(path).data.publicUrl;
-  return { kind: item.kind, src: url, width: item.width, height: item.height, durationMs: item.durationMs };
+  return { kind: item.kind, src: url, width: Math.round(item.width), height: Math.round(item.height), durationMs: item.durationMs != null ? Math.round(item.durationMs) : undefined };
 }
 
 // ===========================================================================
@@ -130,6 +171,8 @@ type DemoDb = {
   quality: Record<string, number>;
   /** Persone bloccate da me: non vedo più i loro post e commenti. */
   blocked: string[];
+  /** Post che ho condiviso: una condivisione conta una volta sola. */
+  shared?: string[];
   /** Post che ho segnalato: spariscono subito dal mio feed. */
   reported: { postId: string; reason: ReportReason; at: string }[];
 };
@@ -195,8 +238,14 @@ function visible(demo: DemoDb, postId: string): boolean {
   return Boolean(p) && !demo.blocked.includes(p.authorId) && !demo.reported.some((r) => r.postId === postId);
 }
 
+/**
+ * In demo i creator sono pochi: con i 30 giorni di pausa reali dopo poche "mezzanotti simulate"
+ * non resterebbe nessuno in gara. La pausa demo è quindi di 5 giorni.
+ */
+const DEMO_COOLDOWN_DAYS = 5;
+
 function recentWinners(demo: DemoDb, day: string): string[] {
-  const from = shiftDay(day, -DEFAULT_ARENA_CONFIG.winnerCooldownDays);
+  const from = shiftDay(day, -DEMO_COOLDOWN_DAYS);
   return demo.covers.filter((cv) => cv.featuredOn > from).map((cv) => demo.posts[cv.postId]?.authorId).filter(Boolean) as string[];
 }
 
@@ -208,7 +257,8 @@ function seedDay(demo: DemoDb, day: string, seedKey = day): ArenaState {
   demo.quality = {};
   let i = 0;
   for (const post of Object.values(demo.posts)) {
-    if (blocked.has(post.authorId) || post.authorId === demo.me?.id) continue;
+    // Un solo post in gara per persona; il tuo lo candidi tu.
+    if (blocked.has(post.authorId) || post.authorId === demo.me?.id || state.entries.some((e) => e.authorId === post.authorId)) continue;
     const entryId = `e-${day}-${post.id}-${hash(seedKey) % 997}`;
     submitEntry(state, { id: entryId, postId: post.id, authorId: post.authorId, createdAt: new Date(Date.parse(`${day}T06:00:00Z`) + i++ * 60000).toISOString() });
     demo.quality[entryId] = rng() ** 1.3;
@@ -225,7 +275,8 @@ function crowdTick(demo: DemoDb, viewers: number) {
 
 /** Chiude la gara: il vincitore diventa la copertina del giorno indicato. */
 function crown(demo: DemoDb, featuredOn: string): string | null {
-  const winner = closeArena(demo.state, recentWinners(demo, featuredOn));
+  // Se tutti i migliori sono in pausa, vince comunque il migliore: in demo la copertina non resta mai vuota.
+  const winner = closeArena(demo.state, recentWinners(demo, featuredOn)) ?? closeArena(demo.state);
   if (!winner) return null;
   demo.covers = [
     {
@@ -246,7 +297,14 @@ async function load(): Promise<DemoDb> {
   demo.blocked ??= [];
   demo.reported ??= [];
   if (demo.state.day !== today) {
-    if (demo.state.day && !demo.covers.some((cv) => cv.featuredOn === shiftDay(demo!.state.day, 1))) crown(demo, shiftDay(demo.state.day, 1));
+    // Recupera i giorni passati senza aprire l'app: ogni giornata ha la sua gara e la sua copertina.
+    let day = demo.state.day;
+    for (let guard = 0; day && day < today && guard < 60; guard += 1) {
+      const next = shiftDay(day, 1);
+      if (!demo.covers.some((cv) => cv.featuredOn === next)) crown(demo, next);
+      if (next < today) demo.state = seedDay(demo, next);
+      day = next;
+    }
     demo.state = seedDay(demo, today);
     await setJson(KEY, demo);
   }
@@ -266,6 +324,12 @@ function withDemo<T>(fn: (demo: DemoDb) => T | Promise<T>, save = false): Promis
   return run;
 }
 
+function stored(demo: DemoDb, postId: string): StoredPost {
+  const p = demo.posts[postId];
+  if (!p || !visible(demo, postId)) throw new Error('Questo post non è più disponibile.');
+  return p;
+}
+
 function author(demo: DemoDb, id: string): Author {
   const p = demo.people[id];
   return p ? { id: p.id, username: p.username, displayName: p.displayName } : { id, username: 'utente', displayName: 'Utente' };
@@ -273,6 +337,7 @@ function author(demo: DemoDb, id: string): Author {
 
 function toPost(demo: DemoDb, id: string): Post {
   const sp = demo.posts[id];
+  if (!sp) throw new Error('Questo post non è più disponibile.');
   const entry = demo.state.entries.find((e) => e.postId === id);
   const liked = demo.likes.includes(id);
   const saved = demo.saves.includes(id);
@@ -288,6 +353,7 @@ function toPost(demo: DemoDb, id: string): Post {
     shareCount: sp.shares,
     likedByMe: liked,
     savedByMe: saved,
+    followingAuthor: demo.following.includes(sp.authorId),
     contest: entry ? { entryId: entry.id, tier: entry.tier, status: entry.status } : undefined,
   };
 }
@@ -302,10 +368,13 @@ function toCover(demo: DemoDb, cv: DemoDb['covers'][number]): Cover {
 
 export async function getMe(): Promise<Me | null> {
   if (!isDemo) {
-    const { data } = await db().auth.getSession();
+    // Un errore di rete NON significa "nessun account": lo si segnala, così l'app propone di riprovare.
+    const { data, error } = await db().auth.getSession();
+    if (error) throw new Error(error.message);
     const id = data.session?.user.id;
     if (!id) return null;
-    const { data: row } = await db().from('profiles').select('id, username, display_name').eq('id', id).maybeSingle();
+    const { data: row, error: e2 } = await db().from('profiles').select('id, username, display_name').eq('id', id).maybeSingle();
+    if (e2) throw new Error(e2.message);
     return row ? { id: row.id, username: row.username, displayName: row.display_name } : null;
   }
   return withDemo((demo) => demo.me);
@@ -324,6 +393,11 @@ export async function createAccount(username: string, displayName: string, accep
       id = data.user!.id;
     }
     const { error } = await db().from('profiles').insert({ id, username: clean, display_name: name, terms_accepted_at: new Date().toISOString() });
+    if (error?.code === '23505' && /profiles_pkey/.test(error.message)) {
+      // Il profilo esiste già (per esempio creato prima di una caduta di rete): si entra con quello.
+      const existing = await getMe();
+      if (existing) return existing;
+    }
     if (error) throw new Error(error.code === '23505' ? 'Questo nome è già preso. Prova ad aggiungere un numero.' : error.message);
     return { id, username: clean, displayName: name };
   }
@@ -421,51 +495,60 @@ export async function recordView(entryId: string, signal: ViewSignal): Promise<b
 
 export async function toggleLike(postId: string, on: boolean): Promise<void> {
   if (!isDemo) {
-    const me = await uid();
-    const q = on ? db().from('post_likes').insert({ post_id: postId, user_id: me }) : db().from('post_likes').delete().match({ post_id: postId, user_id: me });
-    const { error } = await q;
-    if (error && error.code !== '23505') throw new Error(error.message);
-    return;
+    return inOrder(`like:${postId}`, async () => {
+      const me = await uid();
+      const q = on ? db().from('post_likes').insert({ post_id: postId, user_id: me }) : db().from('post_likes').delete().match({ post_id: postId, user_id: me });
+      const { error } = await q;
+      if (error && error.code !== '23505') throw new Error(error.message);
+    });
   }
   await withDemo((demo) => {
+    const p = stored(demo, postId);
     const has = demo.likes.includes(postId);
     if (on && !has) {
       demo.likes.push(postId);
-      demo.posts[postId].likes += 1;
+      p.likes += 1;
     } else if (!on && has) {
       demo.likes = demo.likes.filter((x) => x !== postId);
-      demo.posts[postId].likes -= 1;
+      p.likes = Math.max(0, p.likes - 1);
     }
   }, true);
 }
 
 export async function toggleSave(postId: string, on: boolean): Promise<void> {
   if (!isDemo) {
-    const me = await uid();
-    const q = on ? db().from('post_saves').insert({ post_id: postId, user_id: me }) : db().from('post_saves').delete().match({ post_id: postId, user_id: me });
-    const { error } = await q;
-    if (error && error.code !== '23505') throw new Error(error.message);
-    return;
+    return inOrder(`save:${postId}`, async () => {
+      const me = await uid();
+      const q = on ? db().from('post_saves').insert({ post_id: postId, user_id: me }) : db().from('post_saves').delete().match({ post_id: postId, user_id: me });
+      const { error } = await q;
+      if (error && error.code !== '23505') throw new Error(error.message);
+    });
   }
   await withDemo((demo) => {
+    const p = stored(demo, postId);
     const has = demo.saves.includes(postId);
     if (on && !has) {
       demo.saves.push(postId);
-      demo.posts[postId].saves += 1;
+      p.saves += 1;
     } else if (!on && has) {
       demo.saves = demo.saves.filter((x) => x !== postId);
-      demo.posts[postId].saves -= 1;
+      p.saves = Math.max(0, p.saves - 1);
     }
   }, true);
 }
 
+/** Registra una condivisione. Conta una volta per persona e post, come sul server. */
 export async function registerShare(postId: string): Promise<void> {
   if (!isDemo) {
     await rpc('register_share', { p_post_id: postId });
     return;
   }
   await withDemo((demo) => {
-    demo.posts[postId].shares += 1;
+    const p = stored(demo, postId);
+    demo.shared ??= [];
+    if (demo.shared.includes(postId)) return;
+    demo.shared.push(postId);
+    p.shares += 1;
   }, true);
 }
 
@@ -492,12 +575,31 @@ export async function addComment(postId: string, body: string): Promise<Comment>
     const { data, error } = await db().from('comments').insert({ post_id: postId, user_id: me, body: text }).select('id, created_at').single();
     if (error) throw new Error(error.message);
     const who = await getMe();
-    return { id: data.id, postId, body: text, createdAt: data.created_at, author: who! };
+    if (!who) throw new Error('Sessione scaduta: riapri l’app.');
+    return { id: data.id, postId, body: text, createdAt: data.created_at, author: who };
   }
   return withDemo((demo) => {
-    const cm = { id: `c-${Date.now()}`, authorId: demo.me!.id, body: text, createdAt: new Date().toISOString() };
+    stored(demo, postId);
+    if (!demo.me) throw new Error('Crea prima il tuo profilo.');
+    const cm = { id: `c-${Date.now()}`, authorId: demo.me.id, body: text, createdAt: new Date().toISOString() };
     demo.comments[postId] = [...(demo.comments[postId] ?? []), cm];
     return { id: cm.id, postId, author: author(demo, cm.authorId), body: text, createdAt: cm.createdAt };
+  }, true);
+}
+
+/** Elimina un proprio commento. */
+export async function deleteComment(postId: string, commentId: string): Promise<void> {
+  if (!isDemo) {
+    const { data, error } = await db().from('comments').delete().eq('id', commentId).select('id');
+    if (error) throw new Error(error.message);
+    if (!data?.length) throw new Error('Puoi eliminare solo i tuoi commenti.');
+    return;
+  }
+  await withDemo((demo) => {
+    const list = demo.comments[postId] ?? [];
+    const c = list.find((x) => x.id === commentId);
+    if (!c || c.authorId !== demo.me?.id) throw new Error('Puoi eliminare solo i tuoi commenti.');
+    demo.comments[postId] = list.filter((x) => x.id !== commentId);
   }, true);
 }
 
@@ -522,15 +624,16 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
     if (!person || demo.blocked.includes(person.id)) throw new Error('Profilo non trovato.');
     const isMe = person.id === demo.me?.id;
     const posts = Object.values(demo.posts)
-      .filter((p) => p.authorId === person.id)
+      .filter((p) => p.authorId === person.id && (isMe || visible(demo, p.id)))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map((p) => toPost(demo, p.id));
-    const entry = demo.state.entries.find((e) => e.authorId === person.id);
+    const entry = demo.state.entries.find((e) => e.authorId === person.id && demo.posts[e.postId]);
     return {
       profile: {
         ...author(demo, person.id),
         bio: isMe ? demo.myBio : person.bio,
-        followers: person.followers + (demo.following.includes(person.id) && !DEMO_FOLLOWING.includes(person.username) ? 1 : 0),
+        // I creator seguiti all'inizio hanno già te nel conteggio: se smetti di seguirli scende di uno.
+        followers: person.followers + (demo.following.includes(person.id) ? 1 : 0) - (DEMO_FOLLOWING.includes(person.username) ? 1 : 0),
         following: isMe ? demo.following.length : person.following,
         covers: demo.covers.filter((cv) => demo.posts[cv.postId]?.authorId === person.id).length,
         followedByMe: demo.following.includes(person.id),
@@ -540,7 +643,7 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
       },
       posts,
       saved: isMe ? demo.saves.filter((id) => visible(demo, id)).map((id) => toPost(demo, id)) : [],
-      entry: entry ? { entryId: entry.id, postId: entry.postId, tier: entry.tier, status: entry.status, views: entry.stats.views, contestDay: entry.contestDay } : null,
+      entry: isMe && entry ? { entryId: entry.id, postId: entry.postId, tier: entry.tier, status: entry.status, views: entry.stats.views, contestDay: entry.contestDay } : null,
     };
   });
 }
@@ -552,7 +655,8 @@ export async function getPost(postId: string): Promise<Post> {
     return fromJson(row);
   }
   return withDemo((demo) => {
-    if (!demo.posts[postId]) throw new Error('Post non trovato.');
+    const p = demo.posts[postId];
+    if (!p || (p.authorId !== demo.me?.id && !visible(demo, postId))) throw new Error('Post non trovato o non più disponibile.');
     return toPost(demo, postId);
   });
 }
@@ -579,37 +683,57 @@ export async function getMyEntry(): Promise<MyEntry | null> {
     return r ? { entryId: r.entry_id, postId: r.post_id, tier: r.tier, status: r.status, views: r.views, contestDay: r.contest_day } : null;
   }
   return withDemo((demo) => {
-    const e = demo.me ? demo.state.entries.find((x) => x.authorId === demo.me!.id) : undefined;
+    const e = demo.me ? demo.state.entries.find((x) => x.authorId === demo.me!.id && demo.posts[x.postId]) : undefined;
     return e ? { entryId: e.id, postId: e.postId, tier: e.tier, status: e.status, views: e.stats.views, contestDay: e.contestDay } : null;
   });
 }
 
-export async function publish(input: NewPost): Promise<Post> {
+export type PublishResult = { post: Post; entry: MyEntry | null; contestError: string | null };
+
+/**
+ * Pubblica un post e, se richiesto, lo candida. Una volta creato il post non lancia più errori:
+ * se la candidatura non riesce lo dice in `contestError`, così l'utente non ripubblica due volte.
+ */
+export async function publish(input: NewPost): Promise<PublishResult> {
   if (!input.media.length) throw new Error('Scegli almeno una foto o un video.');
   if (input.media.length > 10) throw new Error('Al massimo 10 elementi per post.');
   if (input.caption.length > 300) throw new Error('La didascalia può avere al massimo 300 caratteri.');
   if (!isDemo) {
     const me = await uid();
-    const media = await Promise.all(input.media.map((m, i) => upload(me, m, i)));
+    const media: MediaItem[] = [];
+    try {
+      for (const [i, m] of input.media.entries()) media.push(await upload(me, m, i));
+    } catch (e) {
+      await removeUploads(media);
+      throw new Error(`Caricamento non riuscito: ${(e as Error).message}`);
+    }
     const { data, error } = await db()
       .from('posts')
       .insert({ author_id: me, caption: input.caption.trim(), media: media.map((m) => ({ kind: m.kind, url: m.src, width: m.width, height: m.height, duration_ms: m.durationMs })) })
       .select('id')
       .single();
-    if (error) throw new Error(error.message);
+    if (error) {
+      await removeUploads(media);
+      throw new Error(error.message);
+    }
+    let contestError: string | null = null;
     if (input.joinContest) {
       const { error: e2 } = await db().rpc('arena_submit', { p_post_id: data.id });
-      if (e2) throw new Error(`Pubblicato, ma non in gara: ${e2.message}`);
+      if (e2) contestError = e2.message;
     }
-    return getPost(data.id);
+    const post = await getPost(data.id);
+    const entry = input.joinContest && !contestError ? await getMyEntry().catch(() => null) : null;
+    return { post, entry, contestError };
   }
+  const media = await Promise.all(input.media.map(persistLocal));
   return withDemo((demo) => {
     if (!demo.me) throw new Error('Crea prima il tuo profilo.');
+    const me = demo.me;
     const id = `my-${Date.now()}`;
     demo.posts[id] = {
       id,
-      authorId: demo.me.id,
-      media: input.media.map((m) => ({ kind: m.kind, src: m.uri, width: m.width, height: m.height, durationMs: m.durationMs })),
+      authorId: me.id,
+      media,
       caption: input.caption.trim(),
       createdAt: new Date().toISOString(),
       likes: 0,
@@ -618,15 +742,48 @@ export async function publish(input: NewPost): Promise<Post> {
     };
     demo.comments[id] = [];
     demo.myPostIds.unshift(id);
+    let contestError: string | null = null;
+    let entry: MyEntry | null = null;
     if (input.joinContest) {
-      if (recentWinners(demo, shiftDay(arenaDay(), 1)).includes(demo.me.id)) throw new Error('Sei stato in copertina da poco: potrai ricandidarti tra qualche giorno.');
-      const entryId = `e-${demo.state.day}-${id}`;
-      submitEntry(demo.state, { id: entryId, postId: id, authorId: demo.me.id });
-      // Qualità nascosta estratta come per tutti gli altri: nessun favoritismo.
-      demo.quality[entryId] = Math.random() ** 1.3;
+      try {
+        if (recentWinners(demo, shiftDay(arenaDay(), 1)).includes(me.id)) throw new Error('Sei stato in copertina da poco: potrai ricandidarti tra qualche giorno.');
+        const e = submitEntry(demo.state, { id: `e-${demo.state.day}-${id}`, postId: id, authorId: me.id });
+        // Qualità nascosta estratta come per tutti gli altri: nessun favoritismo.
+        demo.quality[e.id] = Math.random() ** 1.3;
+        entry = { entryId: e.id, postId: id, tier: e.tier, status: e.status, views: 0, contestDay: e.contestDay };
+      } catch (err) {
+        contestError = (err as Error).message;
+      }
     }
-    return toPost(demo, id);
+    return { post: toPost(demo, id), entry, contestError };
   }, true);
+}
+
+async function removeUploads(media: MediaItem[]) {
+  const paths = media.map((m) => storagePath(m.src)).filter(Boolean) as string[];
+  if (paths.length) await db().storage.from('media').remove(paths).catch(() => undefined);
+}
+
+/**
+ * In demo sul web le foto scelte sono indirizzi blob: che spariscono ricaricando la pagina.
+ * Le si rimpicciolisce e salva come data URL (i video restano blob: sono troppo grandi).
+ */
+async function persistLocal(m: NewPost['media'][number]): Promise<MediaItem> {
+  const item: MediaItem = { kind: m.kind, src: m.uri, width: m.width, height: m.height, durationMs: m.durationMs != null ? Math.round(m.durationMs) : undefined };
+  if (Platform.OS !== 'web' || m.kind !== 'image' || !m.uri.startsWith('blob:') || typeof document === 'undefined') return item;
+  try {
+    const img = new Image();
+    img.src = m.uri;
+    await img.decode();
+    const scale = Math.min(1, 1080 / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return { ...item, src: canvas.toDataURL('image/jpeg', 0.82), width: canvas.width, height: canvas.height };
+  } catch {
+    return item;
+  }
 }
 
 /**
@@ -639,16 +796,21 @@ export async function closeDayNowDemo(): Promise<Cover | null> {
     const rng = seededRng(Date.now() >>> 0);
     simulateCrowd(demo.state, { quality: (id) => demo.quality[id] ?? 0.3, viewers: 160, viewsPerViewer: 7, viewerPrefix: `crowd-close-${Date.now()}-`, forgetViewers: true }, rng);
     const today = arenaDay();
+    const before = demo.covers;
     demo.covers = demo.covers.map((cv) => ({ ...cv, featuredOn: shiftDay(cv.featuredOn, -1) }));
     const postId = crown(demo, today);
+    if (!postId) demo.covers = before;
     demo.state = seedDay(demo, today, `${today}-${Date.now()}`);
     const cv = postId ? demo.covers.find((x) => x.featuredOn === today) : undefined;
     return cv ? toCover(demo, cv) : null;
   }, true);
 }
 
-export async function resetDemo(): Promise<void> {
-  await removeKey(KEY);
+/** Cancella la demo. Passa dalla stessa coda delle altre scritture, così nessuna la fa "rivivere". */
+export function resetDemo(): Promise<void> {
+  const run = queue.then(() => removeKey(KEY));
+  queue = run.catch(() => undefined);
+  return run;
 }
 
 // ===========================================================================
@@ -712,8 +874,12 @@ export async function listBlocked(): Promise<Author[]> {
 /** Elimina un proprio post (e il suo posto in gara). */
 export async function deletePost(postId: string): Promise<void> {
   if (!isDemo) {
-    const { error } = await db().from('posts').delete().eq('id', postId);
+    const { data, error } = await db().from('posts').delete().eq('id', postId).select('media');
     if (error) throw new Error(error.message);
+    if (!data?.length) throw new Error('Puoi eliminare solo i tuoi post.');
+    // Anche i file: un post eliminato non deve restare raggiungibile dal suo indirizzo.
+    const media = (data[0].media as { url: string }[] | null) ?? [];
+    await removeUploads(media.map((m) => ({ kind: 'image', src: m.url, width: 0, height: 0 })));
     return;
   }
   await withDemo((demo) => {
@@ -721,7 +887,8 @@ export async function deletePost(postId: string): Promise<void> {
     delete demo.posts[postId];
     delete demo.comments[postId];
     demo.myPostIds = demo.myPostIds.filter((x) => x !== postId);
-    demo.state.entries = demo.state.entries.filter((e) => e.postId !== postId);
+    // Come sul server: la candidatura resta, ritirata. Non se ne fa una seconda lo stesso giorno.
+    for (const e of demo.state.entries) if (e.postId === postId) e.status = 'disqualified';
   }, true);
 }
 

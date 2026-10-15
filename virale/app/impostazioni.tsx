@@ -1,6 +1,6 @@
 import * as Linking from 'expo-linking';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -13,11 +13,13 @@ import { color, radius, space } from '../src/design/tokens';
 import { DOCS, OWNER, type DocSlug } from '../src/legal/docs';
 import { deleteAccount, getProfile, isDemo, listBlocked, unblockUser } from '../src/services/api';
 import { useSession } from '../src/state/session';
+import { useGoBack } from '../src/state/useGoBack';
 import type { Author } from '../src/types';
 
 export default function Settings() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const goBack = useGoBack();
   const toast = useToast();
   const { me, setMe, bump } = useSession();
   const [blocked, setBlocked] = useState<Author[] | null>(null);
@@ -25,6 +27,11 @@ export default function Settings() {
   const [confirm, setConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unblocking, setUnblocking] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -36,14 +43,27 @@ export default function Settings() {
   );
 
   const unblock = async (a: Author) => {
-    await unblockUser(a.id);
-    setBlocked((list) => (list ?? []).filter((x) => x.id !== a.id));
-    bump();
-    toast(`@${a.username} sbloccato.`);
+    if (unblocking) return;
+    try {
+      setUnblocking(a.id);
+      await unblockUser(a.id);
+      setBlocked((list) => (list ?? []).filter((x) => x.id !== a.id));
+      bump();
+      toast(`@${a.username} sbloccato.`);
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setUnblocking(null);
+    }
   };
 
   const remove = async () => {
-    if (!confirm) return setConfirm(true);
+    if (!confirm) {
+      setConfirm(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setConfirm(false), 4000);
+      return;
+    }
     try {
       setDeleting(true);
       setError(null);
@@ -59,7 +79,7 @@ export default function Settings() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.bar}>
-        <Press style={styles.round} onPress={() => router.back()} accessibilityLabel="Indietro">
+        <Press style={styles.round} onPress={goBack} accessibilityRole="button" accessibilityLabel="Indietro">
           <Icon name="indietro" />
         </Press>
         <Txt variant="title">Impostazioni</Txt>
@@ -82,7 +102,7 @@ export default function Settings() {
                 <Txt variant="label" style={{ flex: 1 }}>
                   @{a.username}
                 </Txt>
-                <Press style={styles.pill} onPress={() => void unblock(a)} accessibilityRole="button">
+                <Press style={styles.pill} onPress={() => void unblock(a)} disabled={unblocking !== null} accessibilityRole="button" accessibilityLabel={`Sblocca @${a.username}`}>
                   <Txt variant="meta">Sblocca</Txt>
                 </Press>
               </View>

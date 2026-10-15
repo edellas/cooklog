@@ -43,6 +43,8 @@ export type ArenaConfig = {
   lcbSpread: number;
   /** Quota di ogni batch riservata ai contenuti già promossi (il resto è esplorazione dei nuovi). */
   upperShare: number;
+  /** Ora (nel fuso di gara) da cui non si accettano più candidature per la giornata. */
+  submissionCutoffHour: number;
   timeZone: string;
 };
 
@@ -61,6 +63,7 @@ export const DEFAULT_ARENA_CONFIG: ArenaConfig = {
   priorPointsPerView: 0.15,
   lcbSpread: 2,
   upperShare: 0.5,
+  submissionCutoffHour: 20,
   timeZone: 'Europe/Rome',
 };
 
@@ -374,23 +377,55 @@ export function seededRng(seed: number): Rng {
   };
 }
 
-/** Millisecondi alla chiusura dell'Arena (mezzanotte nel fuso orario di gara). */
+/** Scarto in millisecondi tra l'ora locale del fuso e UTC in un dato istante (es. +2h a Roma d'estate). */
+function tzOffsetMs(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  const wall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return wall - (date.getTime() - date.getMilliseconds());
+}
+
+/** Istante (epoch ms) della mezzanotte locale che apre il giorno `day` nel fuso di gara. */
+export function arenaDayStart(day: string, timeZone: string = DEFAULT_ARENA_CONFIG.timeZone): number {
+  const naive = Date.parse(`${day}T00:00:00Z`);
+  // Due passaggi: l'offset da usare è quello in vigore a mezzanotte, che può differire da quello di adesso (ora legale).
+  let t = naive - tzOffsetMs(new Date(naive), timeZone);
+  t = naive - tzOffsetMs(new Date(t), timeZone);
+  return t;
+}
+
+/**
+ * Millisecondi alla chiusura dell'Arena (mezzanotte nel fuso orario di gara).
+ * Tiene conto dei giorni da 23 o 25 ore del cambio d'ora.
+ */
 export function msUntilArenaClose(date: Date = new Date(), timeZone: string = DEFAULT_ARENA_CONFIG.timeZone): number {
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(date);
-    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
-    const elapsed = (get('hour') * 3600 + get('minute') * 60 + get('second')) * 1000 + date.getMilliseconds();
-    return Math.max(0, 24 * 3600 * 1000 - elapsed);
+    return Math.max(0, arenaDayStart(shiftDay(arenaDay(date, timeZone), 1), timeZone) - date.getTime());
   } catch {
     const end = new Date(date);
     end.setHours(24, 0, 0, 0);
     return end.getTime() - date.getTime();
+  }
+}
+
+/** Le candidature della giornata sono aperte fino all'ora di chiusura (le 20 a Roma). */
+export function submissionsOpen(date: Date = new Date(), cfg: ArenaConfig = DEFAULT_ARENA_CONFIG): boolean {
+  try {
+    const hour = Number(
+      new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, hour: '2-digit', hourCycle: 'h23' }).formatToParts(date).find((p) => p.type === 'hour')?.value ?? 0,
+    );
+    return hour < cfg.submissionCutoffHour;
+  } catch {
+    return date.getHours() < cfg.submissionCutoffHour;
   }
 }
 

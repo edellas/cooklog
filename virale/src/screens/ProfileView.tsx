@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -13,7 +13,9 @@ import { formatCount } from '../design/format';
 import { color, font, radius, space } from '../design/tokens';
 import { blockUser, getProfile, isDemo, resetDemo, toggleFollow } from '../services/api';
 import { useToast } from '../components/Toast';
+import { emitFollowChange } from '../state/postEvents';
 import { useSession } from '../state/session';
+import { useGoBack } from '../state/useGoBack';
 import type { MyEntry, Post, Profile } from '../types';
 
 export function ProfileView({ username, showBack }: { username: string; showBack?: boolean }) {
@@ -25,7 +27,22 @@ export function ProfileView({ username, showBack }: { username: string; showBack
   const [error, setError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [gridWidth, setGridWidth] = useState(0);
   const toast = useToast();
+  const goBack = useGoBack();
+  // Le conferme "tocca di nuovo" scadono dopo qualche secondo: un tocco dimenticato non resta armato.
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const arm = (set: (v: boolean) => void) => {
+    set(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      setConfirmBlock(false);
+      setConfirmReset(false);
+    }, 4000);
+  };
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -39,17 +56,17 @@ export function ProfileView({ username, showBack }: { username: string; showBack
     }, [username, version]),
   );
 
-  if (error) {
+  if (error || !data) {
     return (
-      <View style={[styles.center, { paddingTop: insets.top }]}>
-        <Txt variant="title">{error}</Txt>
-      </View>
-    );
-  }
-  if (!data) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={color.giallo} />
+      <View style={[styles.root, { paddingTop: insets.top + space[3] }]}>
+        {showBack ? (
+          <View style={styles.pad}>
+            <Press style={styles.back} onPress={goBack} accessibilityRole="button" accessibilityLabel="Indietro">
+              <Icon name="indietro" />
+            </Press>
+          </View>
+        ) : null}
+        <View style={styles.center}>{error ? <Txt variant="title">{error}</Txt> : <ActivityIndicator color={color.giallo} />}</View>
       </View>
     );
   }
@@ -60,8 +77,25 @@ export function ProfileView({ username, showBack }: { username: string; showBack
   const follow = () => {
     const on = !profile.followedByMe;
     haptic('light');
-    setData({ ...data, profile: { ...profile, followedByMe: on, followers: profile.followers + (on ? 1 : -1) } });
-    void toggleFollow(profile.id, on);
+    setData({ ...data, profile: { ...profile, followedByMe: on, followers: Math.max(0, profile.followers + (on ? 1 : -1)) } });
+    emitFollowChange(profile.id, on);
+    toggleFollow(profile.id, on).catch(() => {
+      setData((d) => (d ? { ...d, profile: { ...d.profile, followedByMe: !on, followers: profile.followers } } : d));
+      emitFollowChange(profile.id, !on);
+      toast('Non ci sono riuscito. Riprova.', 'error');
+    });
+  };
+  const block = async () => {
+    if (!confirmBlock) return arm(setConfirmBlock);
+    try {
+      await blockUser(profile.id);
+      bump();
+      toast(`@${profile.username} è bloccato.`);
+      goBack();
+    } catch (e) {
+      setConfirmBlock(false);
+      toast((e as Error).message, 'error');
+    }
   };
 
   return (
@@ -69,14 +103,14 @@ export function ProfileView({ username, showBack }: { username: string; showBack
       <View style={styles.pad}>
         <View style={styles.topRow}>
           {showBack ? (
-            <Press style={styles.back} onPress={() => router.back()} accessibilityLabel="Indietro">
+            <Press style={styles.back} onPress={goBack} accessibilityRole="button" accessibilityLabel="Indietro">
               <Icon name="indietro" />
             </Press>
           ) : (
             <View />
           )}
           {profile.isMe ? (
-            <Press style={styles.back} onPress={() => router.push('/impostazioni' as Href)} accessibilityLabel="Impostazioni">
+            <Press style={styles.back} onPress={() => router.push('/impostazioni' as Href)} accessibilityRole="button" accessibilityLabel="Impostazioni">
               <Icon name="impostazioni" />
             </Press>
           ) : null}
@@ -127,13 +161,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           <Press
             style={styles.block}
             scaleTo={1}
-            onPress={async () => {
-              if (!confirmBlock) return setConfirmBlock(true);
-              await blockUser(profile.id);
-              bump();
-              toast(`@${profile.username} è bloccato.`);
-              router.back();
-            }}
+            onPress={() => void block()}
             accessibilityRole="button">
             <Icon name="blocca" size={18} color={confirmBlock ? color.matita : color.paperFaint} />
             <Txt variant="meta" tone={confirmBlock ? color.matita : color.paperFaint}>
@@ -165,9 +193,16 @@ export function ProfileView({ username, showBack }: { username: string; showBack
       </View>
 
       {grid.length ? (
-        <View style={styles.grid}>
+        <View style={styles.grid} onLayout={(e) => setGridWidth(e.nativeEvent.layout.width)}>
           {grid.map((p) => (
-            <Press key={p.id} style={styles.cell} scaleTo={0.98} onPress={() => router.push(`/post/${p.id}` as Href)} accessibilityRole="link">
+            <Press
+              key={p.id}
+              // Tre colonne esatte: la larghezza si calcola, una percentuale più gli spazi andrebbe a capo.
+              style={[styles.cell, gridWidth ? { width: (gridWidth - 6 - 6) / 3 } : null]}
+              scaleTo={0.98}
+              onPress={() => router.push(`/post/${p.id}` as Href)}
+              accessibilityRole="link"
+              accessibilityLabel={`Post di @${p.author.username}${p.media.length > 1 ? `, ${p.media.length} elementi` : ''}${p.caption ? `: ${p.caption.slice(0, 60)}` : ''}`}>
               <Thumb media={p.media} rounded={6} />
             </Press>
           ))}
@@ -185,7 +220,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           style={styles.reset}
           scaleTo={1}
           onPress={async () => {
-            if (!confirmReset) return setConfirmReset(true);
+            if (!confirmReset) return arm(setConfirmReset);
             await resetDemo();
             setMe(null);
           }}
@@ -257,6 +292,6 @@ const styles = StyleSheet.create({
   tab: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: radius.pill },
   tabOn: { backgroundColor: color.raised },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, paddingHorizontal: 3 },
-  cell: { width: '32.9%', aspectRatio: 2 / 3 },
+  cell: { width: '32%', aspectRatio: 2 / 3 },
   reset: { alignSelf: 'center', marginTop: space[8], padding: space[3] },
 });

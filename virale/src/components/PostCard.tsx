@@ -1,15 +1,18 @@
 import { useRouter, type Href } from 'expo-router';
-import { useState } from 'react';
-import { Share, StyleSheet, View } from 'react-native';
+import { memo, useEffect, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
 
 import { formatCount, timeAgo } from '../design/format';
 import { color, radius, space } from '../design/tokens';
 import { registerShare, TIER_NAMES, toggleFollow, toggleLike, toggleSave } from '../services/api';
+import { shareText } from '../services/share';
+import { emitFollowChange, emitPostChange, onFollowChange, onPostChange, withRecentChanges } from '../state/postEvents';
 import type { Post } from '../types';
 import { Icon } from './Icon';
 import { MediaFrame, type VideoProgress } from './MediaFrame';
 import { Monogram } from './Monogram';
 import { haptic, Press } from './Press';
+import { useToast } from './Toast';
 import { Txt } from './Txt';
 
 export type Interaction = 'liked' | 'commented' | 'saved' | 'shared';
@@ -18,7 +21,7 @@ export type Interaction = 'liked' | 'commented' | 'saved' | 'shared';
  * Un post come una stampa sul tavolo luminoso: la cornice con foto e video in alto,
  * sotto la striscia con autore, didascalia e azioni in riga (non una colonna di icone sopra il video).
  */
-export function PostCard({
+export const PostCard = memo(function PostCard({
   post: initial,
   active,
   muted,
@@ -26,47 +29,92 @@ export function PostCard({
   meId,
   onInteract,
   onVideoProgress,
+  viewKey,
 }: {
   post: Post;
   active: boolean;
   muted: boolean;
   onToggleMute: () => void;
   meId?: string;
-  onInteract?: (kind: Interaction) => void;
-  onVideoProgress?: (p: VideoProgress) => void;
+  onInteract?: (postId: string, kind: Interaction) => void;
+  onVideoProgress?: (postId: string, p: VideoProgress) => void;
+  viewKey?: number;
 }) {
   const router = useRouter();
-  const [post, setPost] = useState(initial);
-  const [following, setFollowing] = useState(false);
+  const toast = useToast();
+  const [post, setPost] = useState(() => withRecentChanges(initial));
+  const [following, setFollowing] = useState(() => withRecentChanges(initial).followingAuthor);
   const [expanded, setExpanded] = useState(false);
+
+  // Se arriva una versione nuova del post (ricaricata), la si mostra, con i cambiamenti appena fatti.
+  useEffect(() => {
+    const next = withRecentChanges(initial);
+    setPost(next);
+    setFollowing(next.followingAuthor);
+  }, [initial]);
+
+  // Cambiamenti fatti altrove: un commento scritto, un mi piace sulla copertina, un "segui" dal profilo.
+  useEffect(
+    () =>
+      onPostChange(initial.id, ({ commented, ...patch }) => {
+        setPost((p) => ({ ...p, ...patch }));
+        if (commented) onInteract?.(initial.id, 'commented');
+      }),
+    [initial.id, onInteract],
+  );
+  useEffect(
+    () =>
+      onFollowChange(({ authorId, following: on }) => {
+        if (authorId === initial.author.id) setFollowing(on);
+      }),
+    [initial.author.id],
+  );
 
   const like = (on: boolean) => {
     if (post.likedByMe === on) return;
     haptic('light');
-    setPost((p) => ({ ...p, likedByMe: on, likeCount: p.likeCount + (on ? 1 : -1) }));
-    if (on) onInteract?.('liked');
-    void toggleLike(post.id, on).catch(() => setPost((p) => ({ ...p, likedByMe: !on, likeCount: p.likeCount + (on ? -1 : 1) })));
+    const likeCount = Math.max(0, post.likeCount + (on ? 1 : -1));
+    setPost((p) => ({ ...p, likedByMe: on, likeCount }));
+    emitPostChange(post.id, { likedByMe: on, likeCount });
+    if (on) onInteract?.(post.id, 'liked');
+    toggleLike(post.id, on).catch(() => {
+      const back = { likedByMe: !on, likeCount: post.likeCount };
+      setPost((p) => ({ ...p, ...back }));
+      emitPostChange(post.id, back);
+      toast('Non sono riuscito a salvare il mi piace. Riprova.', 'error');
+    });
   };
   const save = () => {
     const on = !post.savedByMe;
-    setPost((p) => ({ ...p, savedByMe: on, saveCount: p.saveCount + (on ? 1 : -1) }));
-    if (on) onInteract?.('saved');
-    void toggleSave(post.id, on);
+    const saveCount = Math.max(0, post.saveCount + (on ? 1 : -1));
+    setPost((p) => ({ ...p, savedByMe: on, saveCount }));
+    emitPostChange(post.id, { savedByMe: on, saveCount });
+    if (on) onInteract?.(post.id, 'saved');
+    toggleSave(post.id, on).catch(() => {
+      const back = { savedByMe: !on, saveCount: post.saveCount };
+      setPost((p) => ({ ...p, ...back }));
+      emitPostChange(post.id, back);
+      toast('Non sono riuscito a salvarlo. Riprova.', 'error');
+    });
   };
   const share = async () => {
-    try {
-      await Share.share({ message: `@${post.author.username} su Virale: “${post.caption}”` });
-    } catch {
-      // Il foglio di condivisione può non esistere (web): la condivisione conta comunque come intenzione.
-    }
-    onInteract?.('shared');
+    const text = post.caption ? `@${post.author.username} su Virale: “${post.caption}”` : `Guarda il post di @${post.author.username} su Virale`;
+    const res = await shareText(text);
+    if (res === 'none') return;
+    if (res === 'copied') toast('Testo copiato: incollalo dove vuoi.');
+    onInteract?.(post.id, 'shared');
     setPost((p) => ({ ...p, shareCount: p.shareCount + 1 }));
-    void registerShare(post.id);
+    registerShare(post.id).catch(() => undefined);
   };
   const follow = () => {
     setFollowing(true);
+    emitFollowChange(post.author.id, true);
     haptic('light');
-    void toggleFollow(post.author.id, true);
+    toggleFollow(post.author.id, true).catch(() => {
+      setFollowing(false);
+      emitFollowChange(post.author.id, false);
+      toast('Non sono riuscito a seguirlo. Riprova.', 'error');
+    });
   };
 
   const isMine = post.author.id === meId;
@@ -81,7 +129,8 @@ export function PostCard({
           muted={muted}
           onToggleMute={onToggleMute}
           onDoubleTap={() => like(true)}
-          onVideoProgress={onVideoProgress}
+          onVideoProgress={onVideoProgress ? (p) => onVideoProgress(post.id, p) : undefined}
+          viewKey={viewKey}
           overlay={
             contest && contest.status !== 'disqualified' ? (
               <View style={styles.stamp} pointerEvents="none">
@@ -96,7 +145,11 @@ export function PostCard({
 
       <View style={styles.strip}>
         <View style={styles.authorRow}>
-          <Press style={styles.author} onPress={() => router.push(`/utente/${post.author.username}` as Href)} accessibilityRole="link">
+          <Press
+            style={styles.author}
+            onPress={() => router.push(`/utente/${post.author.username}` as Href)}
+            accessibilityRole="link"
+            accessibilityLabel={`Profilo di ${post.author.displayName}, @${post.author.username}`}>
             <Monogram name={post.author.displayName} seed={post.author.username} size={34} />
             <View style={{ flexShrink: 1 }}>
               <Txt variant="label" numberOfLines={1}>
@@ -136,10 +189,7 @@ export function PostCard({
           <Action
             icon="commento"
             label={formatCount(post.commentCount)}
-            onPress={() => {
-              onInteract?.('commented');
-              router.push(`/commenti/${post.id}` as Href);
-            }}
+            onPress={() => router.push(`/commenti/${post.id}` as Href)}
             a11y="Commenti"
           />
           <Action icon="salva" label={formatCount(post.saveCount)} on={post.savedByMe} tone={color.giallo} filled onPress={save} a11y={post.savedByMe ? 'Togli dai salvati' : 'Salva'} />
@@ -155,7 +205,7 @@ export function PostCard({
       </View>
     </View>
   );
-}
+});
 
 function Action({
   icon,

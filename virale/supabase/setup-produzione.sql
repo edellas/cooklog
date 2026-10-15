@@ -25,12 +25,14 @@ create policy "media delete own" on storage.objects for delete to authenticated
   using (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text);
 
 -- 3) Chiusura della giornata a mezzanotte (ora di Roma): sceglie la Copertina.
---    00:05 UTC è sempre già il giorno dopo in Italia, d'estate e d'inverno.
+--    pg_cron ragiona in UTC: la mezzanotte italiana è alle 22:00 UTC d'estate e alle 23:00 UTC d'inverno.
+--    Gira un minuto dopo entrambe: una delle due è la mezzanotte giusta, l'altra non fa nulla
+--    (la giornata è già chiusa). Così la nuova copertina esce al minuto 00:01 tutto l'anno.
 create extension if not exists pg_cron;
 select cron.unschedule(jobid) from cron.job where jobname = 'arena-close-day';
 select cron.schedule(
   'arena-close-day',
-  '5 0 * * *',
+  '1 22,23 * * *',
   $$ select public.arena_close_day(public.arena_today() - 1) $$
 );
 

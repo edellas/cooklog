@@ -1,24 +1,53 @@
 import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
-import { color } from '../../src/design/tokens';
+import { Icon } from '../../src/components/Icon';
+import { Press } from '../../src/components/Press';
+import { Txt } from '../../src/components/Txt';
+import { color, space } from '../../src/design/tokens';
 import { CoverView } from '../../src/screens/CoverView';
 import { getArchive } from '../../src/services/api';
+import { useGoBack } from '../../src/state/useGoBack';
 import type { Cover } from '../../src/types';
 
+/** Un numero arretrato. Se il giorno non esiste (link sbagliato, troppo vecchio) lo dice invece di girare a vuoto. */
 export default function ArchivedCover() {
   const { day } = useLocalSearchParams<{ day: string }>();
-  const [cover, setCover] = useState<Cover | null>(null);
+  const goBack = useGoBack('/archivio');
+  const [cover, setCover] = useState<Cover | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    void getArchive().then((all) => setCover(all.find((c) => c.featuredOn === day) ?? null));
+    let alive = true;
+    setCover(undefined);
+    getArchive()
+      .then((all) => alive && setCover(all.find((c) => c.featuredOn === day) ?? null))
+      .catch((e: Error) => alive && setError(e.message));
+    return () => {
+      alive = false;
+    };
   }, [day]);
-  if (!cover) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.canvas }}>
+  if (cover) return <CoverView cover={cover} isToday={false} reveal={false} />;
+  return (
+    <View style={styles.root}>
+      {cover === undefined && !error ? (
         <ActivityIndicator color={color.giallo} />
-      </View>
-    );
-  }
-  return <CoverView cover={cover} isToday={false} reveal={false} />;
+      ) : (
+        <>
+          <Txt variant="title" style={{ textAlign: 'center' }}>
+            {error ? 'Non riesco a caricare questa copertina.' : 'Copertina non trovata.'}
+          </Txt>
+          <Press style={styles.back} onPress={goBack} accessibilityRole="button" accessibilityLabel="Torna all'Archivio">
+            <Icon name="indietro" size={20} />
+            <Txt variant="label">Archivio</Txt>
+          </Press>
+        </>
+      )}
+    </View>
+  );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space[4], padding: space[6], backgroundColor: color.canvas },
+  back: { flexDirection: 'row', alignItems: 'center', gap: space[2], backgroundColor: color.raised, borderRadius: 999, paddingHorizontal: 18, paddingVertical: 10 },
+});

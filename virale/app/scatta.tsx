@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter, type Href } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,9 +12,10 @@ import { haptic, Press } from '../src/components/Press';
 import { Thumb } from '../src/components/Thumb';
 import { TierLadder } from '../src/components/TierLadder';
 import { Txt } from '../src/components/Txt';
+import { useGoBack } from '../src/state/useGoBack';
 import { duration, ease } from '../src/design/motion';
 import { color, radius, space } from '../src/design/tokens';
-import { getMyEntry, publish } from '../src/services/api';
+import { contestOpen, getMyEntry, publish } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import type { DraftMedia, MediaItem, MyEntry, Post } from '../src/types';
 
@@ -32,7 +33,23 @@ export default function CreateScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [muted, setMuted] = useState(true);
-  const [done, setDone] = useState<{ post: Post; entry: MyEntry | null } | null>(null);
+  const [done, setDone] = useState<{ post: Post; entry: MyEntry | null; contestError: string | null } | null>(null);
+  const [closed] = useState(() => !contestOpen());
+  const [confirmClose, setConfirmClose] = useState(false);
+  const goBack = useGoBack();
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+  }, []);
+  const canJoin = !alreadyIn && !closed;
+
+  /** Chiudere con foto già scelte chiede conferma: non si perde il lavoro con un tocco. */
+  const close = () => {
+    if (!media.length || confirmClose) return goBack();
+    setConfirmClose(true);
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    confirmTimer.current = setTimeout(() => setConfirmClose(false), 4000);
+  };
 
   useEffect(() => {
     void getMyEntry()
@@ -45,6 +62,8 @@ export default function CreateScreen() {
 
   const pick = async (camera: boolean) => {
     setError(null);
+    const room = MAX - media.length;
+    if (room <= 0) return setError(`Al massimo ${MAX} foto e video per post.`);
     try {
       if (camera) {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -55,23 +74,29 @@ export default function CreateScreen() {
         quality: 0.8,
         videoMaxDuration: 60,
         allowsMultipleSelection: !camera,
-        selectionLimit: MAX - media.length,
+        selectionLimit: room,
         orderedSelection: true,
+        // Su iPhone le foto HEIC e i video HEVC diventano JPEG e H.264: si vedono anche su Android e sul web.
+        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
       };
       const res = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
       if (res.canceled) return;
-      const tooLong = res.assets.some((a) => a.type === 'video' && (a.duration ?? 0) > 61_000);
+      // Sul web la durata arriva in secondi, sul telefono in millisecondi.
+      const ms = (d: number | null | undefined) => (d == null ? undefined : Math.round(Platform.OS === 'web' ? d * 1000 : d));
+      const tooLong = res.assets.some((a) => a.type === 'video' && (ms(a.duration) ?? 0) > 61_000);
       const next: DraftMedia[] = res.assets
-        .filter((a) => !(a.type === 'video' && (a.duration ?? 0) > 61_000))
+        .filter((a) => !(a.type === 'video' && (ms(a.duration) ?? 0) > 61_000))
         .map((a) => ({
           uri: a.uri,
           kind: a.type === 'video' ? 'video' : 'image',
           width: a.width,
           height: a.height,
-          durationMs: a.duration ?? undefined,
+          durationMs: ms(a.duration),
           mimeType: a.mimeType ?? undefined,
         }));
+      const extra = next.length - room;
       if (tooLong) setError('I video possono durare al massimo 60 secondi: quelli più lunghi non sono stati aggiunti.');
+      else if (extra > 0) setError(`Al massimo ${MAX} per post: ne ho tenuti ${room}, gli altri ${extra} no.`);
       setMedia((m) => [...m, ...next].slice(0, MAX));
     } catch {
       setError('Non riesco ad aprire la galleria. Riprova.');
@@ -90,18 +115,17 @@ export default function CreateScreen() {
   };
   const remove = () => {
     setMedia((m) => m.filter((_, i) => i !== selected));
-    setSelected((s) => Math.max(0, s - 1));
+    setSelected((s) => Math.max(0, Math.min(s, media.length - 2)));
   };
 
   const submit = async () => {
     try {
       setBusy(true);
       setError(null);
-      const post = await publish({ media, caption, joinContest: join && !alreadyIn });
-      const entry = join && !alreadyIn ? await getMyEntry() : null;
+      const res = await publish({ media, caption, joinContest: join && canJoin });
       haptic('success');
       bump();
-      setDone({ post, entry });
+      setDone(res);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -109,21 +133,24 @@ export default function CreateScreen() {
     }
   };
 
-  if (done) return <Done post={done.post} entry={done.entry} onClose={() => router.back()} onGo={() => router.replace('/provini' as Href)} />;
+  if (done) return <Done post={done.post} entry={done.entry} contestError={done.contestError} onClose={goBack} onGo={() => router.replace('/provini' as Href)} />;
 
   const preview: MediaItem[] = media.map((m) => ({ kind: m.kind, src: m.uri, width: m.width, height: m.height, durationMs: m.durationMs }));
 
   return (
-    <KeyboardAvoidingView style={[styles.root, { paddingTop: insets.top }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={[styles.root, { paddingTop: insets.top }]} behavior="padding">
       <View style={styles.bar}>
-        <Press style={styles.round} onPress={() => router.back()} accessibilityLabel="Chiudi">
-          <Icon name="chiudi" />
+        <Press style={[styles.round, confirmClose && styles.roundWarn]} onPress={close} accessibilityRole="button" accessibilityLabel={confirmClose ? 'Tocca di nuovo per scartare il post' : 'Chiudi'}>
+          <Icon name="chiudi" color={confirmClose ? color.matita : color.paper} />
         </Press>
-        <Txt variant="title">Nuovo post</Txt>
+        <Txt variant="title">{confirmClose ? 'Scartare il post?' : 'Nuovo post'}</Txt>
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: space[4], gap: space[4], paddingBottom: insets.bottom + space[8] }} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={{ padding: space[4], gap: space[4], paddingBottom: insets.bottom + space[8] }}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets>
         {!media.length ? (
           <View style={{ gap: space[3] }}>
             <Press style={styles.source} onPress={() => void pick(false)} accessibilityRole="button">
@@ -146,17 +173,17 @@ export default function CreateScreen() {
         ) : (
           <>
             <View style={styles.preview}>
-              <MediaFrame media={preview} active muted={muted} onToggleMute={() => setMuted((x) => !x)} />
+              <MediaFrame media={preview} active muted={muted} onToggleMute={() => setMuted((x) => !x)} index={selected} onIndexChange={setSelected} />
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space[2] }}>
               {media.map((m, i) => (
-                <Press key={`${m.uri}-${i}`} style={[styles.thumb, i === selected && styles.thumbOn]} scaleTo={0.96} onPress={() => setSelected(i)} accessibilityLabel={`Elemento ${i + 1}`}>
+                <Press key={`${m.uri}-${i}`} style={[styles.thumb, i === selected && styles.thumbOn]} scaleTo={0.96} onPress={() => setSelected(i)} accessibilityRole="button" accessibilityState={{ selected: i === selected }} accessibilityLabel={`${m.kind === 'video' ? 'Video' : 'Foto'} ${i + 1} di ${media.length}`}>
                   <Thumb media={[{ kind: m.kind, src: m.uri, width: m.width, height: m.height }]} rounded={8} />
                 </Press>
               ))}
               {media.length < MAX ? (
-                <Press style={[styles.thumb, styles.add]} onPress={() => void pick(false)} accessibilityLabel="Aggiungi foto o video">
+                <Press style={[styles.thumb, styles.add]} onPress={() => void pick(false)} accessibilityRole="button" accessibilityLabel="Aggiungi foto o video">
                   <Icon name="scatta" size={22} color={color.paperDim} />
                 </Press>
               ) : null}
@@ -178,6 +205,7 @@ export default function CreateScreen() {
                 value={caption}
                 onChangeText={setCaption}
                 placeholder="Scrivi una didascalia"
+                accessibilityLabel="Didascalia"
                 maxLength={300}
                 multiline
               />
@@ -186,14 +214,18 @@ export default function CreateScreen() {
               </Txt>
             </View>
 
-            <Press style={styles.contest} scaleTo={0.99} onPress={() => !alreadyIn && setJoin((j) => !j)} disabled={alreadyIn} accessibilityRole="switch" accessibilityState={{ checked: join && !alreadyIn, disabled: alreadyIn }}>
+            <Press style={styles.contest} scaleTo={0.99} onPress={() => canJoin && setJoin((j) => !j)} disabled={!canJoin} accessibilityRole="switch" accessibilityState={{ checked: join && canJoin, disabled: !canJoin }}>
               <View style={{ flex: 1, gap: 4 }}>
                 <Txt variant="label">Candidalo per la copertina di domani</Txt>
                 <Txt variant="small" tone={color.paperDim}>
-                  {alreadyIn ? 'Oggi hai già un post in gara: se ne candida uno al giorno.' : 'Entra nei Provini. Se vince, domani lo vede chiunque apra Virale.'}
+                  {alreadyIn
+                    ? 'Oggi hai già un post in gara: se ne candida uno al giorno.'
+                    : closed
+                      ? 'Le candidature di oggi hanno chiuso alle 20:00. Riaprono a mezzanotte.'
+                      : 'Entra nei Provini. Se vince, domani lo vede chiunque apra Virale.'}
                 </Txt>
               </View>
-              <Toggle on={join && !alreadyIn} />
+              <Toggle on={join && canJoin} />
             </Press>
           </>
         )}
@@ -210,7 +242,7 @@ export default function CreateScreen() {
               <ActivityIndicator color={color.canvas} />
             ) : (
               <Txt variant="label" tone={color.canvas}>
-                {join && !alreadyIn ? 'Pubblica e candida' : 'Pubblica'}
+                {join && canJoin ? 'Pubblica e candida' : 'Pubblica'}
               </Txt>
             )}
           </Press>
@@ -244,7 +276,7 @@ function Toggle({ on }: { on: boolean }) {
 }
 
 /** Pubblicato. Momento raro: il provino si "appunta" sul tavolo con una piccola rotazione. */
-function Done({ post, entry, onClose, onGo }: { post: Post; entry: MyEntry | null; onClose: () => void; onGo: () => void }) {
+function Done({ post, entry, contestError, onClose, onGo }: { post: Post; entry: MyEntry | null; contestError: string | null; onClose: () => void; onGo: () => void }) {
   const insets = useSafeAreaInsets();
   const reduced = useReducedMotion();
   const s = useSharedValue(reduced ? 1 : 0.92);
@@ -268,6 +300,11 @@ function Done({ post, entry, onClose, onGo }: { post: Post; entry: MyEntry | nul
         <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center', maxWidth: 320 }}>
           {entry ? 'Da adesso il tuo post arriva a un primo pubblico. Se piace, sale di gradino.' : 'Lo trovi nel tuo profilo e lo vedono i tuoi follower.'}
         </Txt>
+        {contestError ? (
+          <Txt variant="small" tone={color.matita} style={{ textAlign: 'center', maxWidth: 320 }}>
+            Non è in gara: {contestError}
+          </Txt>
+        ) : null}
       </View>
       {entry ? (
         <View style={styles.doneLadder}>
@@ -295,6 +332,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.canvas },
   bar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space[4], paddingVertical: space[2] },
   round: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
+  roundWarn: { borderWidth: 1.5, borderColor: color.matita },
   source: { backgroundColor: color.raised, borderRadius: radius.card, padding: space[5], gap: space[2] },
   preview: { height: 420, borderRadius: 22, overflow: 'hidden' },
   thumb: { width: 60, height: 90, borderRadius: 10, borderWidth: 2, borderColor: 'transparent', padding: 1 },

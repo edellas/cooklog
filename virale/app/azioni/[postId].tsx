@@ -1,15 +1,17 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../../src/components/Icon';
+import { SheetClose } from '../../src/components/SheetClose';
 import { haptic, Press } from '../../src/components/Press';
 import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { color, radius, space } from '../../src/design/tokens';
 import { blockUser, deletePost, getPost, REPORT_REASONS, reportPost, type ReportReason } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
+import { useGoBack } from '../../src/state/useGoBack';
 import type { Post } from '../../src/types';
 
 type Step = 'menu' | 'segnala' | 'blocca' | 'elimina';
@@ -22,7 +24,7 @@ type Step = 'menu' | 'segnala' | 'blocca' | 'elimina';
 export default function PostActions() {
   const { postId } = useLocalSearchParams<{ postId: string }>();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const goBack = useGoBack();
   const toast = useToast();
   const { me, bump } = useSession();
   const [post, setPost] = useState<Post | null>(null);
@@ -43,7 +45,7 @@ export default function PostActions() {
       await fn();
       haptic('success');
       bump();
-      router.back();
+      goBack();
       toast(done);
     } catch (e) {
       setError((e as Error).message);
@@ -65,6 +67,7 @@ export default function PostActions() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={{ padding: space[5], paddingTop: space[6], paddingBottom: insets.bottom + space[6], gap: space[3] }}>
+      <SheetClose />
       {step === 'menu' ? (
         <>
           <Txt variant="title" style={{ marginBottom: space[2] }}>

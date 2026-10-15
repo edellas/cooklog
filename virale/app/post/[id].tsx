@@ -1,5 +1,6 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useIsFocused } from '@react-navigation/native';
+import { useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -10,32 +11,49 @@ import { Txt } from '../../src/components/Txt';
 import { color, space } from '../../src/design/tokens';
 import { getPost } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
+import { useGoBack } from '../../src/state/useGoBack';
 import type { Post } from '../../src/types';
 
 export default function PostScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const { me } = useSession();
+  const goBack = useGoBack();
+  const focused = useIsFocused();
+  const { me, version } = useSession();
   const [post, setPost] = useState<Post | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [muted, setMuted] = useState(true);
+  const loaded = useRef(false);
 
+  // Si ricarica quando qualcosa cambia altrove: se il post è stato eliminato, segnalato o il suo autore
+  // bloccato, non resta aperto su qualcosa che non esiste più.
   useEffect(() => {
-    void getPost(id)
-      .then(setPost)
-      .catch((e: Error) => setError(e.message));
-  }, [id]);
+    let alive = true;
+    getPost(id)
+      .then((p) => {
+        if (!alive) return;
+        loaded.current = true;
+        setPost(p);
+      })
+      .catch((e: Error) => {
+        if (!alive) return;
+        if (loaded.current) goBack();
+        else setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, version, goBack]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.bar}>
-        <Press style={styles.back} onPress={() => router.back()} accessibilityLabel="Indietro">
+        <Press style={styles.back} onPress={goBack} accessibilityRole="button" accessibilityLabel="Indietro">
           <Icon name="indietro" />
         </Press>
       </View>
       {post ? (
-        <PostCard post={post} active muted={muted} onToggleMute={() => setMuted((m) => !m)} meId={me?.id} />
+        <PostCard post={post} active={focused} muted={muted} onToggleMute={() => setMuted((m) => !m)} meId={me?.id} />
       ) : error ? (
         <Txt variant="title" style={{ textAlign: 'center', marginTop: 80 }}>
           {error}

@@ -29,21 +29,25 @@ export default function ProviniTab() {
   const [mode, setMode] = useState<Mode>('perte');
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [muted, setMuted] = useState(true);
   const [focused, setFocused] = useState(true);
-  const [left, setLeft] = useState(() => msUntilArenaClose());
 
   const signals = useRef<Record<string, Partial<Record<Interaction, boolean>>>>({});
   const video = useRef<Record<string, VideoProgress>>({});
   const current = useRef<{ card: FeedCard; since: number } | null>(null);
-  const busy = useRef(false);
+  /** Numero della vista per ogni post: cambia quando il post torna sullo schermo, e il video riparte. */
+  const views = useRef<Record<string, number>>({});
+  const cardsRef = useRef<FeedCard[]>([]);
+  /** Ogni caricamento ha un numero: le risposte arrivate tardi (dopo un cambio di modalità) si scartano. */
+  const request = useRef(0);
+  const loadingMore = useRef(false);
 
   useEffect(() => {
-    const id = setInterval(() => setLeft(msUntilArenaClose()), 1000);
-    return () => clearInterval(id);
-  }, []);
+    cardsRef.current = cards;
+  }, [cards]);
 
   /** Chiude la vista corrente e la manda al server con i segnali raccolti. */
   const flush = useCallback(() => {
@@ -52,60 +56,99 @@ export default function ProviniTab() {
     if (!cur?.card.entryId) return;
     const s = signals.current[cur.card.id] ?? {};
     const v = video.current[cur.card.id];
+    delete signals.current[cur.card.id];
     void recordView(cur.card.entryId, { dwellMs: Date.now() - cur.since, completed: v?.completed, rewatched: v?.rewatched, ...s }).catch(() => undefined);
   }, []);
 
-  const load = useCallback(
-    async (reset: boolean) => {
-      if (busy.current) return;
-      busy.current = true;
-      try {
-        if (mode === 'seguiti') {
-          setCards(await getFollowing());
-        } else {
-          const exclude = reset ? [] : cards.map((x) => x.id);
-          const next = await getForYou(6, exclude);
-          setCards((prev) => (reset ? next : [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]));
-        }
-      } finally {
-        busy.current = false;
+  const load = useCallback(async (reset: boolean) => {
+    if (!reset && loadingMore.current) return;
+    const id = ++request.current;
+    loadingMore.current = !reset;
+    try {
+      if (mode === 'seguiti') {
+        const next = await getFollowing();
+        if (id === request.current) setCards(next);
+      } else {
+        const exclude = reset ? [] : cardsRef.current.map((x) => x.id);
+        const next = await getForYou(6, exclude);
+        if (id === request.current) setCards((prev) => (reset ? next : [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]));
+      }
+      if (id === request.current) setError(null);
+    } catch (e) {
+      if (id === request.current && reset) setError((e as Error).message);
+    } finally {
+      if (id === request.current) {
+        loadingMore.current = false;
         setLoading(false);
       }
-    },
-    [cards, mode],
-  );
+    }
+  }, [mode]);
 
   useEffect(() => {
     flush();
     setLoading(true);
+    setError(null);
     setCards([]);
     setActiveId(null);
     void load(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, version]);
+  }, [flush, load, version]);
 
-  // Uscendo dal tab la vista corrente si registra e i video si fermano.
+  // Uscendo dal tab (o aprendo commenti e azioni) la vista corrente si registra e i video si fermano;
+  // tornando, la vista del post sullo schermo riprende a contare.
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
+      const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
+      if (visible && !current.current) current.current = { card: visible, since: Date.now() };
       return () => {
         setFocused(false);
         flush();
       };
     }, [flush]),
   );
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
+  const flushRef = useRef(flush);
+  useEffect(() => {
+    flushRef.current = flush;
+  }, [flush]);
   const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<FeedCard>[] }) => {
     const visible = viewableItems[0]?.item;
     if (!visible || visible.id === current.current?.card.id) return;
     flushRef.current();
     current.current = { card: visible, since: Date.now() };
+    views.current[visible.id] = (views.current[visible.id] ?? 0) + 1;
     setActiveId(visible.id);
   }).current;
-  const flushRef = useRef(flush);
-  useEffect(() => {
-    flushRef.current = flush;
-  }, [flush]);
+
+  const onInteract = useCallback((postId: string, kind: Interaction) => {
+    signals.current[postId] = { ...signals.current[postId], [kind]: true };
+  }, []);
+  const onVideoProgress = useCallback((postId: string, p: VideoProgress) => {
+    video.current[postId] = p;
+  }, []);
+  const toggleMute = useCallback(() => setMuted((m) => !m), []);
+
+  const renderItem = useCallback(
+    ({ item }: { item: FeedCard }) => (
+      <View style={{ height }}>
+        <PostCard
+          post={item}
+          meId={me?.id}
+          active={focused && item.id === activeId}
+          viewKey={views.current[item.id] ?? 0}
+          muted={muted}
+          onToggleMute={toggleMute}
+          onInteract={onInteract}
+          onVideoProgress={onVideoProgress}
+        />
+      </View>
+    ),
+    [activeId, focused, height, me?.id, muted, onInteract, onVideoProgress, toggleMute],
+  );
 
   const onLayout = (e: LayoutChangeEvent) => setHeight(e.nativeEvent.layout.height);
 
@@ -119,18 +162,33 @@ export default function ProviniTab() {
             setMode(m);
           }}
         />
-        <View style={styles.clock} accessibilityLabel={`La gara chiude tra ${clock(left)}`}>
-          <Icon name="orologio" size={16} color={color.giallo} strokeWidth={2} />
-          <Txt variant="meta" tone={color.paper} style={{ fontFamily: font.uiBold }}>
-            {clock(left)}
-          </Txt>
-        </View>
+        <ArenaClock />
       </View>
 
       <View style={styles.list} onLayout={onLayout}>
         {loading && !cards.length ? (
           <View style={styles.center}>
             <ActivityIndicator color={color.giallo} />
+          </View>
+        ) : error && !cards.length ? (
+          <View style={styles.center}>
+            <Txt variant="title" style={{ textAlign: 'center' }}>
+              Non riesco a caricare i post.
+            </Txt>
+            <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
+              Controlla la connessione e riprova.
+            </Txt>
+            <Press
+              style={styles.retry}
+              onPress={() => {
+                setLoading(true);
+                void load(true);
+              }}
+              accessibilityRole="button">
+              <Txt variant="label" tone={color.canvas}>
+                Riprova
+              </Txt>
+            </Press>
           </View>
         ) : !cards.length ? (
           <View style={styles.center}>
@@ -156,27 +214,31 @@ export default function ProviniTab() {
             onEndReached={() => {
               if (mode === 'perte') void load(false);
             }}
+            initialNumToRender={1}
+            maxToRenderPerBatch={2}
             windowSize={3}
-            renderItem={({ item }) => (
-              <View style={{ height }}>
-                <PostCard
-                  post={item}
-                  meId={me?.id}
-                  active={focused && item.id === activeId}
-                  muted={muted}
-                  onToggleMute={() => setMuted((m) => !m)}
-                  onInteract={(kind) => {
-                    signals.current[item.id] = { ...signals.current[item.id], [kind]: true };
-                  }}
-                  onVideoProgress={(p) => {
-                    video.current[item.id] = p;
-                  }}
-                />
-              </View>
-            )}
+            removeClippedSubviews
+            renderItem={renderItem}
           />
         ) : null}
       </View>
+    </View>
+  );
+}
+
+/** Il conto alla rovescia vive da solo: aggiornarlo ogni secondo non ridisegna il feed. */
+function ArenaClock() {
+  const [left, setLeft] = useState(() => msUntilArenaClose());
+  useEffect(() => {
+    const id = setInterval(() => setLeft(msUntilArenaClose()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <View style={styles.clock} accessible accessibilityLabel={`La gara chiude tra ${clock(left)}`}>
+      <Icon name="orologio" size={16} color={color.giallo} strokeWidth={2} />
+      <Txt variant="meta" tone={color.paper} style={{ fontFamily: font.uiBold }}>
+        {clock(left)}
+      </Txt>
     </View>
   );
 }
@@ -212,4 +274,5 @@ const styles = StyleSheet.create({
   clock: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: color.raised, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 8 },
   list: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 32 },
+  retry: { marginTop: space[3], backgroundColor: color.giallo, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 12 },
 });

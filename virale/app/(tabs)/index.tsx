@@ -1,8 +1,8 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 
-import { haptic } from '../../src/components/Press';
+import { haptic, Press } from '../../src/components/Press';
 import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { color } from '../../src/design/tokens';
@@ -16,20 +16,32 @@ import type { Cover } from '../../src/types';
 const SEEN_KEY = 'virale.cover.seen';
 
 export default function CoverTab() {
-  const { version, bump } = useSession();
+  const { me, version, bump } = useSession();
   const toast = useToast();
   const [cover, setCover] = useState<Cover | null | undefined>(undefined);
+  const [failed, setFailed] = useState(false);
   const [reveal, setReveal] = useState(false);
+  const loadedDay = useRef('');
 
   useFocusEffect(
     useCallback(() => {
       void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
+      // Prima di avere un profilo (benvenuto) non si carica nulla: la "rivelazione" del giorno resta per dopo.
+      if (!me) return;
       let alive = true;
       void (async () => {
-        const next = await getTodayCover().catch(() => null);
         const today = arenaDay();
+        let next: Cover | null;
+        try {
+          next = await getTodayCover();
+        } catch {
+          if (alive) setFailed(true);
+          return;
+        }
         const seen = await getJson<string>(SEEN_KEY, '');
         if (!alive) return;
+        loadedDay.current = today;
+        setFailed(false);
         setReveal(Boolean(next) && seen !== today);
         setCover(next);
         if (next && seen !== today) void setJson(SEEN_KEY, today);
@@ -37,8 +49,16 @@ export default function CoverTab() {
       return () => {
         alive = false;
       };
-    }, [version]),
+    }, [me, version]),
   );
+
+  // Riaprendo l'app il giorno dopo (dal multitasking) la copertina si aggiorna da sola.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && loadedDay.current && loadedDay.current !== arenaDay()) bump();
+    });
+    return () => sub.remove();
+  }, [bump]);
 
   const simulate = async () => {
     const next = await closeDayNowDemo();
@@ -49,6 +69,20 @@ export default function CoverTab() {
     toast(next ? `Nuova copertina: @${next.post.author.username}` : 'Nessun post idoneo oggi.');
   };
 
+  if (failed && !cover) {
+    return (
+      <View style={styles.center}>
+        <Txt variant="title" style={{ textAlign: 'center' }}>
+          Non riesco a caricare la copertina.
+        </Txt>
+        <Press style={styles.retry} onPress={bump} accessibilityRole="button">
+          <Txt variant="label" tone={color.canvas}>
+            Riprova
+          </Txt>
+        </Press>
+      </View>
+    );
+  }
   if (cover === undefined) {
     return (
       <View style={styles.center}>
@@ -63,14 +97,15 @@ export default function CoverTab() {
           Ancora nessuna copertina.
         </Txt>
         <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-          La prima esce domattina: pubblica un post e candidalo.
+          La prossima esce a mezzanotte: pubblica un post e candidalo.
         </Txt>
       </View>
     );
   }
-  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} />;
+  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} onDayEnd={bump} />;
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32, backgroundColor: color.canvas },
+  retry: { marginTop: 12, backgroundColor: color.giallo, borderRadius: 999, paddingHorizontal: 22, paddingVertical: 12 },
 });

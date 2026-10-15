@@ -18,19 +18,27 @@ export default function ArchiveTab() {
   const router = useRouter();
   const { version } = useSession();
   const [covers, setCovers] = useState<Cover[] | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
-      void getArchive()
-        .then(setCovers)
-        .catch(() => setCovers([]));
+      getArchive()
+        .then((all) => {
+          setCovers(all);
+          setFailed(false);
+        })
+        .catch(() => setFailed(true));
     }, [version]),
   );
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + space[3] }]}>
-      {covers === null ? (
+      {covers === null && failed ? (
+        <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center', marginTop: 80, paddingHorizontal: space[6] }}>
+          Non riesco a caricare l’Archivio. Controlla la connessione: riprovo quando torni su questa pagina.
+        </Txt>
+      ) : covers === null ? (
         <ActivityIndicator color={color.giallo} style={{ marginTop: 80 }} />
       ) : (
         <FlatList
@@ -43,7 +51,7 @@ export default function ArchiveTab() {
             <View style={styles.head}>
               <Txt variant="heading">Archivio</Txt>
               <Txt variant="body" tone={color.paperDim}>
-                Una copertina al giorno, scelta da chi guarda. {covers.length} uscite finora.
+                Una copertina al giorno, scelta da chi guarda. {covers.length} {covers.length === 1 ? 'uscita' : 'uscite'} finora.
               </Txt>
             </View>
           }
@@ -64,7 +72,7 @@ export default function ArchiveTab() {
                 @{item.post.author.username}
               </Txt>
               <Txt variant="meta" tone={color.paperFaint}>
-                {shortDate(item.featuredOn)} · su {item.totalEntries.toLocaleString('it-IT')} provini
+                {shortDate(item.featuredOn)} · su {item.totalEntries.toLocaleString('it-IT')} {item.totalEntries === 1 ? 'provino' : 'provini'}
               </Txt>
             </Press>
           )}

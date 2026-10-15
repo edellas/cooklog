@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ToastProvider } from '../src/components/Toast';
+import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { isDemo } from '../src/services/api';
 import { FONTS } from '../src/design/fonts';
@@ -15,6 +16,9 @@ import { color } from '../src/design/tokens';
 import { SessionProvider, useSession } from '../src/state/session';
 
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+// Aperta da un link (una copertina, un post), l'app ha comunque i tab sotto: "indietro" porta lì.
+export const unstable_settings = { initialRouteName: '(tabs)' };
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts(FONTS);
@@ -36,15 +40,17 @@ export default function RootLayout() {
             <View style={styles.outer}>
               <View style={styles.frame}>
                 <Gate />
+                <Offline />
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: color.canvas } }}>
                   <Stack.Screen name="(tabs)" />
-                  <Stack.Screen name="benvenuto" options={{ animation: 'fade' }} />
+                  <Stack.Screen name="benvenuto" options={{ animation: 'fade', gestureEnabled: false }} />
                   <Stack.Screen name="scatta" options={{ presentation: 'fullScreenModal' }} />
                   <Stack.Screen
                     name="commenti/[postId]"
                     options={{
                       presentation: 'formSheet',
-                      sheetAllowedDetents: [0.6, 0.95],
+                      // Su Android il foglio a metà nasconde la casella in basso: lì si apre subito alto.
+                      sheetAllowedDetents: Platform.OS === 'android' ? [0.95] : [0.6, 0.95],
                       sheetGrabberVisible: true,
                       sheetCornerRadius: 24,
                       contentStyle: { backgroundColor: color.sheet },
@@ -93,7 +99,10 @@ function Misconfigured() {
   );
 }
 
-/** Chi non ha ancora un profilo passa dal benvenuto. */
+/**
+ * Chi non ha ancora un profilo passa dal benvenuto. Termini e privacy restano leggibili anche prima:
+ * si devono poter leggere prima di accettarli.
+ */
 function Gate() {
   const { me } = useSession();
   const segments = useSegments();
@@ -101,14 +110,41 @@ function Gate() {
   useEffect(() => {
     if (me === undefined) return;
     const onWelcome = segments[0] === 'benvenuto';
-    if (!me && !onWelcome) router.replace('/benvenuto' as Href);
+    const open = onWelcome || segments[0] === 'legale';
+    if (!me && !open) {
+      // Uscendo (account eliminato, demo azzerata) non deve restare nulla sotto il benvenuto.
+      if (router.canDismiss()) router.dismissAll();
+      router.replace('/benvenuto' as Href);
+    }
     if (me && onWelcome) router.replace('/' as Href);
   }, [me, router, segments]);
   return null;
 }
 
+/** Senza rete all'avvio non si sa se hai un account: lo si dice e si offre di riprovare. */
+function Offline() {
+  const { me, error, retry } = useSession();
+  if (me !== undefined || !error) return null;
+  return (
+    <View style={[StyleSheet.absoluteFill, styles.fill, { alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12, zIndex: 10 }]}>
+      <Txt variant="title" style={{ textAlign: 'center' }}>
+        Non riesco a collegarmi.
+      </Txt>
+      <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
+        Controlla la connessione e riprova.
+      </Txt>
+      <Press style={styles.retry} onPress={retry} accessibilityRole="button">
+        <Txt variant="label" tone={color.canvas}>
+          Riprova
+        </Txt>
+      </Press>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: color.canvas },
+  retry: { marginTop: 12, backgroundColor: color.giallo, borderRadius: 999, paddingHorizontal: 22, paddingVertical: 12 },
   outer: { flex: 1, backgroundColor: Platform.OS === 'web' ? '#070B14' : color.canvas, alignItems: 'center' },
   frame: { flex: 1, width: '100%', maxWidth: Platform.OS === 'web' ? 460 : undefined, backgroundColor: color.canvas, overflow: 'hidden' },
 });

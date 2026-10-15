@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, BackHandler, KeyboardAvoidingView, StyleSheet, View } from 'react-native';
 import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -34,11 +34,21 @@ export default function Welcome() {
   const insets = useSafeAreaInsets();
   const [step, setStep] = useState<'intro' | 'nome'>('intro');
 
+  // Su Android "indietro" dal modulo torna alla presentazione invece di chiudere l'app.
+  useEffect(() => {
+    if (step !== 'nome') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setStep('intro');
+      return true;
+    });
+    return () => sub.remove();
+  }, [step]);
+
   return (
     <View style={styles.root}>
       <Wall />
       <LinearGradient colors={['rgba(12,19,34,0.35)', 'rgba(12,19,34,0.88)', color.canvas]} locations={[0, 0.45, 0.72]} style={StyleSheet.absoluteFill} />
-      <KeyboardAvoidingView style={[styles.content, { paddingTop: insets.top + space[10], paddingBottom: insets.bottom + space[5] }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={[styles.content, { paddingTop: insets.top + space[10], paddingBottom: insets.bottom + space[5] }]} behavior="padding">
         <View style={{ alignItems: 'center', gap: space[3] }}>
           <Masthead size={88} reveal />
           <Txt style={styles.claim}>Ogni giorno una sola copertina. La scelgono gli occhi di tutti.</Txt>
@@ -103,7 +113,10 @@ function NameForm() {
             </Txt>
           }
           value={username}
-          onChangeText={(v) => setUsername(v.toLowerCase().replace(/\s/g, ''))}
+          onChangeText={(v) => {
+            setUsername(v.toLowerCase().replace(/\s/g, ''));
+            setError(null);
+          }}
           placeholder="nomeutente"
           autoCapitalize="none"
           autoCorrect={false}
@@ -131,21 +144,25 @@ function NameForm() {
         accessibilityState={{ checked: accepted }}>
         <View style={[styles.box, accepted && styles.boxOn]}>{accepted ? <Icon name="check" size={16} color={color.canvas} strokeWidth={2.6} /> : null}</View>
         <Txt variant="small" tone={color.paperDim} style={{ flex: 1 }}>
-          Ho almeno {MIN_AGE} anni e accetto{' '}
-          <Txt variant="small" style={styles.link} onPress={() => router.push('/legale/termini' as Href)}>
-            Termini
-          </Txt>{' '}
-          e{' '}
-          <Txt variant="small" style={styles.link} onPress={() => router.push('/legale/linee-guida' as Href)}>
-            Linee guida
-          </Txt>
-          . Ho letto l’
-          <Txt variant="small" style={styles.link} onPress={() => router.push('/legale/privacy' as Href)}>
-            Informativa privacy
-          </Txt>
-          .
+          Ho almeno {MIN_AGE} anni e accetto Termini e Linee guida. Ho letto l’Informativa privacy.
         </Txt>
       </Press>
+      {/* I documenti sono link veri, separati dalla casella: si leggono (anche con VoiceOver) prima di accettarli. */}
+      <View style={styles.docs}>
+        {(
+          [
+            ['termini', 'Termini'],
+            ['linee-guida', 'Linee guida'],
+            ['privacy', 'Privacy'],
+          ] as const
+        ).map(([slug, label]) => (
+          <Press key={slug} style={styles.doc} onPress={() => router.push(`/legale/${slug}` as Href)} accessibilityRole="link" accessibilityLabel={`Leggi ${label}`}>
+            <Txt variant="small" style={styles.link}>
+              {label}
+            </Txt>
+          </Press>
+        ))}
+      </View>
       <Press style={[styles.cta, (!username || !accepted) && styles.off]} onPress={() => void submit()} disabled={!username || !accepted || busy} accessibilityRole="button">
         {busy ? (
           <ActivityIndicator color={color.canvas} />
@@ -207,4 +224,6 @@ const styles = StyleSheet.create({
   box: { width: 24, height: 24, borderRadius: 7, borderWidth: 1.5, borderColor: color.paperDim, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   boxOn: { backgroundColor: color.giallo, borderColor: color.giallo },
   link: { color: color.paper, textDecorationLine: 'underline', fontFamily: font.uiMedium },
+  docs: { flexDirection: 'row', gap: space[2], marginTop: -space[2] },
+  doc: { minHeight: 44, justifyContent: 'center', paddingHorizontal: space[2] },
 });

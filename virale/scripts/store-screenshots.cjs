@@ -1,3 +1,4 @@
+/* global __dirname */
 /**
  * Cattura gli screenshot per gli store dall'app vera (build web di Expo).
  * Uso: npx expo export --platform web --output-dir dist-web && npx serve dist-web -l 8770

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -8,7 +8,8 @@ import { color, radius, shadow } from '../design/tokens';
 import { Icon } from './Icon';
 import { Txt } from './Txt';
 
-const Ctx = createContext<(message: string) => void>(() => undefined);
+type Tone = 'ok' | 'error';
+const Ctx = createContext<(message: string, tone?: Tone) => void>(() => undefined);
 
 /**
  * Avviso breve dal basso. Entra in 240 ms ease-out dal suo stesso lato e esce più in fretta (180 ms):
@@ -18,13 +19,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const insets = useSafeAreaInsets();
   const reduced = useReducedMotion();
   const [message, setMessage] = useState<string | null>(null);
+  const [tone, setTone] = useState<Tone>('ok');
+  const [shown, setShown] = useState(false);
   const y = useSharedValue(24);
   const o = useSharedValue(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const show = useCallback(
-    (text: string) => {
+    (text: string, kind: Tone = 'ok') => {
       setMessage(text);
+      setTone(kind);
+      setShown(true);
+      AccessibilityInfo.announceForAccessibility(text);
       y.set(reduced ? 0 : 24);
       y.set(withTiming(0, { duration: duration.toast, easing: ease.out }));
       o.set(withTiming(1, { duration: duration.toast, easing: ease.out }));
@@ -32,6 +38,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       timer.current = setTimeout(() => {
         if (!reduced) y.set(withTiming(16, { duration: duration.toastOut, easing: ease.out }));
         o.set(withTiming(0, { duration: duration.toastOut, easing: ease.out }));
+        setShown(false);
       }, 2600);
     },
     [o, reduced, y],
@@ -45,9 +52,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={show}>
       {children}
-      <View pointerEvents="none" style={[styles.host, { bottom: insets.bottom + 92 }]}>
+      <View
+        pointerEvents="none"
+        style={[styles.host, { bottom: insets.bottom + 92 }]}
+        accessibilityLiveRegion="polite"
+        importantForAccessibility={shown ? 'yes' : 'no-hide-descendants'}
+        accessibilityElementsHidden={!shown}>
         <Animated.View style={[styles.toast, style]}>
-          <Icon name="check" size={18} color={color.giallo} strokeWidth={2.2} />
+          <Icon name={tone === 'ok' ? 'check' : 'info'} size={18} color={tone === 'ok' ? color.giallo : color.matita} strokeWidth={2.2} />
           <Txt variant="label" style={{ flexShrink: 1 }}>
             {message}
           </Txt>

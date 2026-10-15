@@ -1,5 +1,5 @@
-import { useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -10,22 +10,35 @@ import { haptic, Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
 import { timeAgo } from '../../src/design/format';
 import { color, font, space } from '../../src/design/tokens';
-import { addComment, getComments } from '../../src/services/api';
+import { addComment, deleteComment, getComments } from '../../src/services/api';
+import { emitPostChange } from '../../src/state/postEvents';
+import { useSession } from '../../src/state/session';
+import { useGoBack } from '../../src/state/useGoBack';
 import type { Comment } from '../../src/types';
 
 /** Commenti in un foglio nativo (formSheet): si apre a metà, si trascina fino in cima, si chiude con un gesto. */
 export default function CommentsSheet() {
   const { postId } = useLocalSearchParams<{ postId: string }>();
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const goBack = useGoBack();
+  const { me } = useSession();
   const [items, setItems] = useState<Comment[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  /** Commento proprio in attesa di conferma per l'eliminazione (secondo tocco). */
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+  }, []);
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    void getComments(postId)
+    getComments(postId)
       .then(setItems)
-      .catch(() => setItems([]));
+      .catch(() => setLoadError(true));
   }, [postId]);
 
   const send = async () => {
@@ -35,8 +48,11 @@ export default function CommentsSheet() {
       setError(null);
       const c = await addComment(postId, text);
       haptic('light');
-      setItems((prev) => [...(prev ?? []), c]);
+      const next = [...(items ?? []), c];
+      setItems(next);
       setText('');
+      // Il conteggio sotto il post si aggiorna subito, e nei Provini il commento conta come segnale.
+      emitPostChange(postId, { commentCount: next.length, commented: true });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -44,12 +60,39 @@ export default function CommentsSheet() {
     }
   };
 
+  const remove = async (c: Comment) => {
+    if (confirmId !== c.id) {
+      setConfirmId(c.id);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirmId(null), 4000);
+      return;
+    }
+    try {
+      setConfirmId(null);
+      await deleteComment(postId, c.id);
+      const next = (items ?? []).filter((x) => x.id !== c.id);
+      setItems(next);
+      emitPostChange(postId, { commentCount: next.length });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
   return (
-    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={styles.root} behavior="padding">
       <View style={styles.head}>
         <Txt variant="title">{items ? `${items.length} ${items.length === 1 ? 'commento' : 'commenti'}` : 'Commenti'}</Txt>
+        {Platform.OS === 'web' ? (
+          <Press style={styles.close} onPress={goBack} accessibilityRole="button" accessibilityLabel="Chiudi">
+            <Icon name="chiudi" size={20} />
+          </Press>
+        ) : null}
       </View>
-      {items === null ? (
+      {loadError && items === null ? (
+        <Txt variant="body" tone={color.paperFaint} style={{ textAlign: 'center', marginTop: space[8], paddingHorizontal: space[5] }}>
+          Non riesco a caricare i commenti. Controlla la connessione e riaprili.
+        </Txt>
+      ) : items === null ? (
         <ActivityIndicator color={color.giallo} style={{ marginTop: 40 }} />
       ) : (
         <FlatList
@@ -61,21 +104,38 @@ export default function CommentsSheet() {
               Ancora nessun commento. Scrivi il primo.
             </Txt>
           }
-          renderItem={({ item }) => (
-            <View style={styles.row}>
-              <Monogram name={item.author.displayName} seed={item.author.username} size={32} />
-              <View style={{ flex: 1, gap: 2 }}>
-                <Txt variant="meta" tone={color.paperFaint}>
-                  <Txt variant="meta" style={{ fontFamily: font.uiBold }}>
-                    @{item.author.username}
+          renderItem={({ item }) => {
+            const mine = item.author.id === me?.id;
+            return (
+              <View style={styles.row}>
+                {/* Toccando l'autore si apre il suo profilo: da lì lo si può bloccare. */}
+                <Press
+                  onPress={() => router.push(`/utente/${item.author.username}` as Href)}
+                  accessibilityRole="link"
+                  accessibilityLabel={`Profilo di @${item.author.username}`}
+                  hitSlop={6}>
+                  <Monogram name={item.author.displayName} seed={item.author.username} size={32} />
+                </Press>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Txt variant="meta" tone={color.paperFaint}>
+                    <Txt variant="meta" style={{ fontFamily: font.uiBold }} onPress={() => router.push(`/utente/${item.author.username}` as Href)}>
+                      @{item.author.username}
+                    </Txt>
+                    {'  '}
+                    {timeAgo(item.createdAt)}
                   </Txt>
-                  {'  '}
-                  {timeAgo(item.createdAt)}
-                </Txt>
-                <Txt variant="body">{item.body}</Txt>
+                  <Txt variant="body">{item.body}</Txt>
+                  {mine ? (
+                    <Press onPress={() => void remove(item)} accessibilityRole="button" style={styles.del} hitSlop={8}>
+                      <Txt variant="meta" tone={confirmId === item.id ? color.matita : color.paperFaint}>
+                        {confirmId === item.id ? 'Tocca di nuovo per eliminare' : 'Elimina'}
+                      </Txt>
+                    </Press>
+                  ) : null}
+                </View>
               </View>
-            </View>
-          )}
+            );
+          }}
         />
       )}
       {error ? (
@@ -90,6 +150,7 @@ export default function CommentsSheet() {
           value={text}
           onChangeText={setText}
           placeholder="Aggiungi un commento"
+          accessibilityLabel="Scrivi un commento"
           maxLength={300}
           multiline
         />
@@ -108,7 +169,9 @@ export default function CommentsSheet() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.sheet },
-  head: { paddingHorizontal: space[5], paddingTop: space[6], paddingBottom: space[4] },
+  head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space[5], paddingTop: space[6], paddingBottom: space[4] },
+  close: { width: 36, height: 36, borderRadius: 18, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
+  del: { alignSelf: 'flex-start', marginTop: 2 },
   row: { flexDirection: 'row', gap: space[3] },
   composer: { flexDirection: 'row', alignItems: 'flex-end', gap: space[2], paddingHorizontal: space[4], paddingTop: space[3], borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: color.line },
   input: { maxHeight: 120, paddingVertical: 11 },

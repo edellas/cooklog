@@ -9,6 +9,7 @@ import {
   DEFAULT_ARENA_CONFIG,
   emptyStats,
   lowerBoundScore,
+  msUntilArenaClose,
   percentile,
   qualityScore,
   recordView,
@@ -16,6 +17,7 @@ import {
   serveBatch,
   shiftDay,
   submitEntry,
+  submissionsOpen,
   type ArenaState,
 } from './engine.ts';
 import { simulateDay } from './simulation.ts';
@@ -154,6 +156,22 @@ describe('date', () => {
     // 23:30 UTC del 14 ottobre = 01:30 del 15 ottobre a Roma (ora legale).
     assert.equal(arenaDay(new Date('2026-10-14T23:30:00Z'), 'Europe/Rome'), '2026-10-15');
     assert.equal(shiftDay('2026-03-01', -1), '2026-02-28');
+  });
+
+  it('conta bene il tempo alla mezzanotte anche nei giorni del cambio d’ora', () => {
+    const h = 3600_000;
+    // 29 marzo 2026 alle 00:30 a Roma (23:30 UTC del 28): il giorno dura 23 ore, ne restano 22,5.
+    assert.equal(msUntilArenaClose(new Date('2026-03-28T23:30:00Z')), 22.5 * h);
+    // 25 ottobre 2026 alle 01:00 a Roma (23:00 UTC del 24): il giorno dura 25 ore, ne restano 24.
+    assert.equal(msUntilArenaClose(new Date('2026-10-24T23:00:00Z')), 24 * h);
+    // Un giorno normale: alle 18:00 a Roma (16:00 UTC, ora legale) mancano 6 ore.
+    assert.equal(msUntilArenaClose(new Date('2026-07-01T16:00:00Z')), 6 * h);
+  });
+
+  it('chiude le candidature alle 20 ora di Roma', () => {
+    assert.equal(submissionsOpen(new Date('2026-07-01T17:59:00Z')), true); // 19:59 a Roma
+    assert.equal(submissionsOpen(new Date('2026-07-01T18:00:00Z')), false); // 20:00 a Roma
+    assert.equal(submissionsOpen(new Date('2026-12-01T18:30:00Z')), true); // 19:30 a Roma (ora solare)
   });
 });
 

@@ -5,7 +5,8 @@ const memory = new Map<string, string>();
 
 export async function getJson<T>(key: string, fallback: T): Promise<T> {
   try {
-    const raw = (await AsyncStorage.getItem(key)) ?? memory.get(key) ?? null;
+    // Prima la memoria: se una scrittura su disco fallisce (spazio pieno) non si rilegge una copia vecchia.
+    const raw = memory.get(key) ?? (await AsyncStorage.getItem(key)) ?? null;
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     const raw = memory.get(key);

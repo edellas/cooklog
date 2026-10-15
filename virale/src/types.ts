@@ -28,6 +28,8 @@ export type Post = {
   shareCount: number;
   likedByMe: boolean;
   savedByMe: boolean;
+  /** Segui già l'autore. */
+  followingAuthor: boolean;
   /** Se il post è in gara oggi: il suo livello. */
   contest?: { entryId: string; tier: number; status: EntryStatus };
 };

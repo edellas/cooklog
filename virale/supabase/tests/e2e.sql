@@ -6,6 +6,8 @@ update arena_config set tier_thresholds='{3,5}', min_cohort=100, baseline_score=
 insert into auth.users select ('00000000-0000-0000-0000-00000000000'||i)::uuid from generate_series(1,6) i;
 insert into profiles (id, username, display_name, created_at)
   select id, 'user'||right(id::text,1), 'Utente '||right(id::text,1), now() - interval '10 days' from auth.users;
+-- Il trigger impone created_at = now() (anche al superutente): per il test gli account diventano "vecchi" di 10 giorni.
+update profiles set created_at = now() - interval '10 days';
 insert into posts (id, author_id, media, caption)
   select ('10000000-0000-0000-0000-00000000000'||i)::uuid, ('00000000-0000-0000-0000-00000000000'||i)::uuid,
          jsonb_build_array(jsonb_build_object('kind','image','url','https://cdn.example/'||i||'.jpg','width',1080,'height',1620)), 'Post '||i
@@ -57,8 +59,14 @@ exception when others then
   raise notice 'ok, post altrui rifiutato';
 end $$;
 
+-- Le candidature non si leggono dalla tabella.
+do $$ begin perform 1 from arena_entries limit 1; raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, candidature non leggibili dal client'; end $$;
 -- Voto su un post non servito: rifiutato.
-select arena_record_view((select id from arena_entries where author_id='00000000-0000-0000-0000-000000000002'), 9000, p_liked => true) as voto_non_servito;
+reset role;
+select id as entry_user2 from arena_entries where author_id = '00000000-0000-0000-0000-000000000002' \gset
+set role authenticated;
+select arena_record_view(:'entry_user2', 9000, p_liked => true) as voto_non_servito;
 
 -- Ogni spettatore riceve i Provini e reagisce: post 1 ottimo, 2 medio, 3 skip.
 do $$
@@ -69,6 +77,12 @@ begin
     for r in select * from feed_for_you(10) where entry_id is not null loop
       if (r.post->'author'->>'id')::uuid = auth.uid() then raise exception 'servito il proprio post!'; end if;
       cap := r.post->>'caption';
+      -- I segnali contano solo se esistono davvero: per il post 1 lo spettatore mette mi piace, commenta e condivide.
+      if cap = 'Post 1' then
+        insert into post_likes (post_id, user_id) values ((r.post->>'id')::uuid, auth.uid());
+        insert into comments (post_id, user_id, body) values ((r.post->>'id')::uuid, auth.uid(), 'Wow');
+        perform register_share((r.post->>'id')::uuid);
+      end if;
       ok := arena_record_view(r.entry_id,
         case cap when 'Post 1' then 9000 when 'Post 2' then 4000 else 500 end,
         p_rewatched => cap = 'Post 1', p_liked => cap = 'Post 1', p_commented => cap = 'Post 1', p_shared => cap = 'Post 1');
@@ -79,11 +93,21 @@ begin
   end loop;
 end $$;
 
--- Interazioni sociali e contatori mantenuti dai trigger.
+-- Segnali falsi: dire "mi è piaciuto" senza il mi piace non conta.
+reset role;
+select sum(likes) as like_registrati_post2, sum(comments) as commenti_registrati_post2 from arena_entry_stats where entry_id = :'entry_user2';
+set role authenticated;
+
+-- Interazioni sociali e contatori mantenuti dai trigger (user5 ha già messo mi piace al post 1 nei Provini).
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000005', false);
-insert into post_likes (post_id, user_id) values ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000005');
+do $$ begin
+  update post_likes set post_id = '10000000-0000-0000-0000-000000000002' where user_id = auth.uid();
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, un mi piace non si sposta su un altro post'; end $$;
 insert into post_saves (post_id, user_id) values ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000005');
 insert into comments (post_id, user_id, body) values ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000005', 'Bellissima!');
+-- Condividere due volte conta una volta.
+select register_share('10000000-0000-0000-0000-000000000001');
 insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000001');
 select register_share('10000000-0000-0000-0000-000000000001');
 do $$ begin
@@ -127,6 +151,13 @@ begin
   end loop;
 end $$;
 select get_post('10000000-0000-0000-0000-000000000002') is null as post_segnalato_nascosto;
+-- Nemmeno leggendo la tabella: un post nascosto non si vede.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
+select count(*) as post_nascosto_in_tabella from posts where id = '10000000-0000-0000-0000-000000000002';
+reset role;
+select status as stato_dopo_segnalazioni, disqualified_reason from arena_entries where post_id = '10000000-0000-0000-0000-000000000002';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000006', false);
 
 -- La coda di moderazione è solo per i moderatori.
 do $$ begin perform mod_queue(); raise exception 'NON DOVEVA PASSARE';
@@ -137,6 +168,8 @@ set role authenticated;
 select (q->>'reports')::int as segnalazioni_in_coda from mod_queue() q;
 -- "Nessun problema": il post torna visibile.
 select mod_resolve('10000000-0000-0000-0000-000000000002', 'dismiss');
+-- Torna visibile a tutti (tranne a chi l'ha segnalato, che ha chiesto di non vederlo più).
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
 select get_post('10000000-0000-0000-0000-000000000002') is not null as visibile_dopo_revisione;
 reset role;
 select status <> 'disqualified' as ancora_in_gara_dopo_revisione from arena_entries where post_id = '10000000-0000-0000-0000-000000000002';
@@ -151,6 +184,28 @@ do $$ begin
   insert into posts (author_id, media) values ('00000000-0000-0000-0000-000000000003', '[{"kind":"image","url":"https://x/1.jpg"}]');
   raise exception 'NON DOVEVA PASSARE';
 exception when insufficient_privilege then raise notice 'ok, utente espulso non può pubblicare'; end $$;
+
+-- Un account nuovo non si può retrodatare (per votare subito) né nominare moderatore.
+reset role;
+insert into auth.users values ('00000000-0000-0000-0000-000000000007');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000007', false);
+do $$ begin
+  insert into profiles (id, username, display_name, created_at) values (auth.uid(), 'user7', 'Utente 7', '2000-01-01');
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, data di creazione non impostabile dal client'; end $$;
+insert into profiles (id, username, display_name) values (auth.uid(), 'user7', 'Utente 7');
+reset role;
+select created_at > now() - interval '1 minute' as account_nuovo, is_moderator from profiles where username = 'user7';
+set role authenticated;
+
+-- Ritirare un post in gara (eliminandolo) non permette una seconda candidatura lo stesso giorno.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000002', false);
+delete from posts where id = '10000000-0000-0000-0000-000000000002';
+do $$ declare v uuid; begin
+  insert into posts (author_id, media) values (auth.uid(), '[{"kind":"image","url":"https://x/8.jpg"}]') returning id into v;
+  perform arena_submit(v); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%un solo post%' then raise; end if; raise notice 'ok, niente seconda candidatura dopo aver ritirato il post'; end $$;
 
 -- Eliminazione dell'account: sparisce tutto ciò che è suo.
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000005', false);
@@ -175,8 +230,12 @@ reset role;
 select p.caption as vincitore from posts p where p.id = (select post_id from arena_entries where id = arena_close_day(arena_today()));
 select arena_close_day(arena_today()) is not null as chiusura_idempotente;
 update daily_viral set featured_on = arena_today();  -- simula "domani"
-set role anon;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
 select c->'post'->>'caption' caption, c->'post'->'author'->>'username' autore, c->>'total_entries' in_gara from get_today_cover() c;
 select count(*) as archivio from get_cover_archive(10);
+set role anon;
+do $$ begin perform post_json('10000000-0000-0000-0000-000000000001', null); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, anon non chiama le funzioni interne'; end $$;
 do $$ begin perform arena_close_day(arena_today()); raise exception 'anon NON deve poter chiudere';
 exception when insufficient_privilege then raise notice 'ok, anon non può chiudere la giornata'; end $$;

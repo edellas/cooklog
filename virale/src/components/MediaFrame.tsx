@@ -1,7 +1,7 @@
 import { useEventListener } from 'expo';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -21,6 +21,8 @@ export type VideoProgress = { completed: boolean; rewatched: boolean };
  * - I video partono solo se la cornice è attiva e l'elemento è quello visibile; tocco = audio sì/no.
  * - Doppio tocco: il segno di matita (mi piace).
  * - Misura completamento e ri-visione dei video: sono segnali della gara.
+ * - `viewKey`: quando cambia, il video riparte da capo (una nuova vista); tornando sulla stessa vista riprende da dove era.
+ * - `index` e `onIndexChange` permettono di guidare il carosello da fuori (per esempio dalle miniature).
  */
 export function MediaFrame({
   media,
@@ -31,9 +33,18 @@ export function MediaFrame({
   muted,
   onToggleMute,
   overlay,
+  viewKey = 0,
+  index: controlled,
+  onIndexChange,
+  controlsTop = 12,
 }: {
   media: MediaItem[];
   active: boolean;
+  viewKey?: number;
+  index?: number;
+  onIndexChange?: (i: number) => void;
+  /** Distanza dall'alto dei controlli (audio, contatore): sulle copertine a tutto schermo va sotto la barra di stato. */
+  controlsTop?: number;
   rounded?: boolean;
   onDoubleTap?: () => void;
   onVideoProgress?: (p: VideoProgress) => void;
@@ -42,8 +53,31 @@ export function MediaFrame({
   overlay?: React.ReactNode;
 }) {
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [index, setIndex] = useState(0);
+  const [index, setIndexState] = useState(0);
   const [marks, setMarks] = useState<{ id: number; x: number; y: number }[]>([]);
+  const list = useRef<FlatList<MediaItem>>(null);
+  /** Durante uno scorrimento comandato da fuori, gli eventi di scroll intermedi non devono cambiare l'indice. */
+  const steering = useRef(0);
+
+  const setIndex = useCallback(
+    (i: number) => {
+      const clamped = Math.max(0, Math.min(media.length - 1, i));
+      setIndexState(clamped);
+      onIndexChange?.(clamped);
+    },
+    [media.length, onIndexChange],
+  );
+
+  // Indice guidato da fuori, e sempre dentro i limiti quando gli elementi cambiano (tolti o spostati).
+  useEffect(() => {
+    const target = Math.max(0, Math.min(media.length - 1, controlled ?? index));
+    if (target !== index) setIndexState(target);
+    if (size.w > 0 && media.length) {
+      steering.current = Date.now();
+      list.current?.scrollToOffset({ offset: target * size.w, animated: controlled !== undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controlled, media.length, size.w]);
 
   const onLayout = (e: LayoutChangeEvent) => setSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
 
@@ -58,26 +92,33 @@ export function MediaFrame({
     if (media[index]?.kind === 'video') onToggleMute();
   }, [index, media, onToggleMute]);
 
-  const doubleTap = Gesture.Tap()
-    .numberOfTaps(2)
-    .maxDelay(260)
-    .onEnd((e, ok) => {
-      if (ok) scheduleOnRN(addMark, e.x, e.y);
-    });
-  const singleTap = Gesture.Tap()
-    .requireExternalGestureToFail(doubleTap)
-    .onEnd((_e, ok) => {
-      if (ok) scheduleOnRN(toggle);
-    });
+  // Un tocco che si sposta (uno scorrimento) non è un tocco: niente audio o cerchio per sbaglio.
+  const gesture = useMemo(() => {
+    const doubleTap = Gesture.Tap()
+      .numberOfTaps(2)
+      .maxDelay(260)
+      .maxDistance(10)
+      .onEnd((e, ok) => {
+        if (ok) scheduleOnRN(addMark, e.x, e.y);
+      });
+    const singleTap = Gesture.Tap()
+      .maxDistance(10)
+      .requireExternalGestureToFail(doubleTap)
+      .onEnd((_e, ok) => {
+        if (ok) scheduleOnRN(toggle);
+      });
+    return Gesture.Exclusive(doubleTap, singleTap);
+  }, [addMark, toggle]);
 
   const many = media.length > 1;
 
   return (
     <View style={[styles.frame, rounded && styles.rounded]} onLayout={onLayout}>
       {size.w > 0 ? (
-        <GestureDetector gesture={Gesture.Exclusive(doubleTap, singleTap)}>
+        <GestureDetector gesture={gesture}>
           <View style={StyleSheet.absoluteFill}>
             <FlatList
+              ref={list}
               data={media}
               horizontal
               pagingEnabled
@@ -85,15 +126,27 @@ export function MediaFrame({
               showsHorizontalScrollIndicator={false}
               keyExtractor={(_, i) => String(i)}
               getItemLayout={(_, i) => ({ length: size.w, offset: size.w * i, index: i })}
-              onMomentumScrollEnd={(e) => setIndex(Math.round(e.nativeEvent.contentOffset.x / size.w))}
+              onMomentumScrollEnd={(e) => {
+                if (Date.now() - steering.current > 450) setIndex(Math.round(e.nativeEvent.contentOffset.x / size.w));
+              }}
               onScroll={
-                Platform.OS === 'web' ? (e) => setIndex(Math.round(e.nativeEvent.contentOffset.x / Math.max(1, size.w))) : undefined
+                Platform.OS === 'web'
+                  ? (e) => {
+                      if (Date.now() - steering.current > 450) setIndex(Math.round(e.nativeEvent.contentOffset.x / Math.max(1, size.w)));
+                    }
+                  : undefined
               }
               scrollEventThrottle={64}
+              initialNumToRender={1}
+              maxToRenderPerBatch={1}
+              windowSize={3}
               renderItem={({ item, index: i }) => (
                 <View style={{ width: size.w, height: size.h }}>
                   {item.kind === 'video' ? (
-                    <VideoItem src={item.src} playing={active && i === index} muted={muted} onProgress={onVideoProgress} />
+                    // Un lettore video solo per l'elemento visibile e i vicini: i decoder del telefono sono pochi.
+                    Math.abs(i - index) <= 1 ? (
+                      <VideoItem src={item.src} playing={active && i === index} muted={muted} viewKey={viewKey} onProgress={onVideoProgress} />
+                    ) : null
                   ) : (
                     <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="cover" transition={120} />
                   )}
@@ -105,13 +158,13 @@ export function MediaFrame({
       ) : null}
 
       {media[index]?.kind === 'video' ? (
-        <Pressable onPress={onToggleMute} style={styles.sound} hitSlop={12} accessibilityLabel={muted ? 'Attiva audio' : 'Disattiva audio'}>
+        <Pressable onPress={onToggleMute} style={[styles.sound, { top: controlsTop }]} hitSlop={12} accessibilityRole="button" accessibilityLabel={muted ? 'Attiva audio' : 'Disattiva audio'}>
           <Icon name={muted ? 'muto' : 'audio'} size={20} />
         </Pressable>
       ) : null}
 
       {many ? (
-        <View style={styles.counter} pointerEvents="none">
+        <View style={[styles.counter, { top: controlsTop }]} pointerEvents="none">
           <Txt variant="meta">
             {index + 1} / {media.length}
           </Txt>
@@ -135,7 +188,7 @@ export function MediaFrame({
   );
 }
 
-function VideoItem({ src, playing, muted, onProgress }: { src: string; playing: boolean; muted: boolean; onProgress?: (p: VideoProgress) => void }) {
+function VideoItem({ src, playing, muted, viewKey, onProgress }: { src: string; playing: boolean; muted: boolean; viewKey: number; onProgress?: (p: VideoProgress) => void }) {
   const player = useVideoPlayer(resolveMedia(src) as never, (p) => {
     p.loop = true;
     p.muted = true;
@@ -152,15 +205,20 @@ function VideoItem({ src, playing, muted, onProgress }: { src: string; playing: 
     player.muted = muted;
   }, [muted, player]);
 
+  // Riparte da zero solo per una nuova vista; chiudendo i commenti o tornando sul tab riprende da dove era.
+  const playedKey = useRef<number | null>(null);
   useEffect(() => {
     if (playing) {
-      progress.current = { maxRatio: 0, last: 0, loops: 0 };
-      player.currentTime = 0;
+      if (playedKey.current !== viewKey) {
+        playedKey.current = viewKey;
+        progress.current = { maxRatio: 0, last: 0, loops: 0 };
+        player.currentTime = 0;
+      }
       player.play();
     } else {
       player.pause();
     }
-  }, [playing, player]);
+  }, [playing, player, viewKey]);
 
   useEventListener(player, 'timeUpdate', ({ currentTime }) => {
     const d = player.duration;
