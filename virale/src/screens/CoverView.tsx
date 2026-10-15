@@ -204,8 +204,8 @@ function CoverAction({
   a11y: string;
 }) {
   const c = on && tone ? tone : color.paper;
-  // Sotto i 400 punti (iPhone SE, Android piccoli) le etichette non ci stanno: resta solo il conteggio.
-  const compact = useWindowDimensions().width < 400 && icon !== 'cerchia';
+  // Sotto i 430 punti (quasi tutti gli iPhone non Max, molti Android) le etichette non ci stanno: resta solo il conteggio.
+  const compact = useWindowDimensions().width < 430 && icon !== 'cerchia';
   return (
     <Press style={styles.action} onPress={onPress} accessibilityRole="button" accessibilityLabel={a11y} accessibilityState={{ selected: !!on }}>
       <Icon name={icon} size={24} color={c} strokeWidth={on ? 2.4 : 1.75} filled={icon === 'salva' && on} />

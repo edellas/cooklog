@@ -17,7 +17,9 @@ import { SessionProvider, useSession } from '../src/state/session';
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 export default function RootLayout() {
-  const [fontsReady] = useFonts(FONTS);
+  const [fontsLoaded, fontError] = useFonts(FONTS);
+  // Se i font non si caricano si parte comunque, con quelli di sistema: meglio che uno schermo vuoto.
+  const fontsReady = fontsLoaded || !!fontError;
   useEffect(() => {
     if (fontsReady) void SplashScreen.hideAsync().catch(() => undefined);
   }, [fontsReady]);

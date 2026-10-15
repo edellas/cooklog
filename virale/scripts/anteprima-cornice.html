@@ -1,0 +1,150 @@
+<title>Virale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,900&family=Schibsted+Grotesk:wght@400;500;700&display=swap">
+<style id="expo-reset">
+  /* Cornice dell'anteprima: l'app su inchiostro, come la sua copertina. Un solo aspetto, scuro di proposito.
+     Su schermi larghi: istruzioni a sinistra, telefono a destra. Su un telefono: solo l'app, a tutto schermo. */
+  :root {
+    --ink: #0C1322;
+    --raised: #151D2D;
+    --bezel: #1E2637;
+    --line: #3A4253;
+    --paper: #F5F3EE;
+    --paper-dim: #C1C8D5;
+    --paper-faint: #939CAC;
+    --giallo: #FADB2C;
+    --matita: #F65041;
+    --display: 'Bodoni Moda', 'Didot', 'Bodoni 72', Georgia, serif;
+    --ui: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { overflow: hidden; background: var(--ink); color: var(--paper); font-family: var(--ui); }
+  #root { display: flex; height: 100%; flex: 1; }
+
+  .stage { height: 100%; display: flex; }
+  .notes { display: none; }
+
+  @media (min-width: 760px) {
+    .stage {
+      display: grid;
+      grid-template-columns: minmax(0, 340px) auto;
+      justify-content: center;
+      align-items: center;
+      gap: clamp(32px, 6vw, 88px);
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+    }
+    .stage #root {
+      flex: none;
+      width: 402px;
+      height: min(874px, calc(100% - 48px));
+      border-radius: 46px;
+      overflow: hidden;
+      /* tiene dentro la cornice anche gli elementi a posizione fissa dell'app */
+      transform: translateZ(0);
+      box-shadow: 0 0 0 10px var(--bezel), 0 0 0 11px var(--line), 0 40px 90px -30px rgba(0, 0, 0, 0.8);
+    }
+    .notes { display: flex; flex-direction: column; gap: 22px; min-width: 0; max-height: 100%; overflow-y: auto; padding-block: 24px; }
+  }
+
+  .notes h1 {
+    margin: 0;
+    font-family: var(--display);
+    font-weight: 900;
+    font-size: 64px;
+    line-height: 0.9;
+    letter-spacing: -0.02em;
+  }
+  .notes h1 .v { margin-right: -0.07em; }
+  .kicker {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--giallo);
+  }
+  .lead { margin: 0; font-size: 16px; line-height: 1.5; color: var(--paper-dim); text-wrap: pretty; }
+  .notes h2 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--paper-faint); }
+  .steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 12px; counter-reset: s; }
+  .steps li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 10px;
+    font-size: 14.5px;
+    line-height: 1.45;
+    color: var(--paper-dim);
+  }
+  .steps li::before {
+    content: counter(s);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1.5px solid var(--matita);
+    color: var(--paper);
+    font-size: 12px;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .steps b { color: var(--paper); font-weight: 500; }
+  .foot { margin: 0; font-size: 13px; line-height: 1.5; color: var(--paper-faint); border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+
+<div class="stage">
+  <aside class="notes" aria-label="Come provare il prototipo">
+    <div>
+      <p class="kicker">Prototipo cliccabile</p>
+      <h1><span class="v">V</span>irale</h1>
+    </div>
+    <p class="lead">È l'app vera, nella versione web, con persone, foto e voti di prova. Quello che fai resta solo in questo browser.</p>
+    <h2>Un giro in sette tocchi</h2>
+    <ol class="steps">
+      <li><span><b>Iscriviti</b> con un nome qualsiasi e spunta i termini.</span></li>
+      <li><span><b>Copertina</b>: il post scelto ieri da chi guardava. Tocca “Come si sceglie”.</span></li>
+      <li><span><b>Provini</b>: scorri con la rotellina. Doppio clic su una foto per cerchiarla con la matita.</span></li>
+      <li><span>Il <b>+ giallo</b>: pubblica una foto o un video dal tuo computer e candidalo alla gara.</span></li>
+      <li><span><b>Profilo</b>: guarda il tuo post salire di gradino, da Provino a Finale.</span></li>
+      <li><span><b>···</b> sotto un post: segnalalo o blocca chi l'ha pubblicato.</span></li>
+      <li><span>In fondo alla Copertina, <b>“Demo: simula la mezzanotte”</b>: vedi chi diventa la copertina di domani.</span></li>
+    </ol>
+    <p class="foot">Per ricominciare da capo: Profilo → “Ricomincia la demo da zero”. Sul telefono questa pagina mostra solo l'app, a tutto schermo.</p>
+  </aside>
+  <div id="root"></div>
+</div>
+
+<script>
+  (function () {
+    // L'app usa l'indirizzo della pagina per sapere quale schermata mostrare: si parte dalla prima.
+    try {
+      if (location.pathname !== '/') history.replaceState(null, '', '/');
+    } catch (e) {}
+
+    // Nella cornice, l'app deve credere che lo schermo sia grande quanto il telefono disegnato.
+    var root = document.getElementById('root');
+    var wide = window.matchMedia('(min-width: 760px)');
+    var real = window.visualViewport || null;
+    function box() {
+      if (wide.matches) {
+        var r = root.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      }
+      return real ? { w: real.width * real.scale, h: real.height * real.scale } : { w: innerWidth, h: innerHeight };
+    }
+    var fake = {
+      get width() { return box().w; },
+      get height() { return box().h; },
+      scale: 1, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0,
+      addEventListener: function (t, f, o) { if (real) real.addEventListener(t, f, o); window.addEventListener(t, f, o); },
+      removeEventListener: function (t, f, o) { if (real) real.removeEventListener(t, f, o); window.removeEventListener(t, f, o); },
+    };
+    try {
+      Object.defineProperty(window, 'visualViewport', { configurable: true, get: function () { return fake; } });
+    } catch (e) {}
+  })();
+</script>
+<script>/*BUNDLE*/</script>

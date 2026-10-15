@@ -5,6 +5,7 @@
 App mobile multipiattaforma (iOS, Android e web dallo stesso codice) in Expo SDK 54 / React Native, con Expo Router.
 
 - **Prototipo interattivo** (18 passaggi, stile Figma): `python3 prototype/build.py` → `prototype/dist/virale-prototipo.html`.
+- **App cliccabile in una sola pagina** (l'app vera in modalità demo, con cornice da telefono): `npx expo export --platform web --output-dir /tmp/virale-web && python3 scripts/make-anteprima.py /tmp/virale-web anteprima.html`.
 - **Linguaggio visivo**: [DESIGN.md](DESIGN.md).
 
 ## Cosa fa
