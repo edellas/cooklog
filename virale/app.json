@@ -69,6 +69,12 @@
     "description": "Ogni giorno un solo post diventa la copertina che vedono tutti.",
     "runtimeVersion": {
       "policy": "appVersion"
+    },
+    "owner": "virales-team",
+    "extra": {
+      "eas": {
+        "projectId": "264cb2ed-7b17-45bf-ad31-c1497fe4480e"
+      }
     }
   }
 }
