@@ -12,11 +12,10 @@ import { INTEREST_OPTIONS } from '@/src/types';
 import type { FoodPost, Recipe } from '@/src/types';
 import { getStoredJson, setStoredJson } from '@/src/services/storage';
 import { STORAGE_KEYS } from '@/src/services/storageKeys';
-import { submitToArena } from '@/src/services/viralService';
-import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { Image } from 'expo-image';
 import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 function newId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -24,7 +23,6 @@ function newId(prefix: string): string {
 
 export function AddPostScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ arena?: string }>();
   const { user, profile } = useAuth();
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [title, setTitle] = useState('');
@@ -38,7 +36,6 @@ export function AddPostScreen() {
   const [interests, setInterests] = useState<string[]>([]);
   const [publishToFeed, setPublishToFeed] = useState(true);
   const [saveToRecipes, setSaveToRecipes] = useState(true);
-  const [joinArena, setJoinArena] = useState(params.arena === '1');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,7 +96,6 @@ export function AddPostScreen() {
     if (!stepLines.length) return setError('Inserisci almeno un passaggio.');
     if (publishToFeed && !imageUri) return setError('Immagine obbligatoria per pubblicare nel feed.');
     if (publishToFeed && interests.length < 1) return setError('Inserisci almeno un interesse.');
-    if (joinArena && !publishToFeed) return setError("Per partecipare all'Arena il piatto deve essere pubblicato nel feed.");
 
     try {
       setBusy(true);
@@ -153,15 +149,6 @@ export function AddPostScreen() {
           updatedAt: new Date().toISOString(),
         };
         await setStoredJson(STORAGE_KEYS.feedPosts, [newPost, ...localPosts]);
-        if (joinArena) {
-          try {
-            await submitToArena(user.id, newPost);
-          } catch (e) {
-            Alert.alert('Arena', (e as Error).message || 'Candidatura non riuscita.');
-          }
-          router.replace('/arena' as Href);
-          return;
-        }
       }
       router.replace('/' as Href);
     } catch {
@@ -219,14 +206,6 @@ export function AddPostScreen() {
         <Switch value={saveToRecipes} onValueChange={setSaveToRecipes} />
       </View>
 
-      <View style={styles.toggleRow}>
-        <View style={styles.toggleText}>
-          <Text style={styles.toggleLabel}>Candida al Virale del giorno</Text>
-          <Text style={styles.toggleHint}>Un piatto al giorno. Il migliore lo vedranno tutti domani.</Text>
-        </View>
-        <Switch value={joinArena} onValueChange={setJoinArena} />
-      </View>
-
       <Pressable onPress={() => void onPublish()} style={styles.primary}>
         <Text style={styles.primaryLabel}>Pubblica</Text>
       </Pressable>
@@ -263,8 +242,6 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 90, textAlignVertical: 'top' },
   toggleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
   toggleLabel: { color: CooklogColors.text, fontWeight: '500' },
-  toggleText: { flex: 1, paddingRight: 12 },
-  toggleHint: { color: CooklogColors.textMuted, fontSize: 12, marginTop: 2 },
   primary: {
     marginTop: 10,
     borderRadius: 12,

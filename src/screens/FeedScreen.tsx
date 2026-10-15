@@ -3,7 +3,6 @@ import { ErrorState } from '@/src/components/ErrorState';
 import { FoodPostCard } from '@/src/components/FoodPostCard';
 import { LoadingState } from '@/src/components/LoadingState';
 import { loadFeed, toggleLike, toggleSave } from '@/src/services/feedService';
-import { getDailyViral, type DailyViral } from '@/src/services/viralService';
 import { getSubscriptionStatus, setSavedRecipesCount } from '@/src/services/subscriptionService';
 import { hrefRecipeDetail } from '@/lib/cooklogHref';
 import { useAuth } from '@/src/providers/AuthProvider';
@@ -24,7 +23,6 @@ export function FeedScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
-  const [viral, setViral] = useState<DailyViral | null>(null);
   const seenIdsRef = useRef<string[]>([]);
 
   const runLoad = useCallback(
@@ -36,11 +34,6 @@ export function FeedScreen() {
           setError(null);
         } else if (nextPage === 0) {
           setLoading(true);
-        }
-        if (reset || nextPage === 0) {
-          // Il virale di oggi è lo stesso per tutti: va sempre in cima al feed.
-          const todayViral = await getDailyViral().catch(() => null);
-          setViral(todayViral);
         }
         const res = await loadFeed({
           currentUserId: user.id,
@@ -75,15 +68,10 @@ export function FeedScreen() {
     void runLoad(page + 1);
   };
 
-  const applyUpdate = (updated: FoodPost) => {
-    setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-    setViral((prev) => (prev && prev.post.id === updated.id ? { ...prev, post: updated } : prev));
-  };
-
   const onToggleLike = async (post: FoodPost) => {
     if (!user) return;
     const updated = await toggleLike(post, user.id);
-    applyUpdate(updated);
+    setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
   };
 
   const onToggleSave = async (post: FoodPost) => {
@@ -94,21 +82,14 @@ export function FeedScreen() {
       return;
     }
     const updated = await toggleSave(post, user.id);
-    applyUpdate(updated);
+    setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
     const delta = updated.isSavedByCurrentUser ? 1 : -1;
     await setSavedRecipesCount(user.id, Math.max(0, subscription.savedRecipesCount + delta));
   };
 
   if (loading && !items.length) return <LoadingState message="Sto caricando il tuo feed..." />;
   if (error && !items.length) return <ErrorState message={error} onRetry={() => void runLoad(0, true)} />;
-  const data = viral
-    ? [
-        items.find((p) => p.id === viral.post.id) ?? viral.post,
-        ...items.filter((p) => p.id !== viral.post.id),
-      ]
-    : items;
-
-  if (!data.length) {
+  if (!items.length) {
     return (
       <EmptyState
         title="Ancora nessun piatto nel tuo feed."
@@ -121,7 +102,7 @@ export function FeedScreen() {
   return (
     <View style={styles.root}>
       <FlatList
-        data={data}
+        data={items}
         keyExtractor={(item) => item.id}
         pagingEnabled
         decelerationRate="fast"
@@ -134,7 +115,6 @@ export function FeedScreen() {
           <FoodPostCard
             post={item}
             screenHeight={height - 96}
-            badge={viral && item.id === viral.post.id ? `Virale di oggi · scelto tra ${viral.totalEntries} piatti` : undefined}
             onToggleLike={() => void onToggleLike(item)}
             onToggleSave={() => void onToggleSave(item)}
             onOpenComments={() => router.push(`/comments/${item.id}` as Href)}

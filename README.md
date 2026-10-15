@@ -1,15 +1,5 @@
 # Welcome to your Expo app 👋
 
-## Virale del giorno
-
-Ogni giorno un solo piatto diventa virale e il giorno dopo lo vedono tutti, in cima alla Home.
-Regole, analisi di TikTok, architettura e messa in produzione: [docs/viral-del-giorno.md](docs/viral-del-giorno.md).
-
-```bash
-npm test                     # test del motore
-npm run simulate:viral       # simulazione con pubblico sintetico
-```
-
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
 ## Get started

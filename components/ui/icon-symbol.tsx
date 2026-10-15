@@ -28,8 +28,6 @@ const MAPPING = {
   pencil: 'edit',
   trash: 'delete',
   'chevron.left': 'chevron-left',
-  'flame.fill': 'local-fire-department',
-  'flag.fill': 'flag',
 } as IconMapping;
 
 /**
