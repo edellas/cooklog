@@ -138,7 +138,8 @@ export default function CreateScreen() {
   const preview: MediaItem[] = media.map((m) => ({ kind: m.kind, src: m.uri, width: m.width, height: m.height, durationMs: m.durationMs }));
 
   return (
-    <KeyboardAvoidingView style={[styles.root, { paddingTop: insets.top }]} behavior="padding">
+    // iOS: la ScrollView sposta da sola il contenuto sopra la tastiera; Android (bordo a bordo): padding.
+    <KeyboardAvoidingView style={[styles.root, { paddingTop: insets.top }]} behavior={Platform.OS === 'ios' ? undefined : 'padding'}>
       <View style={styles.bar}>
         <Press style={[styles.round, confirmClose && styles.roundWarn]} onPress={close} accessibilityRole="button" accessibilityLabel={confirmClose ? 'Tocca di nuovo per scartare il post' : 'Chiudi'}>
           <Icon name="chiudi" color={confirmClose ? color.matita : color.paper} />

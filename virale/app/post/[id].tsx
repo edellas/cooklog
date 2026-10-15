@@ -37,8 +37,10 @@ export default function PostScreen() {
       })
       .catch((e: Error) => {
         if (!alive) return;
-        if (loaded.current) goBack();
-        else setError(e.message);
+        // Se il post non c'è più si torna indietro; un errore di rete invece lascia il post com'era.
+        if (loaded.current) {
+          if (/non trovato|non più disponibile/i.test(e.message)) goBack();
+        } else setError(e.message);
       });
     return () => {
       alive = false;

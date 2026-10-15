@@ -10,7 +10,7 @@ import { haptic, Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
 import { timeAgo } from '../../src/design/format';
 import { color, font, space } from '../../src/design/tokens';
-import { addComment, deleteComment, getComments } from '../../src/services/api';
+import { addComment, deleteComment, getComments, getPost } from '../../src/services/api';
 import { emitPostChange } from '../../src/state/postEvents';
 import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
@@ -51,13 +51,19 @@ export default function CommentsSheet() {
       const next = [...(items ?? []), c];
       setItems(next);
       setText('');
-      // Il conteggio sotto il post si aggiorna subito, e nei Provini il commento conta come segnale.
-      emitPostChange(postId, { commentCount: next.length, commented: true });
+      // Il conteggio sotto il post si aggiorna con il numero vero (l'elenco qui può essere filtrato o troncato).
+      syncCount(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setSending(false);
     }
+  };
+
+  const syncCount = (commented: boolean) => {
+    getPost(postId)
+      .then((p) => emitPostChange(postId, { commentCount: p.commentCount, commented }))
+      .catch(() => undefined);
   };
 
   const remove = async (c: Comment) => {
@@ -72,14 +78,15 @@ export default function CommentsSheet() {
       await deleteComment(postId, c.id);
       const next = (items ?? []).filter((x) => x.id !== c.id);
       setItems(next);
-      emitPostChange(postId, { commentCount: next.length });
+      syncCount(false);
     } catch (e) {
       setError((e as Error).message);
     }
   };
 
   return (
-    <KeyboardAvoidingView style={styles.root} behavior="padding">
+    // Su Android il foglio si sposta già da solo sopra la tastiera: lì niente padding in più.
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.head}>
         <Txt variant="title">{items ? `${items.length} ${items.length === 1 ? 'commento' : 'commenti'}` : 'Commenti'}</Txt>
         {Platform.OS === 'web' ? (

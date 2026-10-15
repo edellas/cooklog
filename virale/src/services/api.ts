@@ -721,7 +721,23 @@ export async function publish(input: NewPost): Promise<PublishResult> {
       const { error: e2 } = await db().rpc('arena_submit', { p_post_id: data.id });
       if (e2) contestError = e2.message;
     }
-    const post = await getPost(data.id);
+    // Il post esiste già: da qui in poi niente più errori, al massimo lo si compone in locale.
+    const post = await getPost(data.id).catch(
+      (): Post => ({
+        id: data.id,
+        author: { id: me, username: '', displayName: '' },
+        media,
+        caption: input.caption.trim(),
+        createdAt: new Date().toISOString(),
+        likeCount: 0,
+        commentCount: 0,
+        saveCount: 0,
+        shareCount: 0,
+        likedByMe: false,
+        savedByMe: false,
+        followingAuthor: false,
+      }),
+    );
     const entry = input.joinContest && !contestError ? await getMyEntry().catch(() => null) : null;
     return { post, entry, contestError };
   }
@@ -775,12 +791,13 @@ async function persistLocal(m: NewPost['media'][number]): Promise<MediaItem> {
     const img = new Image();
     img.src = m.uri;
     await img.decode();
-    const scale = Math.min(1, 1080 / Math.max(img.naturalWidth, img.naturalHeight));
+    // 720 px e qualità media: la demo vive nello spazio del browser (pochi MB), così ci stanno decine di foto.
+    const scale = Math.min(1, 720 / Math.max(img.naturalWidth, img.naturalHeight));
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(img.naturalWidth * scale);
     canvas.height = Math.round(img.naturalHeight * scale);
     canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return { ...item, src: canvas.toDataURL('image/jpeg', 0.82), width: canvas.width, height: canvas.height };
+    return { ...item, src: canvas.toDataURL('image/jpeg', 0.72), width: canvas.width, height: canvas.height };
   } catch {
     return item;
   }

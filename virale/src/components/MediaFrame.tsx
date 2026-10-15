@@ -56,8 +56,14 @@ export function MediaFrame({
   const [index, setIndexState] = useState(0);
   const [marks, setMarks] = useState<{ id: number; x: number; y: number }[]>([]);
   const list = useRef<FlatList<MediaItem>>(null);
-  /** Durante uno scorrimento comandato da fuori, gli eventi di scroll intermedi non devono cambiare l'indice. */
-  const steering = useRef(0);
+  /**
+   * Scorrimento comandato da fuori (una miniatura toccata): finché non arriva a destinazione,
+   * gli eventi di scroll intermedi non cambiano l'indice.
+   */
+  const steeringTo = useRef<number | null>(null);
+  const lastLength = useRef(media.length);
+  const offset = useRef(0);
+  const lastWidth = useRef(0);
 
   const setIndex = useCallback(
     (i: number) => {
@@ -71,13 +77,35 @@ export function MediaFrame({
   // Indice guidato da fuori, e sempre dentro i limiti quando gli elementi cambiano (tolti o spostati).
   useEffect(() => {
     const target = Math.max(0, Math.min(media.length - 1, controlled ?? index));
+    const lengthChanged = lastLength.current !== media.length || lastWidth.current !== size.w;
+    lastLength.current = media.length;
+    lastWidth.current = size.w;
+    // Se l'indice è già quello mostrato (l'ha scelto l'utente scorrendo) non si tocca lo scroll.
+    if (target === index && !lengthChanged) return;
     if (target !== index) setIndexState(target);
     if (size.w > 0 && media.length) {
-      steering.current = Date.now();
-      list.current?.scrollToOffset({ offset: target * size.w, animated: controlled !== undefined });
+      const to = target * size.w;
+      // Già lì: nessun evento di scroll arriverà, quindi niente da aspettare.
+      if (Math.abs(offset.current - to) >= 1) {
+        steeringTo.current = to;
+        // Rete di sicurezza: se l'animazione viene interrotta, dopo poco si torna a seguire il dito.
+        setTimeout(() => {
+          if (steeringTo.current === to) steeringTo.current = null;
+        }, 900);
+      }
+      list.current?.scrollToOffset({ offset: target * size.w, animated: controlled !== undefined && !lengthChanged });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controlled, media.length, size.w]);
+
+  const onScrollAt = (x: number, settled: boolean) => {
+    offset.current = x;
+    if (steeringTo.current !== null) {
+      if (Math.abs(x - steeringTo.current) < 1 || settled) steeringTo.current = null;
+      else return;
+    }
+    setIndex(Math.round(x / Math.max(1, size.w)));
+  };
 
   const onLayout = (e: LayoutChangeEvent) => setSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
 
@@ -125,17 +153,10 @@ export function MediaFrame({
               bounces={false}
               showsHorizontalScrollIndicator={false}
               keyExtractor={(_, i) => String(i)}
+              onScrollEndDrag={Platform.OS !== 'web' ? (e) => (offset.current = e.nativeEvent.contentOffset.x) : undefined}
               getItemLayout={(_, i) => ({ length: size.w, offset: size.w * i, index: i })}
-              onMomentumScrollEnd={(e) => {
-                if (Date.now() - steering.current > 450) setIndex(Math.round(e.nativeEvent.contentOffset.x / size.w));
-              }}
-              onScroll={
-                Platform.OS === 'web'
-                  ? (e) => {
-                      if (Date.now() - steering.current > 450) setIndex(Math.round(e.nativeEvent.contentOffset.x / Math.max(1, size.w)));
-                    }
-                  : undefined
-              }
+              onMomentumScrollEnd={(e) => onScrollAt(e.nativeEvent.contentOffset.x, true)}
+              onScroll={Platform.OS === 'web' ? (e) => onScrollAt(e.nativeEvent.contentOffset.x, false) : undefined}
               scrollEventThrottle={64}
               initialNumToRender={1}
               maxToRenderPerBatch={1}

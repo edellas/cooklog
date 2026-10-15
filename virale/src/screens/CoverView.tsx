@@ -86,11 +86,12 @@ export function CoverView({
   };
   const save = () => {
     const on = !post.savedByMe;
-    setPost((p) => ({ ...p, savedByMe: on }));
-    emitPostChange(post.id, { savedByMe: on });
+    const saveCount = Math.max(0, post.saveCount + (on ? 1 : -1));
+    setPost((p) => ({ ...p, savedByMe: on, saveCount }));
+    emitPostChange(post.id, { savedByMe: on, saveCount });
     toggleSave(post.id, on).catch(() => {
-      setPost((p) => ({ ...p, savedByMe: !on }));
-      emitPostChange(post.id, { savedByMe: !on });
+      setPost((p) => ({ ...p, savedByMe: !on, saveCount: post.saveCount }));
+      emitPostChange(post.id, { savedByMe: !on, saveCount: post.saveCount });
       toast('Non sono riuscito a salvarla. Riprova.', 'error');
     });
   };

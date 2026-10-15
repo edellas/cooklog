@@ -38,7 +38,9 @@ returns boolean language sql immutable as $$
           -- coalesce: un elemento senza "kind" darebbe NULL e passerebbe il controllo.
           or not coalesce(x->>'kind' in ('image', 'video') and coalesce(x->>'url', '') ~ '^https://', false)
           -- La durata arriva in millisecondi, anche con decimali (iOS): si confronta come numero.
-          or (x->>'kind' = 'video' and jsonb_typeof(x->'duration_ms') = 'number' and (x->>'duration_ms')::numeric > 61000)
+          -- La durata deve essere un numero (anche con decimali, come la manda iOS) e al massimo 61 s.
+          or (x->>'kind' = 'video' and x ? 'duration_ms'
+              and (jsonb_typeof(x->'duration_ms') <> 'number' or (x->>'duration_ms')::numeric > 61000))
      );
 $$;
 
@@ -275,7 +277,9 @@ revoke all on public.post_likes, public.post_saves, public.post_shares from anon
 revoke update on public.post_likes, public.post_saves, public.post_shares from authenticated;
 drop policy if exists "comments readable" on public.comments;
 create policy "comments readable" on public.comments for select to authenticated
-  using (public.can_see(post_id, auth.uid()) and public.is_active(user_id) and not public.is_blocked_pair(auth.uid(), user_id));
+  using (user_id = auth.uid()
+         or exists (select 1 from public.posts p where p.id = post_id and p.author_id = auth.uid())
+         or (public.can_see(post_id, auth.uid()) and public.is_active(user_id) and not public.is_blocked_pair(auth.uid(), user_id)));
 revoke all on public.comments from anon;
 revoke insert, update on public.comments from authenticated;
 grant insert (post_id, user_id, body) on public.comments to authenticated;
@@ -398,6 +402,9 @@ create table if not exists public.arena_views (
   contest_day date not null,
   served_at timestamptz not null default now(),
   recorded_at timestamptz,
+  -- Segnali già accreditati per questa vista: un commento scritto dopo (dal foglio dei commenti)
+  -- si accredita una volta sola, anche togliendo e rimettendo un mi piace.
+  credited text[] not null default '{}',
   primary key (entry_id, viewer_id)
 );
 create index if not exists idx_arena_views_viewer on public.arena_views (viewer_id, contest_day);
@@ -418,7 +425,9 @@ create table if not exists public.daily_viral (
   featured_on date primary key,
   contest_day date not null unique,
   entry_id uuid not null references public.arena_entries(id) on delete cascade,
-  post_id uuid not null references public.posts(id) on delete cascade,
+  -- Se il vincitore elimina il post la riga resta (senza post): la giornata non viene riassegnata
+  -- e la pausa di 30 giorni del vincitore vale comunque.
+  post_id uuid references public.posts(id) on delete set null,
   author_id uuid not null references public.profiles(id) on delete cascade,
   final_score numeric not null,
   total_entries int not null,
@@ -428,6 +437,32 @@ create table if not exists public.daily_viral (
 create index if not exists idx_daily_viral_author on public.daily_viral (author_id, featured_on desc);
 create index if not exists idx_daily_viral_post on public.daily_viral (post_id);
 create index if not exists idx_daily_viral_entry on public.daily_viral (entry_id);
+
+-- ---------------------------------------------------------------------------
+-- Aggiornamento di un database creato con una versione precedente di questo file
+-- ("create table if not exists" non modifica tabelle già esistenti). Rieseguirlo non fa danni.
+-- ---------------------------------------------------------------------------
+alter table public.arena_entries add column if not exists disqualified_reason text;
+alter table public.arena_entries alter column post_id drop not null;
+alter table public.arena_views add column if not exists credited text[] not null default '{}';
+alter table public.daily_viral alter column post_id drop not null;
+alter table public.reports alter column reported_user_id drop not null;
+alter table public.reports alter column reporter_id drop not null;
+do $$
+declare r record;
+begin
+  for r in select * from (values
+    ('arena_entries', 'post_id', 'posts'),
+    ('daily_viral', 'post_id', 'posts'),
+    ('reports', 'post_id', 'posts'),
+    ('reports', 'reported_user_id', 'profiles'),
+    ('reports', 'reporter_id', 'profiles')) as t(tbl, col, ref)
+  loop
+    execute format('alter table public.%I drop constraint if exists %I', r.tbl, r.tbl || '_' || r.col || '_fkey');
+    execute format('alter table public.%I add constraint %I foreign key (%I) references public.%I(id) on delete set null',
+                   r.tbl, r.tbl || '_' || r.col || '_fkey', r.col, r.ref);
+  end loop;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- RLS: lettura pubblica per autenticati, scritture solo tramite le funzioni qui sotto
@@ -975,6 +1010,10 @@ begin
   v_shared := exists (select 1 from post_shares where post_id = v_entry.post_id and user_id = v_uid);
   -- Completamento e ri-visione li misura il telefono, ma devono essere compatibili col tempo passato sul post.
   v_completed := v_dwell >= v_cfg.complete_dwell_ms or (coalesce(p_completed, false) and v_dwell >= v_cfg.skip_dwell_ms);
+  update arena_views set credited = array_remove(array[
+      case when v_liked then 'like' end, case when v_commented then 'comment' end,
+      case when v_saved then 'save' end, case when v_shared then 'share' end], null)
+   where entry_id = p_entry_id and viewer_id = v_uid;
 
   insert into arena_entry_stats as s (entry_id, shard, views, completes, rewatches, likes, comments, saves, shares, skips, reports, dwell_ms)
   values (
@@ -1006,6 +1045,43 @@ begin
 end;
 $$;
 
+-- Segnali arrivati dopo la vista: nei Provini la vista si registra quando apri i commenti o un foglio,
+-- quindi il commento (o un mi piace messo un attimo dopo) arriva dopo. Lo si accredita qui, una volta,
+-- solo se la vista è di oggi, già registrata e di un account che può votare.
+create or replace function public.credit_late_signal()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_cfg public.arena_config := public.arena_cfg();
+  v_kind text := tg_argv[0];
+  v_entry uuid;
+begin
+  select e.id into v_entry from arena_entries e
+   where e.post_id = new.post_id and e.contest_day = public.arena_today() and e.status in ('active', 'finalist');
+  if v_entry is null then return null; end if;
+  update arena_views set credited = credited || v_kind
+   where entry_id = v_entry and viewer_id = new.user_id and recorded_at is not null
+     and not (v_kind = any (credited))
+     and exists (select 1 from profiles where id = new.user_id and banned_at is null
+                   and created_at <= now() - v_cfg.min_viewer_account_age);
+  if not found then return null; end if;
+  insert into arena_entry_stats as st (entry_id, shard, likes, comments, saves, shares)
+  values (v_entry, floor(random() * v_cfg.stat_shards)::smallint,
+          (v_kind = 'like')::int, (v_kind = 'comment')::int, (v_kind = 'save')::int, (v_kind = 'share')::int)
+  on conflict (entry_id, shard) do update set
+    likes = st.likes + excluded.likes, comments = st.comments + excluded.comments,
+    saves = st.saves + excluded.saves, shares = st.shares + excluded.shares;
+  return null;
+end;
+$$;
+drop trigger if exists trg_late_like on public.post_likes;
+create trigger trg_late_like after insert on public.post_likes for each row execute function public.credit_late_signal('like');
+drop trigger if exists trg_late_comment on public.comments;
+create trigger trg_late_comment after insert on public.comments for each row execute function public.credit_late_signal('comment');
+drop trigger if exists trg_late_save on public.post_saves;
+create trigger trg_late_save after insert on public.post_saves for each row execute function public.credit_late_signal('save');
+drop trigger if exists trg_late_share on public.post_shares;
+create trigger trg_late_share after insert on public.post_shares for each row execute function public.credit_late_signal('share');
+
 -- ---------------------------------------------------------------------------
 -- 5) Stato del mio contenuto in gara
 -- ---------------------------------------------------------------------------
@@ -1031,6 +1107,10 @@ declare
 begin
   -- Due esecuzioni contemporanee (cron doppio) non devono scontrarsi: la seconda aspetta e trova il vincitore.
   perform pg_advisory_xact_lock(hashtext('arena_close_day:' || p_day::text));
+  -- Si chiude solo la giornata appena finita (o una ancora aperta, per i test): mai riassegnare giorni passati.
+  if p_day < public.arena_today() - 1 then
+    return (select entry_id from daily_viral where contest_day = p_day);
+  end if;
   if exists (select 1 from daily_viral where contest_day = p_day) then
     return (select entry_id from daily_viral where contest_day = p_day);
   end if;

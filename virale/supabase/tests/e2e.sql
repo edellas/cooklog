@@ -98,6 +98,21 @@ reset role;
 select sum(likes) as like_registrati_post2, sum(comments) as commenti_registrati_post2 from arena_entry_stats where entry_id = :'entry_user2';
 set role authenticated;
 
+-- Un segnale arrivato dopo la vista (dal foglio dei commenti, o un salvataggio un attimo dopo) conta una volta sola,
+-- anche togliendolo e rimettendolo. Il post 1 è finalista: user4 l'ha visto ma non l'aveva salvato.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
+insert into post_saves (post_id, user_id) values ('10000000-0000-0000-0000-000000000001', auth.uid());
+delete from post_saves where post_id = '10000000-0000-0000-0000-000000000001' and user_id = auth.uid();
+insert into post_saves (post_id, user_id) values ('10000000-0000-0000-0000-000000000001', auth.uid());
+reset role;
+do $$ declare n int; begin
+  select sum(saves) into n from arena_entry_stats e join arena_entries a on a.id = e.entry_id
+   where a.author_id = '00000000-0000-0000-0000-000000000001';
+  if n <> 1 then raise exception 'salvataggio tardivo accreditato % volte', n; end if;
+  raise notice 'ok, segnale dopo la vista accreditato una volta';
+end $$;
+set role authenticated;
+
 -- Interazioni sociali e contatori mantenuti dai trigger (user5 ha già messo mi piace al post 1 nei Provini).
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000005', false);
 do $$ begin

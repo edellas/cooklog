@@ -22,10 +22,13 @@ export default function CoverTab() {
   const [failed, setFailed] = useState(false);
   const [reveal, setReveal] = useState(false);
   const loadedDay = useRef('');
+  /** Ricarica solo la copertina (non tutta l'app, che farebbe ripartire anche il feed). */
+  const [tick, setTick] = useState(0);
 
   useFocusEffect(
     useCallback(() => {
       void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
+      void tick;
       // Prima di avere un profilo (benvenuto) non si carica nulla: la "rivelazione" del giorno resta per dopo.
       if (!me) return;
       let alive = true;
@@ -49,8 +52,15 @@ export default function CoverTab() {
       return () => {
         alive = false;
       };
-    }, [me, version]),
+    }, [me, version, tick]),
   );
+
+  // A mezzanotte la copertina nuova arriva un minuto dopo (la sceglie il server): finché non c'è si riprova ogni 30 s.
+  useEffect(() => {
+    if (cover !== null) return;
+    const id = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, [cover]);
 
   // Riaprendo l'app il giorno dopo (dal multitasking) la copertina si aggiorna da sola.
   useEffect(() => {
@@ -67,6 +77,9 @@ export default function CoverTab() {
     setCover(next);
     bump();
     toast(next ? `Nuova copertina: @${next.post.author.username}` : 'Nessun post idoneo oggi.');
+    // La nuova copertina può essere di un post che hai segnalato o di qualcuno che hai bloccato: si ricarica
+    // con le stesse regole di sempre invece di mostrarla comunque.
+    setTick((n) => n + 1);
   };
 
   if (failed && !cover) {
@@ -75,7 +88,7 @@ export default function CoverTab() {
         <Txt variant="title" style={{ textAlign: 'center' }}>
           Non riesco a caricare la copertina.
         </Txt>
-        <Press style={styles.retry} onPress={bump} accessibilityRole="button">
+        <Press style={styles.retry} onPress={() => setTick((n) => n + 1)} accessibilityRole="button">
           <Txt variant="label" tone={color.canvas}>
             Riprova
           </Txt>
@@ -94,11 +107,18 @@ export default function CoverTab() {
     return (
       <View style={styles.center}>
         <Txt variant="heading" style={{ textAlign: 'center' }}>
-          Ancora nessuna copertina.
+          Nessuna copertina da mostrarti oggi.
         </Txt>
         <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-          La prossima esce a mezzanotte: pubblica un post e candidalo.
+          La prossima esce a mezzanotte: intanto guarda i Provini, o pubblica un post e candidalo.
         </Txt>
+        {isDemo ? (
+          <Press onPress={() => void simulate()} accessibilityRole="button" style={{ marginTop: 12 }}>
+            <Txt variant="meta" tone={color.paperFaint} style={{ textDecorationLine: 'underline' }}>
+              Demo: simula la mezzanotte
+            </Txt>
+          </Press>
+        ) : null}
       </View>
     );
   }
