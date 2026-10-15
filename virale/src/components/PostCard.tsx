@@ -144,6 +144,13 @@ export function PostCard({
           />
           <Action icon="salva" label={formatCount(post.saveCount)} on={post.savedByMe} tone={color.giallo} filled onPress={save} a11y={post.savedByMe ? 'Togli dai salvati' : 'Salva'} />
           <Action icon="condividi" label={formatCount(post.shareCount)} onPress={() => void share()} a11y="Condividi" />
+          <Press
+            style={styles.more}
+            onPress={() => router.push(`/azioni/${post.id}` as Href)}
+            accessibilityRole="button"
+            accessibilityLabel={isMine ? 'Opzioni del post' : 'Segnala o blocca'}>
+            <Icon name="altro" size={22} color={color.paperDim} />
+          </Press>
         </View>
       </View>
     </View>
@@ -204,4 +211,5 @@ const styles = StyleSheet.create({
   },
   actions: { flexDirection: 'row', alignItems: 'center', gap: space[5], marginTop: space[1] },
   action: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 32 },
+  more: { marginLeft: 'auto', minHeight: 32, minWidth: 32, alignItems: 'center', justifyContent: 'center' },
 });

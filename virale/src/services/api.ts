@@ -128,6 +128,10 @@ type DemoDb = {
   covers: { featuredOn: string; postId: string; totalEntries: number; totalViews: number }[];
   state: ArenaState;
   quality: Record<string, number>;
+  /** Persone bloccate da me: non vedo più i loro post e commenti. */
+  blocked: string[];
+  /** Post che ho segnalato: spariscono subito dal mio feed. */
+  reported: { postId: string; reason: ReportReason; at: string }[];
 };
 
 function hash(text: string): number {
@@ -180,7 +184,15 @@ function freshDb(): DemoDb {
     covers,
     state: createArenaState(''),
     quality: {},
+    blocked: [],
+    reported: [],
   };
+}
+
+/** Cosa può vedere l'utente demo: niente post bloccati o segnalati. */
+function visible(demo: DemoDb, postId: string): boolean {
+  const p = demo.posts[postId];
+  return Boolean(p) && !demo.blocked.includes(p.authorId) && !demo.reported.some((r) => r.postId === postId);
 }
 
 function recentWinners(demo: DemoDb, day: string): string[] {
@@ -231,6 +243,8 @@ async function load(): Promise<DemoDb> {
   const today = arenaDay();
   let demo = await getJson<DemoDb | null>(KEY, null);
   if (!demo) demo = freshDb();
+  demo.blocked ??= [];
+  demo.reported ??= [];
   if (demo.state.day !== today) {
     if (demo.state.day && !demo.covers.some((cv) => cv.featuredOn === shiftDay(demo!.state.day, 1))) crown(demo, shiftDay(demo.state.day, 1));
     demo.state = seedDay(demo, today);
@@ -297,7 +311,8 @@ export async function getMe(): Promise<Me | null> {
   return withDemo((demo) => demo.me);
 }
 
-export async function createAccount(username: string, displayName: string): Promise<Me> {
+export async function createAccount(username: string, displayName: string, acceptedTerms: boolean): Promise<Me> {
+  if (!acceptedTerms) throw new Error('Per entrare devi accettare termini e linee guida e confermare di avere almeno 14 anni.');
   const clean = username.trim().toLowerCase().replace(/^@/, '');
   if (!/^[a-z0-9_.]{3,24}$/.test(clean)) throw new Error('Da 3 a 24 caratteri: lettere minuscole, numeri, punto e trattino basso.');
   const name = displayName.trim() || clean;
@@ -308,7 +323,7 @@ export async function createAccount(username: string, displayName: string): Prom
       if (error) throw new Error(error.message);
       id = data.user!.id;
     }
-    const { error } = await db().from('profiles').insert({ id, username: clean, display_name: name });
+    const { error } = await db().from('profiles').insert({ id, username: clean, display_name: name, terms_accepted_at: new Date().toISOString() });
     if (error) throw new Error(error.code === '23505' ? 'Questo nome è già preso. Prova ad aggiungere un numero.' : error.message);
     return { id, username: clean, displayName: name };
   }
@@ -328,7 +343,7 @@ export async function getTodayCover(): Promise<Cover | null> {
     return row ? { featuredOn: row.featured_on, issue: issueNumber(row.featured_on), totalEntries: row.total_entries, totalViews: Number(row.total_views), post: fromJson(row.post) } : null;
   }
   return withDemo((demo) => {
-    const cv = demo.covers.find((x) => x.featuredOn === arenaDay());
+    const cv = demo.covers.find((x) => x.featuredOn === arenaDay() && visible(demo, x.postId));
     return cv ? toCover(demo, cv) : null;
   });
 }
@@ -338,7 +353,7 @@ export async function getArchive(): Promise<Cover[]> {
     const rows = await rpc<{ featured_on: string; total_entries: number; total_views: number; post: PostJson }[]>('get_cover_archive', { p_limit: 60 });
     return rows.map((r) => ({ featuredOn: r.featured_on, issue: issueNumber(r.featured_on), totalEntries: r.total_entries, totalViews: Number(r.total_views), post: fromJson(r.post) }));
   }
-  return withDemo((demo) => demo.covers.filter((cv) => cv.featuredOn <= arenaDay()).map((cv) => toCover(demo, cv)));
+  return withDemo((demo) => demo.covers.filter((cv) => cv.featuredOn <= arenaDay() && visible(demo, cv.postId)).map((cv) => toCover(demo, cv)));
 }
 
 /**
@@ -354,11 +369,11 @@ export async function getForYou(limit = 6, excludeIds: string[] = []): Promise<F
     if (!demo.me) return [];
     crowdTick(demo, 10);
     const batch = serveBatch(demo.state, demo.me.id, limit);
-    const cards: FeedCard[] = batch.filter((e) => demo.posts[e.postId]).map((e) => ({ ...toPost(demo, e.postId), entryId: e.id }));
+    const cards: FeedCard[] = batch.filter((e) => visible(demo, e.postId)).map((e) => ({ ...toPost(demo, e.postId), entryId: e.id }));
     if (cards.length < limit) {
       const taken = new Set([...excludeIds, ...cards.map((x) => x.id)]);
       const rest = Object.values(demo.posts)
-        .filter((p) => !taken.has(p.id) && p.authorId !== demo.me!.id)
+        .filter((p) => !taken.has(p.id) && p.authorId !== demo.me!.id && visible(demo, p.id))
         .sort((a, b) => b.likes - a.likes)
         .slice(0, limit - cards.length);
       cards.push(...rest.map((p) => toPost(demo, p.id)));
@@ -375,7 +390,7 @@ export async function getFollowing(): Promise<Post[]> {
   }
   return withDemo((demo) =>
     Object.values(demo.posts)
-      .filter((p) => demo.following.includes(p.authorId))
+      .filter((p) => demo.following.includes(p.authorId) && visible(demo, p.id))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map((p) => toPost(demo, p.id)),
   );
@@ -456,19 +471,16 @@ export async function registerShare(postId: string): Promise<void> {
 
 export async function getComments(postId: string): Promise<Comment[]> {
   if (!isDemo) {
-    const { data, error } = await db()
-      .from('comments')
-      .select('id, post_id, body, created_at, author:profiles!comments_user_id_fkey(id, username, display_name)')
-      .eq('post_id', postId)
-      .order('created_at', { ascending: true })
-      .limit(200);
-    if (error) throw new Error(error.message);
-    return (data ?? []).map((r) => {
-      const a = r.author as unknown as { id: string; username: string; display_name: string };
-      return { id: r.id, postId: r.post_id, body: r.body, createdAt: r.created_at, author: { id: a.id, username: a.username, displayName: a.display_name } };
+    const rows = await rpc<{ id: string; post_id: string; body: string; created_at: string; author: { id: string; username: string; display_name: string } }[]>('get_comments', {
+      p_post_id: postId,
     });
+    return rows.map((r) => ({ id: r.id, postId: r.post_id, body: r.body, createdAt: r.created_at, author: { id: r.author.id, username: r.author.username, displayName: r.author.display_name } }));
   }
-  return withDemo((demo) => (demo.comments[postId] ?? []).map((cm) => ({ id: cm.id, postId, author: author(demo, cm.authorId), body: cm.body, createdAt: cm.createdAt })));
+  return withDemo((demo) =>
+    (demo.comments[postId] ?? [])
+      .filter((cm) => !demo.blocked.includes(cm.authorId))
+      .map((cm) => ({ id: cm.id, postId, author: author(demo, cm.authorId), body: cm.body, createdAt: cm.createdAt })),
+  );
 }
 
 export async function addComment(postId: string, body: string): Promise<Comment> {
@@ -492,14 +504,14 @@ export async function addComment(postId: string, body: string): Promise<Comment>
 export async function getProfile(username: string): Promise<{ profile: Profile; posts: Post[]; saved: Post[]; entry: MyEntry | null }> {
   if (!isDemo) {
     const res = await rpc<{
-      profile: { id: string; username: string; display_name: string; bio: string | null; followers: number; following: number; covers: number; followed: boolean; is_me: boolean };
+      profile: { id: string; username: string; display_name: string; bio: string | null; followers: number; following: number; covers: number; followed: boolean; is_me: boolean; is_moderator: boolean };
       posts: PostJson[];
       saved: PostJson[];
       entry: { entry_id: string; post_id: string; tier: number; status: MyEntry['status']; views: number; contest_day: string } | null;
     }>('get_profile', { p_username: username });
     const pr = res.profile;
     return {
-      profile: { id: pr.id, username: pr.username, displayName: pr.display_name, bio: pr.bio ?? '', followers: pr.followers, following: pr.following, covers: pr.covers, followedByMe: pr.followed, isMe: pr.is_me },
+      profile: { id: pr.id, username: pr.username, displayName: pr.display_name, bio: pr.bio ?? '', followers: pr.followers, following: pr.following, covers: pr.covers, followedByMe: pr.followed, isMe: pr.is_me, isModerator: pr.is_moderator },
       posts: res.posts.map(fromJson),
       saved: res.saved.map(fromJson),
       entry: res.entry ? { entryId: res.entry.entry_id, postId: res.entry.post_id, tier: res.entry.tier, status: res.entry.status, views: res.entry.views, contestDay: res.entry.contest_day } : null,
@@ -507,7 +519,7 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
   }
   return withDemo((demo) => {
     const person = Object.values(demo.people).find((p) => p.username === username);
-    if (!person) throw new Error('Profilo non trovato.');
+    if (!person || demo.blocked.includes(person.id)) throw new Error('Profilo non trovato.');
     const isMe = person.id === demo.me?.id;
     const posts = Object.values(demo.posts)
       .filter((p) => p.authorId === person.id)
@@ -523,16 +535,22 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
         covers: demo.covers.filter((cv) => demo.posts[cv.postId]?.authorId === person.id).length,
         followedByMe: demo.following.includes(person.id),
         isMe,
+        // In demo sei anche moderatore, così puoi provare la coda delle segnalazioni.
+        isModerator: isMe,
       },
       posts,
-      saved: isMe ? demo.saves.filter((id) => demo.posts[id]).map((id) => toPost(demo, id)) : [],
+      saved: isMe ? demo.saves.filter((id) => visible(demo, id)).map((id) => toPost(demo, id)) : [],
       entry: entry ? { entryId: entry.id, postId: entry.postId, tier: entry.tier, status: entry.status, views: entry.stats.views, contestDay: entry.contestDay } : null,
     };
   });
 }
 
 export async function getPost(postId: string): Promise<Post> {
-  if (!isDemo) return fromJson(await rpc<PostJson>('get_post', { p_post_id: postId }));
+  if (!isDemo) {
+    const row = await rpc<PostJson | null>('get_post', { p_post_id: postId });
+    if (!row) throw new Error('Post non trovato o non più disponibile.');
+    return fromJson(row);
+  }
   return withDemo((demo) => {
     if (!demo.posts[postId]) throw new Error('Post non trovato.');
     return toPost(demo, postId);
@@ -631,4 +649,135 @@ export async function closeDayNowDemo(): Promise<Cover | null> {
 
 export async function resetDemo(): Promise<void> {
   await removeKey(KEY);
+}
+
+// ===========================================================================
+// Sicurezza della community: segnalazioni, blocchi, eliminazione (richiesti dagli store)
+// ===========================================================================
+
+export type ReportReason = 'spam' | 'nudo' | 'violenza' | 'odio' | 'molestie' | 'minori' | 'falso' | 'altro';
+
+export const REPORT_REASONS: { key: ReportReason; label: string }[] = [
+  { key: 'nudo', label: 'Nudo o contenuti sessuali' },
+  { key: 'minori', label: 'Mette in pericolo un minore' },
+  { key: 'violenza', label: 'Violenza o contenuti scioccanti' },
+  { key: 'odio', label: 'Odio o discriminazione' },
+  { key: 'molestie', label: 'Molestie o bullismo' },
+  { key: 'falso', label: 'Falso, truffa o furto d’identità' },
+  { key: 'spam', label: 'Spam' },
+  { key: 'altro', label: 'Altro' },
+];
+
+/** Segnala un post: sparisce subito per chi segnala; con 3 segnalazioni sparisce per tutti fino alla revisione. */
+export async function reportPost(postId: string, reason: ReportReason, note?: string): Promise<void> {
+  if (!isDemo) {
+    await rpc('report_post', { p_post_id: postId, p_reason: reason, p_note: note ?? null });
+    return;
+  }
+  await withDemo((demo) => {
+    if (demo.posts[postId]?.authorId === demo.me?.id) throw new Error('Non puoi segnalare un tuo post.');
+    if (!demo.reported.some((r) => r.postId === postId)) demo.reported.push({ postId, reason, at: new Date().toISOString() });
+  }, true);
+}
+
+export async function blockUser(userId: string): Promise<void> {
+  if (!isDemo) {
+    await rpc('block_user', { p_user_id: userId });
+    return;
+  }
+  await withDemo((demo) => {
+    if (!demo.blocked.includes(userId)) demo.blocked.push(userId);
+    demo.following = demo.following.filter((x) => x !== userId);
+  }, true);
+}
+
+export async function unblockUser(userId: string): Promise<void> {
+  if (!isDemo) {
+    await rpc('unblock_user', { p_user_id: userId });
+    return;
+  }
+  await withDemo((demo) => {
+    demo.blocked = demo.blocked.filter((x) => x !== userId);
+  }, true);
+}
+
+export async function listBlocked(): Promise<Author[]> {
+  if (!isDemo) {
+    const rows = await rpc<{ id: string; username: string; display_name: string }[]>('list_blocked');
+    return rows.map((r) => ({ id: r.id, username: r.username, displayName: r.display_name }));
+  }
+  return withDemo((demo) => demo.blocked.map((id) => author(demo, id)));
+}
+
+/** Elimina un proprio post (e il suo posto in gara). */
+export async function deletePost(postId: string): Promise<void> {
+  if (!isDemo) {
+    const { error } = await db().from('posts').delete().eq('id', postId);
+    if (error) throw new Error(error.message);
+    return;
+  }
+  await withDemo((demo) => {
+    if (demo.posts[postId]?.authorId !== demo.me?.id) throw new Error('Puoi eliminare solo i tuoi post.');
+    delete demo.posts[postId];
+    delete demo.comments[postId];
+    demo.myPostIds = demo.myPostIds.filter((x) => x !== postId);
+    demo.state.entries = demo.state.entries.filter((e) => e.postId !== postId);
+  }, true);
+}
+
+/**
+ * Elimina l'account e tutto ciò che contiene: prima i file nello Storage, poi il profilo
+ * con post, commenti, like, follow e partecipazioni (a cascata nel database).
+ */
+export async function deleteAccount(): Promise<void> {
+  if (!isDemo) {
+    const me = await uid();
+    const bucket = db().storage.from('media');
+    for (;;) {
+      const { data, error } = await bucket.list(me, { limit: 100 });
+      if (error) throw new Error(error.message);
+      if (!data?.length) break;
+      const { error: rmError } = await bucket.remove(data.map((f) => `${me}/${f.name}`));
+      if (rmError) throw new Error(rmError.message);
+      if (data.length < 100) break;
+    }
+    await rpc('delete_my_account');
+    await db().auth.signOut();
+    return;
+  }
+  await resetDemo();
+}
+
+export type ModItem = { post: Post; hidden: boolean; reports: number; reasons: ReportReason[]; firstAt: string };
+
+/** Coda di moderazione (solo moderatori): i post segnalati, dal più vecchio. */
+export async function getModQueue(): Promise<ModItem[]> {
+  if (!isDemo) {
+    const rows = await rpc<{ post: PostJson; hidden: boolean; reports: number; reasons: ReportReason[]; first_at: string }[]>('mod_queue');
+    return rows.map((r) => ({ post: fromJson(r.post), hidden: r.hidden, reports: r.reports, reasons: r.reasons, firstAt: r.first_at }));
+  }
+  return withDemo((demo) =>
+    demo.reported
+      .filter((r) => demo.posts[r.postId])
+      .map((r) => ({ post: toPost(demo, r.postId), hidden: true, reports: 1, reasons: [r.reason], firstAt: r.at })),
+  );
+}
+
+export async function modResolve(postId: string, action: 'dismiss' | 'remove' | 'ban'): Promise<void> {
+  if (!isDemo) {
+    await rpc('mod_resolve', { p_post_id: postId, p_action: action });
+    return;
+  }
+  await withDemo((demo) => {
+    const authorId = demo.posts[postId]?.authorId;
+    demo.reported = demo.reported.filter((r) => r.postId !== postId);
+    if (action !== 'dismiss') {
+      delete demo.posts[postId];
+      demo.state.entries = demo.state.entries.filter((e) => e.postId !== postId);
+    }
+    if (action === 'ban' && authorId) {
+      for (const p of Object.values(demo.posts)) if (p.authorId === authorId) delete demo.posts[p.id];
+      demo.state.entries = demo.state.entries.filter((e) => e.authorId !== authorId);
+    }
+  }, true);
 }

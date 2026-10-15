@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
 import { useRouter, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Share, StyleSheet, View } from 'react-native';
+import { Share, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -158,6 +158,9 @@ export function CoverView({
             }}
             a11y="Condividi"
           />
+          <Press style={styles.more} onPress={() => router.push(`/azioni/${post.id}` as Href)} accessibilityRole="button" accessibilityLabel="Segnala o blocca">
+            <Icon name="altro" size={22} color={color.paperDim} />
+          </Press>
         </View>
 
         {isToday ? (
@@ -201,12 +204,16 @@ function CoverAction({
   a11y: string;
 }) {
   const c = on && tone ? tone : color.paper;
+  // Sotto i 400 punti (iPhone SE, Android piccoli) le etichette non ci stanno: resta solo il conteggio.
+  const compact = useWindowDimensions().width < 400 && icon !== 'cerchia';
   return (
     <Press style={styles.action} onPress={onPress} accessibilityRole="button" accessibilityLabel={a11y} accessibilityState={{ selected: !!on }}>
       <Icon name={icon} size={24} color={c} strokeWidth={on ? 2.4 : 1.75} filled={icon === 'salva' && on} />
-      <Txt variant="meta" tone={on && tone ? tone : color.paperDim}>
-        {label}
-      </Txt>
+      {compact ? null : (
+        <Txt variant="meta" tone={on && tone ? tone : color.paperDim}>
+          {label}
+        </Txt>
+      )}
     </Press>
   );
 }
@@ -224,6 +231,7 @@ const styles = StyleSheet.create({
   authorRow: { flexDirection: 'row', alignItems: 'center', gap: space[3] },
   actions: { flexDirection: 'row', gap: space[5], marginTop: space[2], marginBottom: space[2] },
   action: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36 },
+  more: { marginLeft: 'auto', minHeight: 36, minWidth: 32, alignItems: 'center', justifyContent: 'center' },
   mine: { alignSelf: 'flex-start', backgroundColor: color.giallo, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
   band: {
     flexDirection: 'row',

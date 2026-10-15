@@ -11,7 +11,11 @@
     "simulate": "node --experimental-strip-types --no-warnings scripts/simulate.ts",
     "typecheck": "tsc --noEmit",
     "build:web": "expo export --platform web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "export:legal": "node --experimental-strip-types --no-warnings scripts/export-legal.ts",
+    "check:release": "node --experimental-strip-types --no-warnings scripts/check-release.ts",
+    "icons": "python3 scripts/make-icons.py",
+    "store:grafica": "python3 scripts/make-feature-graphic.py"
   },
   "dependencies": {
     "@expo-google-fonts/bodoni-moda": "^0.4.2",
@@ -51,5 +55,13 @@
     "eslint": "^9.39.5",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "install": {
+      "exclude": [
+        "@react-navigation/bottom-tabs",
+        "@react-navigation/native"
+      ]
+    }
+  }
 }

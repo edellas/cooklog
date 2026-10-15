@@ -95,6 +95,73 @@ from get_post('10000000-0000-0000-0000-000000000001') p;
 select count(*) as post_seguiti from feed_following(10);
 select p->'profile'->>'followers' as follower_di_user1 from get_profile('user1') p;
 
+-- ---------- Sicurezza della community ----------
+-- Un client non può nominarsi moderatore né togliersi un ban.
+do $$ begin
+  update profiles set is_moderator = true where id = auth.uid();
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, ruolo di moderatore non modificabile dal client'; end $$;
+
+-- Blocco: user5 blocca user1 -> sparisce il follow, il profilo e i suoi post non si vedono più.
+select block_user('00000000-0000-0000-0000-000000000001');
+select count(*) as post_seguiti_dopo_blocco from feed_following(10);
+do $$ begin perform get_profile('user1'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non trovato%' then raise; end if; raise notice 'ok, profilo bloccato non visibile'; end $$;
+select get_post('10000000-0000-0000-0000-000000000001') is null as post_bloccato_nascosto;
+select jsonb_array_length(coalesce((select jsonb_agg(x) from list_blocked() x), '[]')) as bloccati;
+select unblock_user('00000000-0000-0000-0000-000000000001');
+select get_post('10000000-0000-0000-0000-000000000001') is not null as visibile_dopo_sblocco;
+
+-- Non si segnala un proprio post.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000002', false);
+do $$ begin perform report_post('10000000-0000-0000-0000-000000000002', 'spam'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%tuo post%' then raise; end if; raise notice 'ok, auto-segnalazione rifiutata'; end $$;
+
+-- Tre segnalazioni da persone diverse nascondono il post e lo tolgono dalla gara.
+do $$
+declare v int;
+begin
+  for v in 4..6 loop
+    perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000000'||v, false);
+    perform report_post('10000000-0000-0000-0000-000000000002', 'spam');
+  end loop;
+end $$;
+select get_post('10000000-0000-0000-0000-000000000002') is null as post_segnalato_nascosto;
+
+-- La coda di moderazione è solo per i moderatori.
+do $$ begin perform mod_queue(); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%moderatori%' then raise; end if; raise notice 'ok, coda riservata ai moderatori'; end $$;
+reset role;
+update profiles set is_moderator = true where username = 'user6';
+set role authenticated;
+select (q->>'reports')::int as segnalazioni_in_coda from mod_queue() q;
+-- "Nessun problema": il post torna visibile.
+select mod_resolve('10000000-0000-0000-0000-000000000002', 'dismiss');
+select get_post('10000000-0000-0000-0000-000000000002') is not null as visibile_dopo_revisione;
+reset role;
+select status <> 'disqualified' as ancora_in_gara_dopo_revisione from arena_entries where post_id = '10000000-0000-0000-0000-000000000002';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000006', false);
+-- Espulsione: user3 non può più pubblicare e i suoi post spariscono.
+select report_post('10000000-0000-0000-0000-000000000003', 'odio');
+select mod_resolve('10000000-0000-0000-0000-000000000003', 'ban');
+select get_post('10000000-0000-0000-0000-000000000003') is null as post_espulso_nascosto;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000003', false);
+do $$ begin
+  insert into posts (author_id, media) values ('00000000-0000-0000-0000-000000000003', '[{"kind":"image","url":"https://x/1.jpg"}]');
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, utente espulso non può pubblicare'; end $$;
+
+-- Eliminazione dell'account: sparisce tutto ciò che è suo.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000005', false);
+select delete_my_account();
+reset role;
+select (select count(*) from profiles where username = 'user5') as profilo_user5,
+       (select count(*) from comments where user_id = '00000000-0000-0000-0000-000000000005') as commenti_user5,
+       (select like_count from posts where id = '10000000-0000-0000-0000-000000000001') as like_post1_dopo;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
+
 reset role;
 select (p.post->>'caption') caption, e.tier, e.status, round(e.last_score, 3) score, (arena_entry_totals(e.id)).views
 from arena_entries e cross join lateral (select public.post_json(e.post_id, null) post) p order by 1;

@@ -49,6 +49,7 @@ export type Profile = Author & {
   covers: number;
   followedByMe: boolean;
   isMe: boolean;
+  isModerator: boolean;
 };
 
 /** La copertina: il post vincitore di un giorno, visto da tutti il giorno dopo. */

@@ -11,18 +11,21 @@ import { TierLadder } from '../components/TierLadder';
 import { Txt } from '../components/Txt';
 import { formatCount } from '../design/format';
 import { color, font, radius, space } from '../design/tokens';
-import { getProfile, isDemo, resetDemo, toggleFollow } from '../services/api';
+import { blockUser, getProfile, isDemo, resetDemo, toggleFollow } from '../services/api';
+import { useToast } from '../components/Toast';
 import { useSession } from '../state/session';
 import type { MyEntry, Post, Profile } from '../types';
 
 export function ProfileView({ username, showBack }: { username: string; showBack?: boolean }) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { version, setMe } = useSession();
+  const { version, setMe, bump } = useSession();
   const [data, setData] = useState<{ profile: Profile; posts: Post[]; saved: Post[]; entry: MyEntry | null } | null>(null);
   const [tab, setTab] = useState<'post' | 'salvati'>('post');
   const [error, setError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmBlock, setConfirmBlock] = useState(false);
+  const toast = useToast();
 
   useFocusEffect(
     useCallback(() => {
@@ -64,11 +67,20 @@ export function ProfileView({ username, showBack }: { username: string; showBack
   return (
     <ScrollView style={styles.root} contentContainerStyle={{ paddingTop: insets.top + space[3], paddingBottom: space[12] }}>
       <View style={styles.pad}>
-        {showBack ? (
-          <Press style={styles.back} onPress={() => router.back()} accessibilityLabel="Indietro">
-            <Icon name="indietro" />
-          </Press>
-        ) : null}
+        <View style={styles.topRow}>
+          {showBack ? (
+            <Press style={styles.back} onPress={() => router.back()} accessibilityLabel="Indietro">
+              <Icon name="indietro" />
+            </Press>
+          ) : (
+            <View />
+          )}
+          {profile.isMe ? (
+            <Press style={styles.back} onPress={() => router.push('/impostazioni' as Href)} accessibilityLabel="Impostazioni">
+              <Icon name="impostazioni" />
+            </Press>
+          ) : null}
+        </View>
 
         <View style={styles.head}>
           <Monogram name={profile.displayName} seed={profile.username} size={76} />
@@ -111,6 +123,24 @@ export function ProfileView({ username, showBack }: { username: string; showBack
             </Txt>
           </Press>
         )}
+        {!profile.isMe ? (
+          <Press
+            style={styles.block}
+            scaleTo={1}
+            onPress={async () => {
+              if (!confirmBlock) return setConfirmBlock(true);
+              await blockUser(profile.id);
+              bump();
+              toast(`@${profile.username} è bloccato.`);
+              router.back();
+            }}
+            accessibilityRole="button">
+            <Icon name="blocca" size={18} color={confirmBlock ? color.matita : color.paperFaint} />
+            <Txt variant="meta" tone={confirmBlock ? color.matita : color.paperFaint}>
+              {confirmBlock ? `Tocca di nuovo per bloccare @${profile.username}` : `Blocca @${profile.username}`}
+            </Txt>
+          </Press>
+        ) : null}
 
         {entry ? (
           <View style={styles.contest}>
@@ -196,6 +226,8 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.canvas },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.canvas },
   pad: { paddingHorizontal: space[5], gap: space[4] },
+  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  block: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 6 },
   back: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
   head: { flexDirection: 'row', alignItems: 'center', gap: space[4] },
   stats: { flexDirection: 'row', gap: space[2] },

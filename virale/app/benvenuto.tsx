@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -11,6 +12,7 @@ import { Masthead } from '../src/components/Masthead';
 import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { DEMO_MEDIA } from '../src/data/demoMedia';
+import { MIN_AGE } from '../src/legal/docs';
 import { color, font, radius, space } from '../src/design/tokens';
 import { createAccount, isDemo } from '../src/services/api';
 import { useSession } from '../src/state/session';
@@ -74,14 +76,16 @@ function NameForm() {
   const { setMe } = useSession();
   const [username, setUsername] = useState('');
   const [name, setName] = useState('');
+  const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
 
   const submit = async () => {
     try {
       setBusy(true);
       setError(null);
-      setMe(await createAccount(username, name));
+      setMe(await createAccount(username, name, accepted));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -119,7 +123,30 @@ function NameForm() {
           {error}
         </Txt>
       ) : null}
-      <Press style={[styles.cta, !username && styles.off]} onPress={() => void submit()} disabled={!username || busy} accessibilityRole="button">
+      <Press
+        style={styles.terms}
+        scaleTo={1}
+        onPress={() => setAccepted((a) => !a)}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: accepted }}>
+        <View style={[styles.box, accepted && styles.boxOn]}>{accepted ? <Icon name="check" size={16} color={color.canvas} strokeWidth={2.6} /> : null}</View>
+        <Txt variant="small" tone={color.paperDim} style={{ flex: 1 }}>
+          Ho almeno {MIN_AGE} anni e accetto{' '}
+          <Txt variant="small" style={styles.link} onPress={() => router.push('/legale/termini' as Href)}>
+            Termini
+          </Txt>{' '}
+          e{' '}
+          <Txt variant="small" style={styles.link} onPress={() => router.push('/legale/linee-guida' as Href)}>
+            Linee guida
+          </Txt>
+          . Ho letto l’
+          <Txt variant="small" style={styles.link} onPress={() => router.push('/legale/privacy' as Href)}>
+            Informativa privacy
+          </Txt>
+          .
+        </Txt>
+      </Press>
+      <Press style={[styles.cta, (!username || !accepted) && styles.off]} onPress={() => void submit()} disabled={!username || !accepted || busy} accessibilityRole="button">
         {busy ? (
           <ActivityIndicator color={color.canvas} />
         ) : (
@@ -176,4 +203,8 @@ const styles = StyleSheet.create({
   point: { flexDirection: 'row', gap: space[3], alignItems: 'flex-start' },
   cta: { backgroundColor: color.giallo, borderRadius: radius.control, paddingVertical: 16, alignItems: 'center', minHeight: 52, justifyContent: 'center' },
   off: { opacity: 0.45 },
+  terms: { flexDirection: 'row', gap: space[3], alignItems: 'flex-start', paddingVertical: space[1] },
+  box: { width: 24, height: 24, borderRadius: 7, borderWidth: 1.5, borderColor: color.paperDim, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  boxOn: { backgroundColor: color.giallo, borderColor: color.giallo },
+  link: { color: color.paper, textDecorationLine: 'underline', fontFamily: font.uiMedium },
 });

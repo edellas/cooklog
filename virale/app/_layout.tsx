@@ -8,6 +8,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ToastProvider } from '../src/components/Toast';
+import { Txt } from '../src/components/Txt';
+import { isDemo } from '../src/services/api';
 import { FONTS } from '../src/design/fonts';
 import { color } from '../src/design/tokens';
 import { SessionProvider, useSession } from '../src/state/session';
@@ -20,6 +22,7 @@ export default function RootLayout() {
     if (fontsReady) void SplashScreen.hideAsync().catch(() => undefined);
   }, [fontsReady]);
   if (!fontsReady) return null;
+  if (MISCONFIGURED) return <Misconfigured />;
 
   return (
     <GestureHandlerRootView style={styles.fill}>
@@ -49,6 +52,13 @@ export default function RootLayout() {
                     name="regole"
                     options={{ presentation: 'formSheet', sheetAllowedDetents: [0.92], sheetGrabberVisible: true, sheetCornerRadius: 24, contentStyle: { backgroundColor: color.sheet } }}
                   />
+                  <Stack.Screen
+                    name="azioni/[postId]"
+                    options={{ presentation: 'formSheet', sheetAllowedDetents: [0.55, 0.9], sheetGrabberVisible: true, sheetCornerRadius: 24, contentStyle: { backgroundColor: color.sheet } }}
+                  />
+                  <Stack.Screen name="impostazioni" />
+                  <Stack.Screen name="moderazione" />
+                  <Stack.Screen name="legale/[doc]" />
                   <Stack.Screen name="utente/[username]" />
                   <Stack.Screen name="post/[id]" />
                   <Stack.Screen name="copertina/[day]" />
@@ -59,6 +69,25 @@ export default function RootLayout() {
         </SessionProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+/**
+ * Una build di produzione senza Supabase girerebbe in demo con contenuti finti: gli store la
+ * rifiuterebbero e gli utenti non vedrebbero gli altri. Meglio fermarsi e dirlo.
+ */
+const MISCONFIGURED = process.env.EXPO_PUBLIC_APP_ENV === 'production' && isDemo;
+
+function Misconfigured() {
+  return (
+    <View style={[styles.fill, { alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12 }]}>
+      <Txt variant="title" style={{ textAlign: 'center' }}>
+        Configurazione mancante
+      </Txt>
+      <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
+        Questa build di produzione non ha l’indirizzo e la chiave di Supabase. Impostali come variabili d’ambiente EAS e rifai la build.
+      </Txt>
+    </View>
   );
 }
 

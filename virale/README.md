@@ -86,13 +86,12 @@ npm run lint
 
 ## Produzione (milioni di utenti)
 
-1. Crea un progetto **Supabase** ed esegui `supabase/schema.sql` nel SQL Editor.
+La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](PUBBLICARE.md)**. In breve:
+
+1. Crea un progetto **Supabase** in UE ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, permessi sui file, chiusura a mezzanotte con `pg_cron`).
 2. **Authentication → Providers**: abilita gli accessi anonimi; l'onboarding chiede solo uno username.
-3. **Storage**: crea il bucket pubblico `media` con le policy indicate in fondo allo schema; metti una CDN davanti ai video.
-4. **Database → Extensions**: abilita `pg_cron` e programma la chiusura:
-   `select cron.schedule('arena-close-day', '5 0 * * *', $$ select public.arena_close_day(public.arena_today() - 1) $$);`
-5. Crea `virale/.env.local` con `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
-6. Store: `npx eas build --platform all` e `npx eas submit` (servono gli account Apple Developer e Google Play). Gli identificativi sono `app.virale.mobile`.
+3. Metti `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` nelle variabili d'ambiente EAS (o in `virale/.env.local` per lo sviluppo).
+4. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.
 
 Perché regge il carico:
 - la copertina è una sola riga uguale per tutti, cacheabile per tutto il giorno;
@@ -102,22 +101,20 @@ Perché regge il carico:
 
 Oltre le decine di milioni di viste al giorno: partizionare `arena_views` per giorno, mettere `arena_record_view` dietro una coda e servire i candidati da Redis.
 
-Prima del lancio servono comunque:
-- moderazione di foto e video (automatica e umana sui finalisti);
-- notifiche push;
-- privacy policy e termini d'uso;
-- blocco e segnalazione degli utenti, come richiesto dagli store.
+Già pronto per gli store: accettazione di termini ed età minima, segnalazione dei post con motivo, blocco degli utenti, coda di moderazione, eliminazione dell'account dall'app, documenti legali (in app e come pagine web), icone, splash, testi delle schede, screenshot. Da aggiungere più avanti: moderazione automatica di foto e video e notifiche push.
 
 ## Struttura
 
 | Percorso | Contenuto |
 |---|---|
-| `app/` | Le schermate (Expo Router): `(tabs)/` Copertina, Provini, Archivio, Profilo; `scatta`, `commenti/[postId]`, `regole`, `utente/[username]`, `post/[id]`, `copertina/[day]`, `benvenuto` |
+| `app/` | Le schermate (Expo Router): `(tabs)/` Copertina, Provini, Archivio, Profilo; `scatta`, `commenti/[postId]`, `azioni/[postId]`, `impostazioni`, `moderazione`, `legale/[doc]`, `regole`, `utente/[username]`, `post/[id]`, `copertina/[day]`, `benvenuto` |
 | `src/design/` | Token (colori OKLCH convertiti, tipografia, spaziature), motion, font |
 | `src/components/` | Cornice media con carosello, video e doppio tocco; segno di matita; striscia del post; icone SVG; scala dei gradini; toast; testata |
 | `src/engine/` | Motore della gara in TypeScript puro, test e simulazione |
 | `src/services/api.ts` | Dati: Supabase se configurato, altrimenti demo locale |
-| `supabase/` | Schema, RLS, RPC, test end-to-end |
+| `supabase/` | Schema, RLS, RPC, configurazione di produzione, test end-to-end |
+| `src/legal/` | Titolare, termini, privacy, linee guida, eliminazione account |
+| `store/` | Testi delle schede, note per la revisione, risposte privacy, screenshot e grafica |
 | `prototype/` | Sorgente e script di build del prototipo interattivo |
 | `assets/demo/` | Foto e video demo ([crediti](assets/demo/CREDITI.md)) |
 

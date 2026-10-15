@@ -1,5 +1,5 @@
 -- Virale · schema Supabase
--- Esegui tutto nel SQL Editor di Supabase (Database → SQL Editor), poi abilita pg_cron (sezione 8).
+-- Esegui tutto nel SQL Editor di Supabase (Database → SQL Editor), poi setup-produzione.sql (Storage e mezzanotte).
 -- Stessa logica di src/engine/engine.ts: se cambi pesi o soglie, aggiornali in entrambi.
 --
 -- Flusso:
@@ -19,6 +19,10 @@ create table if not exists public.profiles (
   username text unique not null check (username ~ '^[a-z0-9_.]{3,24}$'),
   display_name text not null check (length(display_name) between 1 and 40),
   bio text not null default '' check (length(bio) <= 160),
+  -- Accettazione di termini e linee guida (con dichiarazione di almeno 14 anni): obbligatoria per iscriversi.
+  terms_accepted_at timestamptz not null default now(),
+  is_moderator boolean not null default false,
+  banned_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -44,6 +48,9 @@ create table if not exists public.posts (
   comment_count int not null default 0,
   save_count int not null default 0,
   share_count int not null default 0,
+  -- Nascosto dalla moderazione o dalle segnalazioni: non compare più da nessuna parte.
+  hidden_at timestamptz,
+  hidden_reason text,
   created_at timestamptz not null default now()
 );
 create index if not exists idx_posts_author on public.posts (author_id, created_at desc);
@@ -79,6 +86,63 @@ create table if not exists public.follows (
 );
 create index if not exists idx_follows_followee on public.follows (followee_id);
 
+-- ---------------------------------------------------------------------------
+-- Sicurezza della community: blocchi, segnalazioni, ban (richiesti da App Store e Google Play)
+-- ---------------------------------------------------------------------------
+create table if not exists public.blocks (
+  blocker_id uuid not null references public.profiles(id) on delete cascade,
+  blocked_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (blocker_id, blocked_id),
+  check (blocker_id <> blocked_id)
+);
+create index if not exists idx_blocks_blocked on public.blocks (blocked_id);
+
+create table if not exists public.reports (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid references public.posts(id) on delete cascade,
+  reported_user_id uuid not null references public.profiles(id) on delete cascade,
+  reporter_id uuid not null references public.profiles(id) on delete cascade,
+  reason text not null check (reason in ('spam', 'nudo', 'violenza', 'odio', 'molestie', 'minori', 'falso', 'altro')),
+  note text check (length(note) <= 300),
+  status text not null default 'open' check (status in ('open', 'removed', 'dismissed')),
+  resolved_by uuid references public.profiles(id) on delete set null,
+  resolved_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (post_id, reporter_id)
+);
+create index if not exists idx_reports_open on public.reports (status, created_at) where status = 'open';
+
+alter table public.blocks enable row level security;
+alter table public.reports enable row level security;
+drop policy if exists "blocks own" on public.blocks;
+create policy "blocks own" on public.blocks for select to authenticated using (auth.uid() = blocker_id);
+-- Le segnalazioni passano solo dalle funzioni report_post / mod_*: nessun accesso diretto.
+
+/** Un utente può agire (pubblicare, commentare, votare) solo se ha un profilo e non è stato espulso. */
+create or replace function public.is_active(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from profiles where id = p_uid and banned_at is null);
+$$;
+
+/** Vero se uno dei due ha bloccato l'altro: in quel caso non si vedono più a vicenda. */
+create or replace function public.is_blocked_pair(a uuid, b uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select a is not null and b is not null and exists (
+    select 1 from blocks where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a)
+  );
+$$;
+
+/** Un post è visibile a chi guarda se non è nascosto, l'autore non è espulso e non c'è un blocco tra i due. */
+create or replace function public.can_see(p_post_id uuid, p_viewer uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from posts p join profiles a on a.id = p.author_id
+    where p.id = p_post_id and p.hidden_at is null and a.banned_at is null
+      and not public.is_blocked_pair(p_viewer, p.author_id)
+  );
+$$;
+
 -- Contatori mantenuti dal database: il client non può gonfiarli.
 create or replace function public.bump_post_counter()
 returns trigger language plpgsql security definer set search_path = public as $$
@@ -108,32 +172,40 @@ alter table public.follows enable row level security;
 drop policy if exists "profiles readable" on public.profiles;
 create policy "profiles readable" on public.profiles for select to anon, authenticated using (true);
 drop policy if exists "profiles insert own" on public.profiles;
-create policy "profiles insert own" on public.profiles for insert to authenticated with check (auth.uid() = id);
+create policy "profiles insert own" on public.profiles for insert to authenticated
+  with check (auth.uid() = id and is_moderator = false and banned_at is null);
 drop policy if exists "profiles update own" on public.profiles;
 create policy "profiles update own" on public.profiles for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
+-- Ruolo di moderatore ed espulsione non si cambiano dal client: dal client si aggiornano solo nome e bio.
+-- (Una revoca per colonna non basta se esiste il permesso sull'intera tabella, quindi si revoca tutto e si riconcede.)
+revoke update on public.profiles from anon, authenticated;
+grant update (display_name, bio) on public.profiles to authenticated;
 drop policy if exists "posts readable" on public.posts;
 create policy "posts readable" on public.posts for select to anon, authenticated using (true);
 drop policy if exists "posts insert own" on public.posts;
 -- I contatori partono da zero: un client non può inserire un post con 10.000 like.
 create policy "posts insert own" on public.posts for insert to authenticated
-  with check (auth.uid() = author_id and like_count = 0 and comment_count = 0 and save_count = 0 and share_count = 0);
+  with check (auth.uid() = author_id and public.is_active(auth.uid()) and hidden_at is null
+              and like_count = 0 and comment_count = 0 and save_count = 0 and share_count = 0);
 drop policy if exists "posts delete own" on public.posts;
 create policy "posts delete own" on public.posts for delete to authenticated using (auth.uid() = author_id);
 
 drop policy if exists "likes own" on public.post_likes;
-create policy "likes own" on public.post_likes for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "likes own" on public.post_likes for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id and public.is_active(auth.uid()));
 drop policy if exists "saves own" on public.post_saves;
-create policy "saves own" on public.post_saves for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "saves own" on public.post_saves for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id and public.is_active(auth.uid()));
 drop policy if exists "comments readable" on public.comments;
 create policy "comments readable" on public.comments for select to anon, authenticated using (true);
 drop policy if exists "comments insert own" on public.comments;
-create policy "comments insert own" on public.comments for insert to authenticated with check (auth.uid() = user_id);
+create policy "comments insert own" on public.comments for insert to authenticated
+  with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
 drop policy if exists "comments delete own" on public.comments;
 create policy "comments delete own" on public.comments for delete to authenticated using (auth.uid() = user_id);
 drop policy if exists "follows readable" on public.follows;
 create policy "follows readable" on public.follows for select to authenticated using (true);
 drop policy if exists "follows own" on public.follows;
-create policy "follows own" on public.follows for insert to authenticated with check (auth.uid() = follower_id);
+create policy "follows own" on public.follows for insert to authenticated
+  with check (auth.uid() = follower_id and public.is_active(auth.uid()) and not public.is_blocked_pair(follower_id, followee_id));
 drop policy if exists "unfollow own" on public.follows;
 create policy "unfollow own" on public.follows for delete to authenticated using (auth.uid() = follower_id);
 
@@ -308,7 +380,7 @@ declare
   v_day date := public.arena_today();
   v_entry public.arena_entries;
 begin
-  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
   if extract(hour from now() at time zone v_cfg.time_zone) >= v_cfg.submission_cutoff_hour then
     raise exception 'Candidature chiuse per oggi: riprova domani.';
   end if;
@@ -347,6 +419,7 @@ begin
       where e.contest_day = p_day and e.status in ('active', 'finalist')
         and e.tier between p_min_tier and p_max_tier and e.rand_key >= v_start
         and e.author_id <> p_viewer
+        and public.can_see(e.post_id, p_viewer)
         and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
       order by e.rand_key limit p_n)
     union all
@@ -354,6 +427,7 @@ begin
       where e.contest_day = p_day and e.status in ('active', 'finalist')
         and e.tier between p_min_tier and p_max_tier and e.rand_key < v_start
         and e.author_id <> p_viewer
+        and public.can_see(e.post_id, p_viewer)
         and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
       order by e.rand_key limit p_n)
   )
@@ -434,6 +508,7 @@ begin
     select null::uuid, public.post_json(p.id, v_uid)
     from posts p
     where p.author_id <> v_uid
+      and public.can_see(p.id, v_uid)
       and p.created_at > now() - interval '3 days'
       and not (p.id = any (coalesce(p_exclude, '{}')))
       and not exists (select 1 from arena_entries e where e.post_id = p.id and e.id = any (coalesce(v_ids, '{}')))
@@ -449,13 +524,142 @@ returns setof jsonb language sql stable security definer set search_path = publi
   select public.post_json(p.id, auth.uid())
   from posts p
   join follows f on f.followee_id = p.author_id and f.follower_id = auth.uid()
+  where public.can_see(p.id, auth.uid())
   order by p.created_at desc
   limit least(greatest(p_limit, 1), 60);
 $$;
 
 create or replace function public.get_post(p_post_id uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
-  select public.post_json(p_post_id, auth.uid());
+  -- L'autore vede sempre i propri post; gli altri solo se visibili.
+  select public.post_json(p_post_id, auth.uid())
+  where public.can_see(p_post_id, auth.uid())
+     or exists (select 1 from posts where id = p_post_id and author_id = auth.uid());
+$$;
+
+-- Commenti di un post, senza quelli di utenti bloccati o espulsi.
+create or replace function public.get_comments(p_post_id uuid)
+returns setof jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', c.id, 'post_id', c.post_id, 'body', c.body, 'created_at', c.created_at,
+                            'author', jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name))
+  from comments c join profiles a on a.id = c.user_id
+  where c.post_id = p_post_id and a.banned_at is null and not public.is_blocked_pair(auth.uid(), c.user_id)
+  order by c.created_at
+  limit 300;
+$$;
+
+-- Segnala un post. Con 3 segnalazioni aperte da persone diverse il post sparisce subito
+-- (e va in revisione): la community non deve aspettare il moderatore.
+create or replace function public.report_post(p_post_id uuid, p_reason text, p_note text default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_uid uuid := auth.uid();
+  v_author uuid;
+  v_open int;
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  select author_id into v_author from posts where id = p_post_id;
+  if v_author is null then raise exception 'Post non trovato.'; end if;
+  if v_author = v_uid then raise exception 'Non puoi segnalare un tuo post.'; end if;
+
+  insert into reports (post_id, reported_user_id, reporter_id, reason, note)
+  values (p_post_id, v_author, v_uid, p_reason, nullif(trim(coalesce(p_note, '')), ''))
+  on conflict (post_id, reporter_id) do nothing;
+
+  select count(distinct reporter_id) into v_open from reports where post_id = p_post_id and status = 'open';
+  if v_open >= 3 then
+    -- Solo nascosto, non squalificato: se il moderatore dà ragione al post, torna in gara da dove era.
+    -- Così tre utenti d'accordo non possono eliminare un concorrente.
+    update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'segnalazioni') where id = p_post_id;
+  end if;
+end;
+$$;
+
+create or replace function public.block_user(p_user_id uuid)
+returns void language sql security definer set search_path = public as $$
+  insert into blocks (blocker_id, blocked_id) select auth.uid(), p_user_id
+  where auth.uid() is not null and auth.uid() <> p_user_id
+  on conflict do nothing;
+  -- Bloccare toglie anche i follow in entrambe le direzioni.
+  delete from follows where (follower_id = auth.uid() and followee_id = p_user_id) or (follower_id = p_user_id and followee_id = auth.uid());
+$$;
+
+create or replace function public.unblock_user(p_user_id uuid)
+returns void language sql security definer set search_path = public as $$
+  delete from blocks where blocker_id = auth.uid() and blocked_id = p_user_id;
+$$;
+
+create or replace function public.list_blocked()
+returns setof jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name)
+  from blocks b join profiles a on a.id = b.blocked_id
+  where b.blocker_id = auth.uid()
+  order by b.created_at desc;
+$$;
+
+-- Elimina il proprio account e tutto ciò che contiene (post, commenti, like, follow, gare).
+-- I file nello Storage li cancella l'app prima di chiamare questa funzione.
+create or replace function public.delete_my_account()
+returns void language plpgsql security definer set search_path = public, auth as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  delete from auth.users where id = v_uid;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Moderazione: coda delle segnalazioni, solo per i moderatori (profiles.is_moderator)
+-- ---------------------------------------------------------------------------
+create or replace function public.mod_queue()
+returns setof jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not exists (select 1 from profiles where id = auth.uid() and is_moderator) then raise exception 'Solo per i moderatori.'; end if;
+  return query
+  select jsonb_build_object(
+    'post', public.post_json(r.post_id, null),
+    'hidden', p.hidden_at is not null,
+    'reports', count(*),
+    'reasons', jsonb_agg(distinct r.reason),
+    'first_at', min(r.created_at)
+  )
+  from reports r join posts p on p.id = r.post_id
+  where r.status = 'open'
+  group by r.post_id, p.hidden_at
+  order by min(r.created_at);
+end;
+$$;
+
+-- action: 'dismiss' (nessun problema, il post torna visibile), 'remove' (post rimosso),
+-- 'ban' (post rimosso e utente espulso: tutti i suoi post spariscono e non può più agire).
+create or replace function public.mod_resolve(p_post_id uuid, p_action text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_uid uuid := auth.uid();
+  v_author uuid;
+begin
+  if not exists (select 1 from profiles where id = v_uid and is_moderator) then raise exception 'Solo per i moderatori.'; end if;
+  if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
+  select author_id into v_author from posts where id = p_post_id;
+
+  update reports set status = case when p_action = 'dismiss' then 'dismissed' else 'removed' end,
+                     resolved_by = v_uid, resolved_at = now()
+   where post_id = p_post_id and status = 'open';
+
+  if p_action = 'dismiss' then
+    update posts set hidden_at = null, hidden_reason = null where id = p_post_id and hidden_reason = 'segnalazioni';
+  else
+    update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = 'moderazione' where id = p_post_id;
+    update arena_entries set status = 'disqualified' where post_id = p_post_id;
+  end if;
+
+  if p_action = 'ban' then
+    update profiles set banned_at = now() where id = v_author;
+    update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = v_author;
+    update arena_entries set status = 'disqualified' where author_id = v_author and contest_day = public.arena_today();
+  end if;
+end;
 $$;
 
 create or replace function public.register_share(p_post_id uuid)
@@ -470,7 +674,9 @@ declare
   v_pr profiles;
 begin
   select * into v_pr from profiles where username = p_username;
-  if not found then raise exception 'Profilo non trovato.'; end if;
+  if not found or (v_pr.id <> coalesce(v_uid, v_pr.id) and (v_pr.banned_at is not null or public.is_blocked_pair(v_uid, v_pr.id))) then
+    raise exception 'Profilo non trovato.';
+  end if;
   return jsonb_build_object(
     'profile', jsonb_build_object(
       'id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio,
@@ -478,13 +684,16 @@ begin
       'following', (select count(*) from follows where follower_id = v_pr.id),
       'covers', (select count(*) from daily_viral where author_id = v_pr.id and featured_on <= public.arena_today()),
       'followed', exists (select 1 from follows where follower_id = v_uid and followee_id = v_pr.id),
-      'is_me', v_pr.id = v_uid
+      'is_me', v_pr.id = v_uid,
+      'is_moderator', v_pr.id = v_uid and v_pr.is_moderator
     ),
     'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) order by p.created_at desc)
-                       from (select id, created_at from posts where author_id = v_pr.id order by created_at desc limit 60) p), '[]'),
+                       from (select id, created_at from posts where author_id = v_pr.id
+                             and (v_pr.id = v_uid or hidden_at is null) order by created_at desc limit 60) p), '[]'),
     'saved', case when v_pr.id = v_uid then
                coalesce((select jsonb_agg(public.post_json(s.post_id, v_uid) order by s.created_at desc)
-                         from (select post_id, created_at from post_saves where user_id = v_uid order by created_at desc limit 60) s), '[]')
+                         from (select post_id, created_at from post_saves where user_id = v_uid and public.can_see(post_id, v_uid)
+                               order by created_at desc limit 60) s), '[]')
              else '[]'::jsonb end,
     'entry', (select jsonb_build_object('entry_id', e.id, 'post_id', e.post_id, 'tier', e.tier, 'status', e.status,
                                         'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day)
@@ -656,6 +865,7 @@ begin
   cross join lateral public.arena_entry_totals(e.id) t
   where e.contest_day = p_day
     and e.status <> 'disqualified'
+    and public.can_see(e.post_id, null)
     and t.views > 0
     and not (t.views >= v_cfg.report_min_views and t.reports::numeric / t.views > v_cfg.max_report_rate)
     and not exists (
@@ -684,7 +894,7 @@ returns jsonb language sql stable security definer set search_path = public as $
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  where d.featured_on = public.arena_today();
+  where d.featured_on = public.arena_today() and public.can_see(d.post_id, auth.uid());
 $$;
 
 -- L'Archivio: le copertine uscite, dalla più recente.
@@ -693,7 +903,7 @@ returns setof jsonb language sql stable security definer set search_path = publi
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  where d.featured_on <= public.arena_today()
+  where d.featured_on <= public.arena_today() and public.can_see(d.post_id, auth.uid())
   order by d.featured_on desc
   limit least(greatest(p_limit, 1), 120);
 $$;
@@ -714,23 +924,23 @@ grant execute on function public.get_profile(text) to authenticated;
 grant execute on function public.register_share(uuid) to authenticated;
 grant execute on function public.get_today_cover() to anon, authenticated;
 grant execute on function public.get_cover_archive(int) to anon, authenticated;
+grant execute on function public.get_comments(uuid) to anon, authenticated;
+grant execute on function public.report_post(uuid, text, text) to authenticated;
+grant execute on function public.block_user(uuid) to authenticated;
+grant execute on function public.unblock_user(uuid) to authenticated;
+grant execute on function public.list_blocked() to authenticated;
+grant execute on function public.delete_my_account() to authenticated;
+grant execute on function public.mod_queue() to authenticated;
+grant execute on function public.mod_resolve(uuid, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- 8) Pianificazione (Database → Extensions → abilita pg_cron)
+-- 8-9) Pianificazione di mezzanotte e Storage: vedi setup-produzione.sql
 -- ---------------------------------------------------------------------------
--- 00:05 UTC è già il giorno dopo a Roma: si chiude il giorno di gara precedente.
--- select cron.schedule(
---   'arena-close-day',
---   '5 0 * * *',
---   $$ select public.arena_close_day(public.arena_today() - 1) $$
--- );
 
 -- ---------------------------------------------------------------------------
--- 9) Storage per video e foto
+-- 10) Moderatori
 -- ---------------------------------------------------------------------------
--- Crea un bucket pubblico "media" (Storage → New bucket) e queste policy:
--- create policy "media upload own folder" on storage.objects for insert to authenticated
---   with check (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text);
--- create policy "media delete own" on storage.objects for delete to authenticated
---   using (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text);
--- Per i video consigliato: limite di 50 MB per file (Storage → Settings) e una CDN davanti al bucket.
+-- Dopo esserti iscritto dall'app, nomina te stesso (o il tuo team) moderatore:
+-- update public.profiles set is_moderator = true where username = 'il_tuo_username';
+-- Nell'app comparirà la voce "Moderazione" nelle Impostazioni.
+

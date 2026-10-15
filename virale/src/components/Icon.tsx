@@ -31,7 +31,13 @@ export type IconName =
   | 'orologio'
   | 'info'
   | 'sinistra'
-  | 'destra';
+  | 'destra'
+  | 'altro'
+  | 'impostazioni'
+  | 'blocca'
+  | 'scudo'
+  | 'posta'
+  | 'documento';
 
 export function Icon({
   name,
@@ -150,6 +156,40 @@ export function Icon({
                 <Path d="M12 8v4.2l2.8 1.8" {...p} />
               </>
             );
+          case 'altro':
+            return (
+              <>
+                <Circle cx={5.5} cy={12} r={1.4} fill={color} stroke="none" />
+                <Circle cx={12} cy={12} r={1.4} fill={color} stroke="none" />
+                <Circle cx={18.5} cy={12} r={1.4} fill={color} stroke="none" />
+              </>
+            );
+          case 'impostazioni':
+            return (
+              <>
+                <Path d="M4 7h9M17 7h3M4 17h3M11 17h9" {...p} />
+                <Circle cx={15} cy={7} r={2.2} {...p} />
+                <Circle cx={9} cy={17} r={2.2} {...p} />
+              </>
+            );
+          case 'blocca':
+            return (
+              <>
+                <Circle cx={12} cy={12} r={8.25} {...p} />
+                <Path d="M6.2 6.2l11.6 11.6" {...p} />
+              </>
+            );
+          case 'scudo':
+            return <Path d="M12 3.5 5 6.2v5.3c0 4.3 2.9 7.6 7 9 4.1-1.4 7-4.7 7-9V6.2Z M9 12l2.2 2.2L15.5 10" {...p} />;
+          case 'posta':
+            return (
+              <>
+                <Rect x={3.5} y={5.5} width={17} height={13} rx={2.5} {...p} />
+                <Path d="m4.5 7 7.5 6 7.5-6" {...p} />
+              </>
+            );
+          case 'documento':
+            return <Path d="M7 3.5h7l4 4v13H7Z M14 3.5v4h4 M9.5 12h6M9.5 15.5h6" {...p} />;
           case 'info':
             return (
               <>
