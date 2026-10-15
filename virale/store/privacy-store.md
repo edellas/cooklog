@@ -12,12 +12,17 @@ Se aggiungi servizi (es. Sentry, analytics, notifiche push) **aggiorna queste ri
 
 | Tipo di dato (nome Apple) | Raccolto | Collegato all'identità | Usato per tracciare | Scopo |
 |---|---|---|---|---|
-| Contatti → Nome (nome visualizzato) | Sì | Sì | No | Funzionalità dell'app |
+| Contatti → Nome (nome e cognome; agli altri si mostra nome e iniziale) | Sì | Sì | No | Funzionalità dell'app, Gestione account |
+| Altri dati → Data di nascita (Apple non ha una voce dedicata: "Altri tipi di dati") | Sì | Sì | No | Funzionalità dell'app (età minima) |
+| Altri dati → Documento d'identità e selfie (cancellati dopo la verifica) | Sì | Sì | No | Funzionalità dell'app (verifica dell'età) |
 | Contenuti utente → Foto o video | Sì | Sì | No | Funzionalità dell'app |
 | Contenuti utente → Altri contenuti utente (didascalie, commenti, bio) | Sì | Sì | No | Funzionalità dell'app |
 | Identificatori → ID utente | Sì | Sì | No | Funzionalità dell'app |
 | Utilizzo → Interazioni con il prodotto (visioni, mi piace, salvataggi, condivisioni) | Sì | Sì | No | Funzionalità dell'app (la gara si basa su queste) |
 | Contatti → Indirizzo email | Solo se l'utente ci scrive | Sì | No | Supporto |
+
+Nota: le foto del documento vengono cancellate appena l'amministratore decide. Nelle note per la revisione
+(`revisione.md`) spiega che la verifica serve all'età minima di legge e che non c'è riconoscimento facciale automatico.
 
 Tutto il resto: **Non raccolto** (posizione, contatti, salute, finanze, cronologia di navigazione,
 ricerca, diagnostica, dati sensibili, identificatori del dispositivo/pubblicitari).
@@ -35,7 +40,9 @@ ricerca, diagnostica, dati sensibili, identificatori del dispositivo/pubblicitar
 
 | Categoria → tipo | Raccolto | Condiviso | Facoltativo? | Scopo |
 |---|---|---|---|---|
-| Informazioni personali → Nome | Sì | No | Obbligatorio (nome utente) | Funzionalità app, Gestione account |
+| Informazioni personali → Nome | Sì | No | Obbligatorio (nome, cognome, nome utente) | Funzionalità app, Gestione account |
+| Informazioni personali → Altre informazioni (data di nascita) | Sì | No | Obbligatorio | Funzionalità app (età minima), Sicurezza |
+| Informazioni personali → Altre informazioni (documento d'identità e selfie, solo per la verifica dell'età, cancellati dopo la decisione) | Sì | No | Obbligatorio per pubblicare | Prevenzione frodi, sicurezza e conformità |
 | Informazioni personali → ID utente | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
 | Foto e video → Foto | Sì | No | Facoltativo | Funzionalità app |
 | Foto e video → Video | Sì | No | Facoltativo | Funzionalità app |

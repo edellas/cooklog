@@ -15,6 +15,7 @@ import { color, font, radius, space } from '../../src/design/tokens';
 import { msUntilArenaClose } from '../../src/engine/engine';
 import { getFollowing, getForYou, recordView } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
+import { queueView } from '../../src/state/views';
 import type { FeedCard } from '../../src/types';
 
 type Mode = 'perte' | 'seguiti';
@@ -53,6 +54,8 @@ export default function ProviniTab() {
   const flush = useCallback(() => {
     const cur = current.current;
     current.current = null;
+    // Un post rimasto sullo schermo almeno un secondo conta come visualizzazione (anche fuori gara).
+    if (cur && Date.now() - cur.since >= 1000) queueView(cur.card.id);
     if (!cur?.card.entryId) return;
     const s = signals.current[cur.card.id] ?? {};
     const v = video.current[cur.card.id];

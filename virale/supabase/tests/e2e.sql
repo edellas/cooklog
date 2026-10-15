@@ -8,6 +8,8 @@ insert into profiles (id, username, display_name, created_at)
   select id, 'user'||right(id::text,1), 'Utente '||right(id::text,1), now() - interval '10 days' from auth.users;
 -- Il trigger impone created_at = now() (anche al superutente): per il test gli account diventano "vecchi" di 10 giorni.
 update profiles set created_at = now() - interval '10 days';
+-- Utenti di prova già verificati (documento approvato).
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles;
 insert into posts (id, author_id, media, caption)
   select ('10000000-0000-0000-0000-00000000000'||i)::uuid, ('00000000-0000-0000-0000-00000000000'||i)::uuid,
          jsonb_build_array(jsonb_build_object('kind','image','url','https://cdn.example/'||i||'.jpg','width',1080,'height',1620)), 'Post '||i
@@ -200,19 +202,83 @@ do $$ begin
   raise exception 'NON DOVEVA PASSARE';
 exception when insufficient_privilege then raise notice 'ok, utente espulso non può pubblicare'; end $$;
 
--- Un account nuovo non si può retrodatare (per votare subito) né nominare moderatore.
+-- Registrazione: età minima, nome utente libero, niente insert diretti nei profili.
 reset role;
 insert into auth.users values ('00000000-0000-0000-0000-000000000007');
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000007', false);
 do $$ begin
-  insert into profiles (id, username, display_name, created_at) values (auth.uid(), 'user7', 'Utente 7', '2000-01-01');
+  insert into profiles (id, username, display_name) values (auth.uid(), 'user7', 'Utente 7');
   raise exception 'NON DOVEVA PASSARE';
-exception when insufficient_privilege then raise notice 'ok, data di creazione non impostabile dal client'; end $$;
-insert into profiles (id, username, display_name) values (auth.uid(), 'user7', 'Utente 7');
+exception when insufficient_privilege then raise notice 'ok, profilo solo tramite registrazione'; end $$;
+do $$ begin
+  perform complete_registration('user7', 'Ada', 'Bianchi', (current_date - interval '13 years')::date, true);
+  raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%almeno 14 anni%' then raise; end if; raise notice 'ok, meno di 14 anni rifiutato'; end $$;
+select username_available('user1') as user1_libero, username_available('user7') as user7_libero;
+select complete_registration('user7', 'Ada', 'Bianchi', '2000-05-01', true) ->> 'display_name' as nome_mostrato;
+select (my_status() -> 'identity' ->> 'status') as stato_documento, (my_status() -> 'identity' ->> 'can_act')::boolean as puo_agire;
 reset role;
-select created_at > now() - interval '1 minute' as account_nuovo, is_moderator from profiles where username = 'user7';
+select created_at > now() - interval '1 minute' as account_nuovo, is_moderator, is_admin from profiles where username = 'user7';
 set role authenticated;
+
+-- Periodo per il documento scaduto: si guarda soltanto.
+reset role;
+update identity_checks set deadline = now() - interval '1 minute' where user_id = '00000000-0000-0000-0000-000000000007';
+set role authenticated;
+do $$ begin
+  insert into posts (author_id, media) values (auth.uid(), '[{"kind":"image","url":"https://x/7.jpg"}]');
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, senza documento dopo la scadenza non si pubblica'; end $$;
+do $$ begin perform submit_identity('00000000-0000-0000-0000-000000000001/doc.jpg', '00000000-0000-0000-0000-000000000007/selfie.jpg'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%File non validi%' then raise; end if; raise notice 'ok, documento nella cartella di un altro rifiutato'; end $$;
+select submit_identity('00000000-0000-0000-0000-000000000007/doc.jpg', '00000000-0000-0000-0000-000000000007/selfie.jpg');
+do $$ begin perform identity_queue(); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%amministratori%' then raise; end if; raise notice 'ok, coda documenti solo per amministratori'; end $$;
+do $$ begin perform admin_set_settings(600, 7); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%amministratori%' then raise; end if; raise notice 'ok, impostazioni solo per amministratori'; end $$;
+reset role;
+update profiles set is_admin = true where username = 'user4';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
+select count(*) as documenti_in_coda from identity_queue() q;
+select identity_review('00000000-0000-0000-0000-000000000007', 'approve') -> 'paths' as file_da_cancellare;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000007', false);
+select (my_status() -> 'identity' ->> 'status') as stato_dopo_revisione, (my_status() -> 'identity' ->> 'can_act')::boolean as puo_agire_dopo;
+select count(*) as notifica_verifica from list_notifications() n where n ->> 'kind' = 'identity_ok';
+
+-- Orario della copertina deciso dall'amministratore.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
+select admin_set_settings(1439, 10) ->> 'reveal_minutes' as nuovo_orario;
+reset role;
+select cover_day() = arena_today() - 1 as prima_della_rivelazione_si_vede_ieri;
+update arena_config set reveal_minutes = 0;
+select cover_day() = arena_today() as dopo_la_rivelazione_si_vede_oggi;
+set role authenticated;
+
+-- Notifiche: follow e mi piace (e il mi piace tolto sparisce), segna come lette.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000006', false);
+insert into follows (follower_id, followee_id) values (auth.uid(), '00000000-0000-0000-0000-000000000001') on conflict do nothing;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000006', false);
+reset role;
+select count(*) filter (where kind = 'follow') as notifiche_follow_user1, count(*) filter (where kind = 'like') as notifiche_like_user1
+from notifications where user_id = '00000000-0000-0000-0000-000000000001';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
+select (my_status() ->> 'unread')::int > 0 as ci_sono_non_lette;
+select mark_notifications_read();
+select (my_status() ->> 'unread')::int as non_lette_dopo;
+
+-- Visualizzazioni: una per persona al giorno, i propri post non contano.
+select register_views(array['10000000-0000-0000-0000-000000000009'::uuid, '10000000-0000-0000-0000-000000000003'::uuid]);
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000006', false);
+select register_views(array['10000000-0000-0000-0000-000000000009'::uuid]);
+select register_views(array['10000000-0000-0000-0000-000000000009'::uuid]);
+select (get_post('10000000-0000-0000-0000-000000000009') ->> 'view_count')::int as visualizzazioni_carosello;
+
+-- Elenchi di chi segue e di chi è seguito.
+select count(*) as follower_di_user1 from list_follows('user1', 'followers') x;
+select count(*) as seguiti_da_user6 from list_follows('user6', 'following') x;
 
 -- Ritirare un post in gara (eliminandolo) non permette una seconda candidatura lo stesso giorno.
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000002', false);

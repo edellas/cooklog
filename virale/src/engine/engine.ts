@@ -403,6 +403,35 @@ export function arenaDayStart(day: string, timeZone: string = DEFAULT_ARENA_CONF
   return t;
 }
 
+/** Istante (epoch ms) dell'ora locale `minutes` (minuti dalla mezzanotte) del giorno `day` nel fuso di gara. */
+export function wallTimeToEpoch(day: string, minutes: number, timeZone: string = DEFAULT_ARENA_CONFIG.timeZone): number {
+  const naive = Date.parse(`${day}T00:00:00Z`) + minutes * 60_000;
+  let t = naive - tzOffsetMs(new Date(naive), timeZone);
+  t = naive - tzOffsetMs(new Date(t), timeZone);
+  return t;
+}
+
+/**
+ * Il giorno della copertina visibile adesso: la gara chiude a mezzanotte, ma la nuova copertina
+ * compare all'orario scelto dall'amministratore (`revealMinutes` dopo la mezzanotte).
+ */
+export function coverDay(revealMinutes: number, date: Date = new Date(), timeZone: string = DEFAULT_ARENA_CONFIG.timeZone): string {
+  const today = arenaDay(date, timeZone);
+  return date.getTime() >= wallTimeToEpoch(today, revealMinutes, timeZone) ? today : shiftDay(today, -1);
+}
+
+/** Millisecondi alla prossima rivelazione della copertina. */
+export function msUntilReveal(revealMinutes: number, date: Date = new Date(), timeZone: string = DEFAULT_ARENA_CONFIG.timeZone): number {
+  try {
+    const today = arenaDay(date, timeZone);
+    const todayReveal = wallTimeToEpoch(today, revealMinutes, timeZone);
+    const next = date.getTime() < todayReveal ? todayReveal : wallTimeToEpoch(shiftDay(today, 1), revealMinutes, timeZone);
+    return Math.max(0, next - date.getTime());
+  } catch {
+    return msUntilArenaClose(date, timeZone);
+  }
+}
+
 /**
  * Millisecondi alla chiusura dell'Arena (mezzanotte nel fuso orario di gara).
  * Tiene conto dei giorni da 23 o 25 ore del cambio d'ora.

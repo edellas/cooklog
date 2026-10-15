@@ -90,7 +90,7 @@ npm run lint
 La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](PUBBLICARE.md)**. In breve:
 
 1. Crea un progetto **Supabase** in UE ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, permessi sui file, chiusura a mezzanotte con `pg_cron`).
-2. **Authentication → Providers**: abilita gli accessi anonimi; l'onboarding chiede solo uno username.
+2. **Authentication → Providers**: Email attivo con *Confirm email* spento (si accede con nome utente e password), accessi anonimi spenti.
 3. Metti `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` nelle variabili d'ambiente EAS (o in `virale/.env.local` per lo sviluppo).
 4. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.
 

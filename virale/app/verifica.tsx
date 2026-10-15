@@ -1,0 +1,195 @@
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import { useState } from 'react';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { Icon } from '../src/components/Icon';
+import { haptic, Press } from '../src/components/Press';
+import { useToast } from '../src/components/Toast';
+import { Txt } from '../src/components/Txt';
+import { color, radius, space } from '../src/design/tokens';
+import { submitIdentity } from '../src/services/api';
+import { useSession } from '../src/state/session';
+import { useGoBack } from '../src/state/useGoBack';
+
+const dateIt = (iso: string) => new Date(iso).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+
+/**
+ * Verifica dell'età. Due foto: il documento (fronte, con data di nascita leggibile) e un selfie con il
+ * documento in mano accanto al viso. Un amministratore le confronta con nome, cognome e data di nascita
+ * dichiarati; appena deciso, le foto vengono cancellate.
+ */
+export default function VerifyScreen() {
+  const insets = useSafeAreaInsets();
+  const goBack = useGoBack('/profilo');
+  const toast = useToast();
+  const { status, refreshStatus } = useSession();
+  const [doc, setDoc] = useState<string | null>(null);
+  const [selfie, setSelfie] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const identity = status?.identity;
+  const state = identity?.status ?? 'missing';
+
+  const pick = async (which: 'doc' | 'selfie', camera: boolean) => {
+    setError(null);
+    try {
+      if (camera) {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) return setError('Serve il permesso della fotocamera: puoi darlo dalle Impostazioni del telefono.');
+      }
+      const opts: ImagePicker.ImagePickerOptions = {
+        mediaTypes: ['images'],
+        quality: 0.7,
+        allowsEditing: false,
+        cameraType: which === 'selfie' ? ImagePicker.CameraType.front : ImagePicker.CameraType.back,
+        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+      };
+      const res = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
+      if (res.canceled || !res.assets[0]) return;
+      (which === 'doc' ? setDoc : setSelfie)(res.assets[0].uri);
+    } catch {
+      setError('Non riesco ad aprire fotocamera o galleria. Riprova.');
+    }
+  };
+
+  const send = async () => {
+    if (!doc || !selfie) return setError('Servono entrambe le foto.');
+    try {
+      setBusy(true);
+      setError(null);
+      await submitIdentity(doc, selfie);
+      haptic('success');
+      refreshStatus();
+      toast('Documento inviato: lo controlliamo al più presto.');
+      setDoc(null);
+      setSelfie(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <View style={[styles.root, { paddingTop: insets.top }]}>
+      <View style={styles.bar}>
+        <Press style={styles.round} onPress={goBack} accessibilityRole="button" accessibilityLabel="Indietro">
+          <Icon name="indietro" />
+        </Press>
+        <Txt variant="title">Verifica dell’età</Txt>
+        <View style={{ width: 40 }} />
+      </View>
+      <ScrollView contentContainerStyle={{ padding: space[5], paddingBottom: insets.bottom + space[10], gap: space[5] }}>
+        {!identity ? (
+          <ActivityIndicator color={color.giallo} />
+        ) : state === 'approved' ? (
+          <View style={[styles.state, styles.ok]}>
+            <Icon name="check" size={22} color={color.verde} strokeWidth={2.4} />
+            <Txt variant="label" style={{ flex: 1 }}>
+              Età verificata. Non serve fare altro.
+            </Txt>
+          </View>
+        ) : state === 'pending' ? (
+          <View style={styles.state}>
+            <Icon name="orologio" size={22} color={color.giallo} />
+            <Txt variant="body" style={{ flex: 1 }}>
+              Documento ricevuto: lo stiamo controllando. Intanto puoi usare Virale normalmente.
+            </Txt>
+          </View>
+        ) : (
+          <>
+            <View style={[styles.state, !identity.canAct && styles.warn]}>
+              <Icon name={identity.canAct ? 'orologio' : 'info'} size={22} color={identity.canAct ? color.giallo : color.matita} />
+              <Txt variant="body" style={{ flex: 1 }}>
+                {state === 'rejected' ? `Il documento non è stato accettato: ${(identity.reason ?? 'riprova con foto più nitide').replace(/[.\s]+$/, '')}. ` : ''}
+                {identity.canAct
+                  ? `Hai tempo fino al ${dateIt(identity.deadline)} per caricarlo.`
+                  : 'Il tempo per caricarlo è scaduto: finché non lo verifichiamo puoi solo guardare.'}
+              </Txt>
+            </View>
+
+            <View style={{ gap: space[2] }}>
+              <Txt variant="title">Perché lo chiediamo</Txt>
+              <Txt variant="body" tone={color.paperDim}>
+                Virale è aperta dai 14 anni. Per esserne sicuri un amministratore confronta il documento con nome, cognome e data di nascita che hai dato
+                all’iscrizione. Le foto le vede solo lui e vengono cancellate appena ha deciso: teniamo solo l’esito.
+              </Txt>
+            </View>
+
+            <Slot
+              title="1. Il documento"
+              hint="Carta d’identità, patente o passaporto: il lato con foto e data di nascita, tutto dentro l’inquadratura e leggibile."
+              uri={doc}
+              onCamera={() => void pick('doc', true)}
+              onGallery={() => void pick('doc', false)}
+            />
+            <Slot
+              title="2. Un selfie con il documento"
+              hint="Tieni il documento accanto al viso, senza coprirlo: serve a capire che è proprio il tuo."
+              uri={selfie}
+              onCamera={() => void pick('selfie', true)}
+              onGallery={() => void pick('selfie', false)}
+            />
+
+            {error ? (
+              <Txt variant="small" tone={color.matita}>
+                {error}
+              </Txt>
+            ) : null}
+            <Press style={[styles.cta, (!doc || !selfie || busy) && styles.off]} onPress={() => void send()} disabled={!doc || !selfie || busy} accessibilityRole="button">
+              {busy ? (
+                <ActivityIndicator color={color.canvas} />
+              ) : (
+                <Txt variant="label" tone={color.canvas}>
+                  Invia per la verifica
+                </Txt>
+              )}
+            </Press>
+          </>
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+function Slot({ title, hint, uri, onCamera, onGallery }: { title: string; hint: string; uri: string | null; onCamera: () => void; onGallery: () => void }) {
+  return (
+    <View style={styles.slot}>
+      <Txt variant="label">{title}</Txt>
+      <Txt variant="small" tone={color.paperDim}>
+        {hint}
+      </Txt>
+      {uri ? <Image source={{ uri }} style={styles.preview} contentFit="cover" accessibilityLabel={`Anteprima: ${title}`} /> : null}
+      <View style={styles.row}>
+        {Platform.OS !== 'web' ? (
+          <Press style={styles.pill} onPress={onCamera} accessibilityRole="button" accessibilityLabel={`Scatta: ${title}`}>
+            <Icon name="fotocamera" size={18} />
+            <Txt variant="meta">{uri ? 'Rifai' : 'Scatta'}</Txt>
+          </Press>
+        ) : null}
+        <Press style={styles.pill} onPress={onGallery} accessibilityRole="button" accessibilityLabel={`Scegli dalla galleria: ${title}`}>
+          <Icon name="galleria" size={18} />
+          <Txt variant="meta">Dalla galleria</Txt>
+        </Press>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: color.canvas },
+  bar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space[4], paddingVertical: space[2] },
+  round: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
+  state: { flexDirection: 'row', gap: space[3], alignItems: 'flex-start', backgroundColor: color.raised, borderRadius: radius.card, padding: space[4] },
+  ok: { borderWidth: 1, borderColor: color.verde },
+  warn: { borderWidth: 1, borderColor: color.matita },
+  slot: { gap: space[2], backgroundColor: color.raised, borderRadius: radius.card, padding: space[4] },
+  preview: { width: '100%', aspectRatio: 1.5, borderRadius: radius.control, backgroundColor: color.sheet },
+  row: { flexDirection: 'row', gap: space[2], marginTop: space[1] },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: color.sheet, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 9 },
+  cta: { backgroundColor: color.giallo, borderRadius: radius.control, paddingVertical: 16, alignItems: 'center', minHeight: 52, justifyContent: 'center' },
+  off: { opacity: 0.45 },
+});

@@ -7,12 +7,13 @@ senza restrizioni di accesso").
 ---
 
 ## Accesso
-Non servono credenziali. L'app crea un account anonimo al primo avvio: basta scegliere un nome utente,
-spuntare la casella dei Termini e toccare "Entra". Non chiediamo email, telefono o password.
+Account di prova già verificato (crealo prima di inviare l'app e scrivi qui le credenziali):
+- Nome utente: `<revisore_apple>` — Password: `<password>`
 
-Note: a new account cannot vote in the daily contest for its first 24 hours (anti-fraud).
-Every other feature — browsing, posting photos/videos, commenting, liking, following, reporting,
-blocking and deleting the account — works immediately.
+Oppure il revisore può registrarsi: nome, cognome, data di nascita, nome utente e password (niente email).
+Note for the reviewer: a new account must confirm its age within 7 days by uploading a photo of an ID
+document and a selfie; until the deadline every feature works. New accounts cannot vote in the daily
+contest for their first 24 hours (anti-fraud). Reporting, blocking and account deletion work immediately.
 
 ## User-generated content (Guideline 1.2)
 - Terms of Service and Community Guidelines must be accepted before creating an account

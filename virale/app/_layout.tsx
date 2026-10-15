@@ -66,6 +66,10 @@ export default function RootLayout() {
                   />
                   <Stack.Screen name="impostazioni" />
                   <Stack.Screen name="moderazione" />
+                  <Stack.Screen name="amministrazione" />
+                  <Stack.Screen name="verifica" />
+                  <Stack.Screen name="notifiche" />
+                  <Stack.Screen name="seguaci/[username]" />
                   <Stack.Screen name="legale/[doc]" />
                   <Stack.Screen name="utente/[username]" />
                   <Stack.Screen name="post/[id]" />

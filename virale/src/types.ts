@@ -26,6 +26,8 @@ export type Post = {
   commentCount: number;
   saveCount: number;
   shareCount: number;
+  /** Visualizzazioni: una per persona al giorno. */
+  viewCount: number;
   likedByMe: boolean;
   savedByMe: boolean;
   /** Segui già l'autore. */
@@ -49,9 +51,12 @@ export type Profile = Author & {
   followers: number;
   following: number;
   covers: number;
+  /** Visualizzazioni totali dei suoi post. */
+  views: number;
   followedByMe: boolean;
   isMe: boolean;
   isModerator: boolean;
+  isAdmin: boolean;
 };
 
 /** La copertina: il post vincitore di un giorno, visto da tutti il giorno dopo. */
@@ -77,3 +82,52 @@ export type Me = Author;
 export type DraftMedia = { uri: string; kind: 'image' | 'video'; width: number; height: number; durationMs?: number; mimeType?: string };
 
 export type NewPost = { media: DraftMedia[]; caption: string; joinContest: boolean };
+
+export type RegisterInput = {
+  username: string;
+  firstName: string;
+  lastName: string;
+  /** AAAA-MM-GG */
+  birthDate: string;
+  password: string;
+  acceptedTerms: boolean;
+};
+
+export type IdentityStatus = 'missing' | 'pending' | 'approved' | 'rejected';
+
+export type Settings = { revealMinutes: number; idGraceDays: number; cutoffHour: number };
+
+/** Lo stato dell'utente che serve all'app: verifica dell'età, ruoli, notifiche non lette, impostazioni. */
+export type Status = {
+  identity: { status: IdentityStatus; deadline: string; reason: string | null; canAct: boolean } | null;
+  isModerator: boolean;
+  isAdmin: boolean;
+  unread: number;
+  settings: Settings;
+};
+
+export type NotificationKind = 'follow' | 'like' | 'comment' | 'tier' | 'cover' | 'identity_ok' | 'identity_ko' | 'removed';
+
+export type AppNotification = {
+  id: string;
+  kind: NotificationKind;
+  actor: Author | null;
+  post: { id: string; media: MediaItem[] } | null;
+  data: { body?: string; tier?: number; featured_on?: string; reason?: string | null };
+  createdAt: string;
+  read: boolean;
+};
+
+export type FollowRow = Author & { followedByMe: boolean; isMe: boolean };
+
+export type IdentityItem = {
+  userId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  birthDate: string;
+  documentUrl: string | null;
+  selfieUrl: string | null;
+  submittedAt: string;
+  deadline: string;
+};

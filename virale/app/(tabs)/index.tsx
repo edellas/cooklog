@@ -6,7 +6,7 @@ import { haptic, Press } from '../../src/components/Press';
 import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { color } from '../../src/design/tokens';
-import { arenaDay } from '../../src/engine/engine';
+import { coverDay } from '../../src/engine/engine';
 import { CoverView } from '../../src/screens/CoverView';
 import { closeDayNowDemo, getTodayCover, isDemo } from '../../src/services/api';
 import { getJson, setJson } from '../../src/services/storage';
@@ -22,6 +22,9 @@ export default function CoverTab() {
   const [failed, setFailed] = useState(false);
   const [reveal, setReveal] = useState(false);
   const loadedDay = useRef('');
+  const { status } = useSession();
+  const revealRef = useRef(0);
+  revealRef.current = status?.settings.revealMinutes ?? 0;
   /** Ricarica solo la copertina (non tutta l'app, che farebbe ripartire anche il feed). */
   const [tick, setTick] = useState(0);
 
@@ -33,7 +36,8 @@ export default function CoverTab() {
       if (!me) return;
       let alive = true;
       void (async () => {
-        const today = arenaDay();
+        // Il "giorno" della copertina dipende dall'orario di rivelazione scelto dall'amministratore.
+        const today = coverDay(revealRef.current);
         let next: Cover | null;
         try {
           next = await getTodayCover();
@@ -65,7 +69,7 @@ export default function CoverTab() {
   // Riaprendo l'app il giorno dopo (dal multitasking) la copertina si aggiorna da sola.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && loadedDay.current && loadedDay.current !== arenaDay()) bump();
+      if (state === 'active' && loadedDay.current && loadedDay.current !== coverDay(revealRef.current)) setTick((n) => n + 1);
     });
     return () => sub.remove();
   }, [bump]);

@@ -12,6 +12,7 @@ import { color, space } from '../../src/design/tokens';
 import { getPost } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
+import { queueView } from '../../src/state/views';
 import type { Post } from '../../src/types';
 
 export default function PostScreen() {
@@ -34,6 +35,7 @@ export default function PostScreen() {
         if (!alive) return;
         loaded.current = true;
         setPost(p);
+        queueView(p.id);
       })
       .catch((e: Error) => {
         if (!alive) return;

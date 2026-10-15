@@ -44,7 +44,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         heading: 'Chi può usare Virale',
         body: [
           `Devi avere almeno ${MIN_AGE} anni. Se hai meno di 18 anni, usa Virale solo con il permesso di un genitore o di chi ne fa le veci.`,
-          'Un account è personale. Non puoi crearne più di uno per partecipare alla gara né cederlo ad altri.',
+          'Per registrarti indichi il tuo vero nome, cognome e data di nascita, un nome utente e una password. Un account è personale: non puoi crearne più di uno per partecipare alla gara né cederlo ad altri, e sei responsabile di custodire la password.',
+          'Entro il periodo indicato nell’app (di regola 7 giorni) devi confermare la tua età caricando la foto di un documento d’identità e un selfie con il documento. Finché non lo fai, scaduto il periodo, puoi guardare ma non pubblicare, commentare, mettere mi piace, seguire né votare. Se il documento dimostra un’età inferiore al minimo, l’account viene chiuso.',
         ],
       },
       {
@@ -97,9 +98,11 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Quali dati trattiamo',
         body: [
-          'Account: nome utente, nome visualizzato, eventuale bio, un identificativo tecnico dell’account, data di accettazione dei termini.',
+          'Account: nome utente, password (conservata solo in forma cifrata, non la vediamo), nome visualizzato (il tuo nome e l’iniziale del cognome), eventuale bio, un identificativo tecnico dell’account, data di accettazione dei termini.',
+          'Dati privati, che non mostriamo agli altri utenti: nome, cognome e data di nascita.',
+          'Verifica dell’età: la foto del documento d’identità e un selfie con il documento, che servono solo a confermare la tua età. Le vede soltanto un amministratore e le cancelliamo appena presa la decisione; conserviamo solo l’esito, la data e chi ha deciso.',
           'Contenuti: foto e video che pubblichi (con le loro dimensioni e durata), didascalie, commenti.',
-          'Interazioni: mi piace, salvataggi, condivisioni, follow, blocchi, segnalazioni, e per i post in gara il tempo di visione, il completamento e la ri-visione dei video.',
+          'Interazioni: mi piace, salvataggi, condivisioni, follow, blocchi, segnalazioni, visualizzazioni dei post, e per i post in gara il tempo di visione, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
           'Non chiediamo email, numero di telefono, posizione o rubrica. Non usiamo pubblicità né tracciamento tra app di altre aziende.',
         ],
       },
@@ -108,6 +111,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           'Fornire il servizio, mostrare i contenuti e far funzionare la gara: esecuzione del contratto (art. 6.1.b GDPR).',
           'Sicurezza, moderazione, prevenzione di abusi e di manipolazioni della gara: legittimo interesse (art. 6.1.f) e obblighi di legge (art. 6.1.c).',
+          `Verifica dell’età: obbligo di legge sull’età minima per i servizi online (art. 2-quinquies del Codice privacy, ${MIN_AGE} anni) e legittimo interesse a proteggere i minori (art. 6.1.c e 6.1.f). Non usiamo riconoscimento facciale automatico: il confronto lo fa una persona.`,
         ],
       },
       {
@@ -122,7 +126,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         heading: 'Quanto li conserviamo',
         body: [
           'Finché l’account esiste. Quando elimini un post o l’account, i dati vengono cancellati dai sistemi attivi subito e dalle copie di sicurezza entro 30 giorni.',
-          'I dati tecnici delle singole visualizzazioni della gara vengono cancellati dopo 7 giorni.',
+          'I dati tecnici delle singole visualizzazioni della gara vengono cancellati dopo 7 giorni; quelli delle visualizzazioni dei post dopo 2 giorni (resta solo il conteggio).',
+          'Le foto del documento e del selfie vengono cancellate appena l’amministratore decide, e comunque eliminando l’account.',
           'Le segnalazioni e le decisioni di moderazione possono essere conservate fino a 12 mesi per gestire ricorsi e abusi ripetuti.',
         ],
       },

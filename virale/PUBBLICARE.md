@@ -62,10 +62,24 @@ contenuti degli utenti, aperto dai 14 anni.
    Scegli una password del database lunga e salvala.
 2. **SQL Editor → New query**: incolla tutto `supabase/schema.sql` → **Run**.
 3. Nuova query: incolla `supabase/setup-produzione.sql` → **Run**.
-   Crea il bucket `media` per foto e video, i permessi sui file e la chiusura automatica a mezzanotte.
-4. **Authentication → Sign In / Providers** → attiva **Allow anonymous sign-ins** → Save.
-   (L'app non chiede email né password: basta un nome utente.)
-5. **Project Settings → API** (o *API Keys*): copia
+   Crea i bucket `media` (foto e video, pubblico) e `documenti` (documenti d'identità, privato),
+   i permessi sui file e la chiusura automatica a mezzanotte.
+4. **Authentication → Sign In / Providers**:
+   - **Email**: attivo, ma con **Confirm email** spento. L'app si accede con nome utente e password:
+     Supabase vuole un'email, quindi l'app ne usa una interna (`nomeutente@utenti.virale.invalid`) che non riceve posta.
+   - **Allow anonymous sign-ins**: spento (non serve più).
+   - In **Authentication → Policies** (o *Password*): lunghezza minima della password **8**.
+5. Dopo esserti registrato dall'app, diventa amministratore (modera, verifica i documenti, sceglie l'orario della copertina):
+   ```sql
+   update public.profiles set is_admin = true where username = 'il_tuo_username';
+   ```
+6. **Password dimenticata** di un utente (non c'è email per il recupero): dopo aver verificato che l'account è suo,
+   reimpostala dal SQL Editor e comunicagliela, chiedendogli di cambiarla da Impostazioni → Cambia password:
+   ```sql
+   update auth.users set encrypted_password = crypt('NuovaPassword123', gen_salt('bf'))
+   where email = 'nomeutente@utenti.virale.invalid';
+   ```
+7. **Project Settings → API** (o *API Keys*): copia
    - **Project URL** (tipo `https://abcd1234.supabase.co`)
    - **anon / publishable key** (la chiave pubblica; **mai** la `service_role`).
 
@@ -132,13 +146,14 @@ Alla fine EAS ti dà un link/QR: aprilo dal telefono e installa l'APK. Controlla
 - "···" sotto un post → Segnala e Blocca;
 - Profilo → impostazioni → Elimina account.
 
-Poi nomina te stesso moderatore. In Supabase, **SQL Editor**:
+Poi nomina te stesso amministratore. In Supabase, **SQL Editor**:
 
 ```sql
-update public.profiles set is_moderator = true where username = 'il_tuo_username';
+update public.profiles set is_admin = true where username = 'il_tuo_username';
 ```
 
-Nell'app comparirà **Impostazioni → Moderazione**.
+Nell'app compariranno **Impostazioni → Amministrazione** (orario della copertina, documenti da verificare)
+e **Segnalazioni da rivedere**. Per un moderatore che non verifica documenti: `set is_moderator = true`.
 
 Su iPhone si prova tramite TestFlight (passo 7).
 

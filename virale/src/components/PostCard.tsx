@@ -156,7 +156,7 @@ export const PostCard = memo(function PostCard({
                 {post.author.displayName}
               </Txt>
               <Txt variant="meta" tone={color.paperFaint} numberOfLines={1}>
-                @{post.author.username} · {timeAgo(post.createdAt)}
+                @{post.author.username} · {timeAgo(post.createdAt)} · {formatCount(post.viewCount)} {post.viewCount === 1 ? 'visualizzazione' : 'visualizzazioni'}
               </Txt>
             </View>
           </Press>

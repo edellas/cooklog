@@ -37,7 +37,14 @@ export type IconName =
   | 'blocca'
   | 'scudo'
   | 'posta'
-  | 'documento';
+  | 'documento'
+  | 'campanella'
+  | 'occhio'
+  | 'esci'
+  | 'chiave'
+  | 'persone'
+  | 'meno'
+  | 'piu';
 
 export function Icon({
   name,
@@ -190,6 +197,35 @@ export function Icon({
             );
           case 'documento':
             return <Path d="M7 3.5h7l4 4v13H7Z M14 3.5v4h4 M9.5 12h6M9.5 15.5h6" {...p} />;
+          case 'campanella':
+            return <Path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2H4.5ZM10 20.5a2.2 2.2 0 0 0 4 0" {...p} />;
+          case 'occhio':
+            return (
+              <>
+                <Path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" {...p} />
+                <Circle cx={12} cy={12} r={2.8} {...p} />
+              </>
+            );
+          case 'esci':
+            return <Path d="M14 4.5H7.5A2 2 0 0 0 5.5 6.5v11a2 2 0 0 0 2 2H14M10.5 12h10M17 8.5l3.5 3.5-3.5 3.5" {...p} />;
+          case 'chiave':
+            return (
+              <>
+                <Circle cx={8} cy={14} r={4} {...p} />
+                <Path d="M11 11l8.5-8.5M16.5 5.5l2.5 2.5M14.5 7.5l2 2" {...p} />
+              </>
+            );
+          case 'persone':
+            return (
+              <>
+                <Circle cx={9} cy={8.5} r={3.25} {...p} />
+                <Path d="M3 19.5c.9-3.2 3.2-4.8 6-4.8s5.1 1.6 6 4.8M15.5 5.6a3.2 3.2 0 0 1 0 6M17.5 14.9c1.7.5 2.9 2 3.5 4.6" {...p} />
+              </>
+            );
+          case 'meno':
+            return <Path d="M6 12h12" {...p} />;
+          case 'piu':
+            return <Path d="M12 6v12M6 12h12" {...p} />;
           case 'info':
             return (
               <>

@@ -11,7 +11,8 @@ import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { DOCS, OWNER, type DocSlug } from '../src/legal/docs';
-import { deleteAccount, getProfile, isDemo, listBlocked, unblockUser } from '../src/services/api';
+import { changePassword, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, unblockUser } from '../src/services/api';
+import { Field } from '../src/components/Field';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { Author } from '../src/types';
@@ -21,9 +22,8 @@ export default function Settings() {
   const router = useRouter();
   const goBack = useGoBack();
   const toast = useToast();
-  const { me, setMe, bump } = useSession();
+  const { me, setMe, bump, status } = useSession();
   const [blocked, setBlocked] = useState<Author[] | null>(null);
-  const [isModerator, setIsModerator] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,8 +38,7 @@ export default function Settings() {
       void listBlocked()
         .then(setBlocked)
         .catch(() => setBlocked([]));
-      if (me) void getProfile(me.username).then((d) => setIsModerator(d.profile.isModerator)).catch(() => undefined);
-    }, [me]),
+    }, []),
   );
 
   const unblock = async (a: Author) => {
@@ -54,6 +53,15 @@ export default function Settings() {
       toast((e as Error).message, 'error');
     } finally {
       setUnblocking(null);
+    }
+  };
+
+  const exit = async () => {
+    try {
+      await logout();
+      setMe(null);
+    } catch (e) {
+      toast((e as Error).message, 'error');
     }
   };
 
@@ -86,11 +94,38 @@ export default function Settings() {
         <View style={{ width: 40 }} />
       </View>
       <ScrollView contentContainerStyle={{ padding: space[5], paddingBottom: insets.bottom + space[10], gap: space[8] }}>
-        {isModerator ? (
-          <Section title="Moderazione">
+        {status?.isAdmin || status?.isModerator ? (
+          <Section title={status.isAdmin ? 'Amministrazione' : 'Moderazione'}>
+            {status.isAdmin ? (
+              <Row icon="impostazioni" label="Copertina e documenti" hint="Orario della copertina, verifica dell’età." onPress={() => router.push('/amministrazione' as Href)} />
+            ) : null}
             <Row icon="scudo" label="Segnalazioni da rivedere" hint="Rispondi entro 24 ore: è un requisito degli store." onPress={() => router.push('/moderazione' as Href)} />
           </Section>
         ) : null}
+
+        <Section title="Il tuo account">
+          <Row
+            icon="documento"
+            label="Verifica dell’età"
+            hint={
+              status?.identity?.status === 'approved'
+                ? 'Verificata.'
+                : status?.identity?.status === 'pending'
+                  ? 'Documento in controllo.'
+                  : status?.identity?.canAct === false
+                    ? 'Scaduta: carica il documento per tornare a pubblicare.'
+                    : 'Da fare: carica il documento d’identità.'
+            }
+            onPress={() => router.push('/verifica' as Href)}
+          />
+          <PasswordChange />
+          <Press style={styles.row} onPress={() => void exit()} accessibilityRole="button">
+            <Icon name="esci" size={22} />
+            <Txt variant="label" style={{ flex: 1 }}>
+              Esci
+            </Txt>
+          </Press>
+        </Section>
 
         <Section title="Utenti bloccati">
           {blocked === null ? (
@@ -145,6 +180,63 @@ export default function Settings() {
           ) : null}
         </Section>
       </ScrollView>
+    </View>
+  );
+}
+
+function PasswordChange() {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!open) {
+    return (
+      <Press style={styles.row} onPress={() => setOpen(true)} accessibilityRole="button">
+        <Icon name="chiave" size={22} />
+        <Txt variant="label" style={{ flex: 1 }}>
+          Cambia password
+        </Txt>
+        <Icon name="destra" size={20} color={color.paperFaint} />
+      </Press>
+    );
+  }
+  const save = async () => {
+    try {
+      setBusy(true);
+      setError(null);
+      await changePassword(current, next);
+      toast('Password cambiata.');
+      setOpen(false);
+      setCurrent('');
+      setNext('');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={[styles.row, { flexDirection: 'column', alignItems: 'stretch', gap: space[3] }]}>
+      <Txt variant="label">Cambia password</Txt>
+      <Field value={current} onChangeText={setCurrent} placeholder="Password attuale" secureTextEntry autoCapitalize="none" accessibilityLabel="Password attuale" maxLength={72} />
+      <Field value={next} onChangeText={setNext} placeholder={`Nuova password (almeno ${PASSWORD_MIN} caratteri)`} secureTextEntry autoCapitalize="none" accessibilityLabel="Nuova password" maxLength={72} />
+      {error ? (
+        <Txt variant="small" tone={color.matita}>
+          {error}
+        </Txt>
+      ) : null}
+      <View style={{ flexDirection: 'row', gap: space[2] }}>
+        <Press style={[styles.pill, { backgroundColor: color.giallo, borderColor: color.giallo }]} onPress={() => void save()} disabled={busy || !current || !next} accessibilityRole="button">
+          <Txt variant="meta" tone={color.canvas}>
+            {busy ? 'Salvo…' : 'Salva'}
+          </Txt>
+        </Press>
+        <Press style={styles.pill} onPress={() => setOpen(false)} accessibilityRole="button">
+          <Txt variant="meta">Annulla</Txt>
+        </Press>
+      </View>
     </View>
   );
 }

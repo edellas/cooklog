@@ -18,12 +18,13 @@ import { resolveMedia } from '../data/demoMedia';
 import { clock, formatCount, longDate } from '../design/format';
 import { duration, ease } from '../design/motion';
 import { color, font, radius, space } from '../design/tokens';
-import { msUntilArenaClose } from '../engine/engine';
+import { msUntilReveal } from '../engine/engine';
 import { registerShare, toggleLike, toggleSave } from '../services/api';
 import { shareText } from '../services/share';
 import { emitPostChange, onPostChange, withRecentChanges } from '../state/postEvents';
 import { useSession } from '../state/session';
 import { useGoBack } from '../state/useGoBack';
+import { queueView } from '../state/views';
 import type { Cover } from '../types';
 
 /**
@@ -52,7 +53,14 @@ export function CoverView({
   const reduced = useReducedMotion();
   // I tab restano montati: fuori fuoco la copertina non deve continuare a riprodurre video.
   const focused = useIsFocused();
-  const { me } = useSession();
+  const { me, status } = useSession();
+  const revealMinutes = status?.settings.revealMinutes ?? 0;
+  // Vista della copertina: dopo un secondo sullo schermo.
+  useEffect(() => {
+    if (!focused) return;
+    const id = setTimeout(() => queueView(cover.post.id), 1000);
+    return () => clearTimeout(id);
+  }, [focused, cover.post.id]);
   const [post, setPost] = useState(() => withRecentChanges(cover.post));
   const [muted, setMuted] = useState(true);
 
@@ -200,7 +208,7 @@ export function CoverView({
         {isToday ? (
           <View style={styles.band}>
             <Icon name="orologio" size={18} color={color.canvas} strokeWidth={2} />
-            <Countdown onEnd={onDayEnd} />
+            <Countdown onEnd={onDayEnd} revealMinutes={revealMinutes} />
             <Press onPress={() => router.push('/regole' as Href)} accessibilityRole="button">
               <Txt variant="meta" tone={color.canvas} style={styles.link}>
                 Come si sceglie
@@ -221,19 +229,19 @@ export function CoverView({
 }
 
 /** Conto alla rovescia in un componente suo: aggiornarlo ogni secondo non ridisegna la copertina (e il video). */
-function Countdown({ onEnd }: { onEnd?: () => void }) {
-  const [left, setLeft] = useState(() => msUntilArenaClose());
+function Countdown({ onEnd, revealMinutes }: { onEnd?: () => void; revealMinutes: number }) {
+  const [left, setLeft] = useState(() => msUntilReveal(revealMinutes));
   const prev = useRef(left);
   useEffect(() => {
     const id = setInterval(() => {
-      const next = msUntilArenaClose();
+      const next = msUntilReveal(revealMinutes);
       // Passata la mezzanotte il conto risale a 24 ore: è il segnale che c'è una copertina nuova.
       if (next > prev.current + 60_000) onEnd?.();
       prev.current = next;
       setLeft(next);
     }, 1000);
     return () => clearInterval(id);
-  }, [onEnd]);
+  }, [onEnd, revealMinutes]);
   return (
     <Txt variant="label" tone={color.canvas} style={{ flex: 1 }}>
       Prossima copertina tra {clock(left)}

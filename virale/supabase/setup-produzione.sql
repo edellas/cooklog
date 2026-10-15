@@ -24,6 +24,24 @@ drop policy if exists "media delete own" on storage.objects;
 create policy "media delete own" on storage.objects for delete to authenticated
   using (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text);
 
+-- 2b) Bucket PRIVATO "documenti" per la verifica dell'età: 10 MB a file, solo immagini.
+--     Ognuno carica nella propria cartella; leggono solo l'interessato e gli amministratori;
+--     l'app dell'amministratore cancella i file appena presa la decisione.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('documenti', 'documenti', false, 10485760, array['image/*'])
+on conflict (id) do update
+  set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "documenti upload own" on storage.objects;
+create policy "documenti upload own" on storage.objects for insert to authenticated
+  with check (bucket_id = 'documenti' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "documenti read own or admin" on storage.objects;
+create policy "documenti read own or admin" on storage.objects for select to authenticated
+  using (bucket_id = 'documenti' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin(auth.uid())));
+drop policy if exists "documenti delete own or admin" on storage.objects;
+create policy "documenti delete own or admin" on storage.objects for delete to authenticated
+  using (bucket_id = 'documenti' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin(auth.uid())));
+
 -- 3) Chiusura della giornata a mezzanotte (ora di Roma): sceglie la Copertina.
 --    pg_cron ragiona in UTC: la mezzanotte italiana è alle 22:00 UTC d'estate e alle 23:00 UTC d'inverno.
 --    Gira un minuto dopo entrambe: una delle due è la mezzanotte giusta, l'altra non fa nulla
@@ -33,8 +51,10 @@ select cron.unschedule(jobid) from cron.job where jobname = 'arena-close-day';
 select cron.schedule(
   'arena-close-day',
   '1 22,23 * * *',
-  $$ select public.arena_close_day(public.arena_today() - 1) $$
+  $$ select public.arena_close_day(public.arena_today() - 1);
+     delete from public.post_views where day < public.arena_today() - 1 $$
 );
 
--- 4) Moderatori: DOPO esserti iscritto dall'app, togli i due trattini e metti il tuo nome utente.
--- update public.profiles set is_moderator = true where username = 'il_tuo_username';
+-- 4) Amministratore: DOPO esserti registrato dall'app, togli i due trattini e metti il tuo nome utente.
+--    L'amministratore modera, verifica i documenti e sceglie l'orario della copertina.
+-- update public.profiles set is_admin = true where username = 'il_tuo_username';

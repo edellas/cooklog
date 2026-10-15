@@ -22,6 +22,8 @@ create table if not exists public.profiles (
   -- Accettazione di termini e linee guida (con dichiarazione di almeno 14 anni): obbligatoria per iscriversi.
   terms_accepted_at timestamptz not null default now(),
   is_moderator boolean not null default false,
+  -- L'amministratore modera e in più verifica i documenti e cambia le impostazioni (orario della copertina).
+  is_admin boolean not null default false,
   banned_at timestamptz,
   created_at timestamptz not null default now()
 );
@@ -53,6 +55,7 @@ create table if not exists public.posts (
   comment_count int not null default 0,
   save_count int not null default 0,
   share_count int not null default 0,
+  view_count int not null default 0,
   -- Nascosto dalla moderazione o dalle segnalazioni: non compare più da nessuna parte.
   hidden_at timestamptz,
   hidden_reason text,
@@ -134,6 +137,64 @@ returns boolean language sql stable security definer set search_path = public, p
   select exists (select 1 from profiles where id = p_uid and banned_at is null);
 $$;
 
+alter table public.profiles add column if not exists is_admin boolean not null default false;
+
+create or replace function public.is_staff(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (select 1 from profiles where id = p_uid and banned_at is null and (is_moderator or is_admin));
+$$;
+create or replace function public.is_admin(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (select 1 from profiles where id = p_uid and banned_at is null and is_admin);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Dati personali e verifica dell'età (privati: li leggono solo l'interessato e l'amministratore)
+-- ---------------------------------------------------------------------------
+create table if not exists public.profile_private (
+  id uuid primary key references public.profiles(id) on delete cascade,
+  first_name text not null check (length(trim(first_name)) between 1 and 60),
+  last_name text not null check (length(trim(last_name)) between 1 and 60),
+  birth_date date not null check (birth_date >= date '1900-01-01'),
+  created_at timestamptz not null default now()
+);
+alter table public.profile_private enable row level security;
+drop policy if exists "private own" on public.profile_private;
+create policy "private own" on public.profile_private for select to authenticated using (id = auth.uid());
+revoke all on public.profile_private from anon;
+revoke insert, update, delete on public.profile_private from authenticated;
+
+-- Il documento d'identità: si carica entro una scadenza; lo controlla a mano un amministratore e
+-- i file si cancellano appena deciso. Restano solo esito, date e chi ha deciso.
+create table if not exists public.identity_checks (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  status text not null default 'missing' check (status in ('missing', 'pending', 'approved', 'rejected')),
+  deadline timestamptz not null,
+  document_path text,
+  selfie_path text,
+  submitted_at timestamptz,
+  reviewed_at timestamptz,
+  reviewed_by uuid references public.profiles(id) on delete set null,
+  reject_reason text check (length(reject_reason) <= 200)
+);
+create index if not exists idx_identity_pending on public.identity_checks (submitted_at) where status = 'pending';
+alter table public.identity_checks enable row level security;
+drop policy if exists "identity own" on public.identity_checks;
+create policy "identity own" on public.identity_checks for select to authenticated using (user_id = auth.uid());
+revoke all on public.identity_checks from anon;
+revoke insert, update, delete on public.identity_checks from authenticated;
+
+/**
+ * Può pubblicare, commentare, mettere mi piace, seguire e votare: account attivo e documento approvato,
+ * oppure ancora dentro il periodo concesso per caricarlo. Scaduto il periodo si guarda soltanto.
+ */
+create or replace function public.can_act(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select public.is_active(p_uid) and exists (
+    select 1 from identity_checks where user_id = p_uid and (status = 'approved' or now() < deadline)
+  );
+$$;
+
 /** Vero se uno dei due ha bloccato l'altro: in quel caso non si vedono più a vicenda. */
 -- Chi chiama può chiedere solo dei blocchi che lo riguardano: i blocchi altrui sono privati.
 create or replace function public.is_blocked_pair(a uuid, b uuid)
@@ -164,6 +225,7 @@ begin
   if tg_table_name = 'profiles' then
     new.created_at := now();
     new.is_moderator := false;
+    new.is_admin := false;
     new.banned_at := null;
     new.terms_accepted_at := now();
   elsif tg_table_name = 'posts' then
@@ -172,6 +234,7 @@ begin
     new.comment_count := 0;
     new.save_count := 0;
     new.share_count := 0;
+    new.view_count := 0;
     new.hidden_at := null;
     new.hidden_reason := null;
   else
@@ -232,10 +295,11 @@ drop policy if exists "profiles insert own" on public.profiles;
 -- Data di creazione, ruolo ed espulsione li impone il trigger force_server_fields: un client non può
 -- retrodatare l'account (per votare subito) né nominarsi moderatore.
 create policy "profiles insert own" on public.profiles for insert to authenticated with check (auth.uid() = id);
+-- La registrazione passa da complete_registration (età, dati privati, scadenza del documento): niente insert diretti.
 -- Dei profili altrui si leggono solo i campi pubblici.
 revoke select, insert on public.profiles from anon, authenticated;
 grant select (id, username, display_name, bio, created_at) on public.profiles to authenticated;
-grant insert (id, username, display_name, bio, terms_accepted_at) on public.profiles to authenticated;
+revoke insert on public.profiles from authenticated;
 drop policy if exists "profiles update own" on public.profiles;
 create policy "profiles update own" on public.profiles for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
 -- Ruolo di moderatore ed espulsione non si cambiano dal client: dal client si aggiornano solo nome e bio.
@@ -248,7 +312,7 @@ create policy "posts readable" on public.posts for select to authenticated using
 drop policy if exists "posts insert own" on public.posts;
 -- Contatori, data e stato li impone il trigger: un client non può inserire un post con 10.000 like o datato nel futuro.
 create policy "posts insert own" on public.posts for insert to authenticated
-  with check (auth.uid() = author_id and public.is_active(auth.uid()));
+  with check (auth.uid() = author_id and public.can_act(auth.uid()));
 revoke all on public.posts from anon;
 revoke insert, update on public.posts from authenticated;
 grant insert (author_id, media, caption) on public.posts to authenticated;
@@ -263,7 +327,7 @@ drop policy if exists "likes insert own" on public.post_likes;
 drop policy if exists "likes delete own" on public.post_likes;
 create policy "likes select own" on public.post_likes for select to authenticated using (auth.uid() = user_id);
 create policy "likes insert own" on public.post_likes for insert to authenticated
-  with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
+  with check (auth.uid() = user_id and public.can_act(auth.uid()) and public.can_see(post_id, auth.uid()));
 create policy "likes delete own" on public.post_likes for delete to authenticated using (auth.uid() = user_id);
 drop policy if exists "saves own" on public.post_saves;
 drop policy if exists "saves select own" on public.post_saves;
@@ -271,7 +335,7 @@ drop policy if exists "saves insert own" on public.post_saves;
 drop policy if exists "saves delete own" on public.post_saves;
 create policy "saves select own" on public.post_saves for select to authenticated using (auth.uid() = user_id);
 create policy "saves insert own" on public.post_saves for insert to authenticated
-  with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
+  with check (auth.uid() = user_id and public.can_act(auth.uid()) and public.can_see(post_id, auth.uid()));
 create policy "saves delete own" on public.post_saves for delete to authenticated using (auth.uid() = user_id);
 revoke all on public.post_likes, public.post_saves, public.post_shares from anon;
 revoke update on public.post_likes, public.post_saves, public.post_shares from authenticated;
@@ -285,14 +349,14 @@ revoke insert, update on public.comments from authenticated;
 grant insert (post_id, user_id, body) on public.comments to authenticated;
 drop policy if exists "comments insert own" on public.comments;
 create policy "comments insert own" on public.comments for insert to authenticated
-  with check (auth.uid() = user_id and public.is_active(auth.uid()) and public.can_see(post_id, auth.uid()));
+  with check (auth.uid() = user_id and public.can_act(auth.uid()) and public.can_see(post_id, auth.uid()));
 drop policy if exists "comments delete own" on public.comments;
 create policy "comments delete own" on public.comments for delete to authenticated using (auth.uid() = user_id);
 drop policy if exists "follows readable" on public.follows;
 create policy "follows readable" on public.follows for select to authenticated using (auth.uid() in (follower_id, followee_id));
 drop policy if exists "follows own" on public.follows;
 create policy "follows own" on public.follows for insert to authenticated
-  with check (auth.uid() = follower_id and public.is_active(auth.uid()) and public.is_active(followee_id)
+  with check (auth.uid() = follower_id and public.can_act(auth.uid()) and public.is_active(followee_id)
               and not public.is_blocked_pair(follower_id, followee_id));
 revoke all on public.follows from anon;
 revoke update on public.follows from authenticated;
@@ -323,7 +387,11 @@ create table if not exists public.arena_config (
   submission_cutoff_hour int not null default 20,
   -- Le viste di account più giovani di così non contano (anti account-fantoccio).
   min_viewer_account_age interval not null default interval '24 hours',
-  stat_shards int not null default 16
+  stat_shards int not null default 16,
+  -- Minuti dopo la mezzanotte (ora di Roma) in cui compare la nuova copertina: lo decide l'amministratore.
+  reveal_minutes int not null default 0 check (reveal_minutes between 0 and 1439),
+  -- Giorni concessi ai nuovi iscritti per caricare il documento d'identità.
+  id_grace_days int not null default 7 check (id_grace_days between 1 and 60)
 );
 insert into public.arena_config default values on conflict do nothing;
 
@@ -335,6 +403,17 @@ $$;
 create or replace function public.arena_today()
 returns date language sql stable as $$
   select (now() at time zone (select time_zone from public.arena_config limit 1))::date;
+$$;
+
+-- Il giorno della copertina visibile adesso: la gara chiude a mezzanotte, ma la nuova copertina compare
+-- all'orario scelto dall'amministratore. Prima di quell'ora resta quella del giorno prima.
+create or replace function public.cover_day()
+returns date language sql stable as $$
+  select case
+    when extract(hour from l) * 60 + extract(minute from l) >= c.reveal_minutes then l::date
+    else l::date - 1 end
+  from public.arena_config c, lateral (select now() at time zone c.time_zone as l) t
+  limit 1;
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -443,8 +522,14 @@ create index if not exists idx_daily_viral_entry on public.daily_viral (entry_id
 -- ("create table if not exists" non modifica tabelle già esistenti). Rieseguirlo non fa danni.
 -- ---------------------------------------------------------------------------
 alter table public.arena_entries add column if not exists disqualified_reason text;
+alter table public.arena_config add column if not exists reveal_minutes int not null default 0 check (reveal_minutes between 0 and 1439);
+alter table public.arena_config add column if not exists id_grace_days int not null default 7 check (id_grace_days between 1 and 60);
+-- Chi esisteva prima della verifica dell'età ha il periodo standard per caricare il documento.
+insert into public.identity_checks (user_id, deadline)
+select id, now() + interval '7 days' from public.profiles on conflict do nothing;
 alter table public.arena_entries alter column post_id drop not null;
 alter table public.arena_views add column if not exists credited text[] not null default '{}';
+alter table public.posts add column if not exists view_count int not null default 0;
 alter table public.daily_viral alter column post_id drop not null;
 alter table public.reports alter column reported_user_id drop not null;
 alter table public.reports alter column reporter_id drop not null;
@@ -525,6 +610,7 @@ declare
   v_entry public.arena_entries;
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if not public.can_act(v_uid) then raise exception 'Per partecipare devi verificare la tua età: carica il documento dal profilo.'; end if;
   if extract(hour from now() at time zone v_cfg.time_zone) >= v_cfg.submission_cutoff_hour then
     raise exception 'Candidature chiuse per oggi: riprova domani.';
   end if;
@@ -611,6 +697,7 @@ returns jsonb language sql stable security definer set search_path = public, pg_
     'comment_count', p.comment_count,
     'save_count', p.save_count,
     'share_count', p.share_count,
+    'view_count', p.view_count,
     'liked', exists (select 1 from post_likes l where l.post_id = p.id and l.user_id = p_viewer),
     'saved', exists (select 1 from post_saves v where v.post_id = p.id and v.user_id = p_viewer),
     'following', exists (select 1 from follows f where f.follower_id = p_viewer and f.followee_id = p.author_id),
@@ -801,7 +888,7 @@ $$;
 create or replace function public.mod_queue()
 returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
-  if not exists (select 1 from profiles where id = auth.uid() and is_moderator) then raise exception 'Solo per i moderatori.'; end if;
+  if not public.is_staff(auth.uid()) then raise exception 'Solo per i moderatori.'; end if;
   return query
   select jsonb_build_object(
     'post', public.post_json(r.post_id, null),
@@ -825,7 +912,7 @@ declare
   v_uid uuid := auth.uid();
   v_author uuid;
 begin
-  if not exists (select 1 from profiles where id = v_uid and is_moderator) then raise exception 'Solo per i moderatori.'; end if;
+  if not public.is_staff(v_uid) then raise exception 'Solo per i moderatori.'; end if;
   if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
   select author_id into v_author from posts where id = p_post_id;
 
@@ -844,6 +931,8 @@ begin
   else
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = 'moderazione' where id = p_post_id;
     update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where post_id = p_post_id;
+    -- L'autore viene avvisato (e può scrivere al supporto se pensa sia un errore).
+    perform public.notify(v_author, 'removed', null, p_post_id);
   end if;
 
   if p_action = 'ban' then
@@ -859,7 +948,7 @@ create or replace function public.register_share(p_post_id uuid)
 returns void language sql security definer set search_path = public, pg_temp as $$
   insert into post_shares (post_id, user_id)
   select p_post_id, auth.uid()
-  where auth.uid() is not null and public.is_active(auth.uid()) and public.can_see(p_post_id, auth.uid())
+  where auth.uid() is not null and public.can_act(auth.uid()) and public.can_see(p_post_id, auth.uid())
   on conflict do nothing;
 $$;
 
@@ -879,10 +968,12 @@ begin
       'id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio,
       'followers', (select count(*) from follows where followee_id = v_pr.id),
       'following', (select count(*) from follows where follower_id = v_pr.id),
-      'covers', (select count(*) from daily_viral where author_id = v_pr.id and featured_on <= public.arena_today()),
+      'covers', (select count(*) from daily_viral where author_id = v_pr.id and featured_on <= public.cover_day()),
+      'views', (select coalesce(sum(view_count), 0) from posts where author_id = v_pr.id and (v_pr.id = v_uid or hidden_at is null)),
       'followed', exists (select 1 from follows where follower_id = v_uid and followee_id = v_pr.id),
       'is_me', v_pr.id = v_uid,
-      'is_moderator', v_pr.id = v_uid and v_pr.is_moderator
+      'is_moderator', v_pr.id = v_uid and (v_pr.is_moderator or v_pr.is_admin),
+      'is_admin', v_pr.id = v_uid and v_pr.is_admin
     ),
     'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) order by p.created_at desc)
                        from (select id, created_at from posts where author_id = v_pr.id
@@ -988,7 +1079,7 @@ declare
   v_shared boolean;
   v_completed boolean;
 begin
-  if v_uid is null or not public.is_active(v_uid) then return false; end if;
+  if v_uid is null or not public.can_act(v_uid) then return false; end if;
 
   -- Solo contenuti serviti a questo utente, solo una volta, solo il giorno stesso.
   update arena_views set recorded_at = now()
@@ -1154,7 +1245,7 @@ returns jsonb language sql stable security definer set search_path = public, pg_
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  where d.featured_on = public.arena_today() and public.can_see(d.post_id, auth.uid());
+  where d.featured_on = public.cover_day() and public.can_see(d.post_id, auth.uid());
 $$;
 
 -- L'Archivio: le copertine uscite, dalla più recente.
@@ -1163,9 +1254,317 @@ returns setof jsonb language sql stable security definer set search_path = publi
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  where d.featured_on <= public.arena_today() and public.can_see(d.post_id, auth.uid())
+  where d.featured_on <= public.cover_day() and public.can_see(d.post_id, auth.uid())
   order by d.featured_on desc
   limit least(greatest(p_limit, 1), 120);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 11) Registrazione, verifica dell'età, impostazioni dell'amministratore
+-- ---------------------------------------------------------------------------
+-- Età minima per iscriversi (in Italia 14 anni per i servizi online, art. 2-quinquies Codice privacy).
+create or replace function public.min_age_years() returns int language sql immutable as $$ select 14 $$;
+
+create or replace function public.username_available(p_username text)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select lower(p_username) ~ '^[a-z0-9_.]{3,24}$' and not exists (select 1 from profiles where username = lower(p_username));
+$$;
+
+/**
+ * Completa la registrazione dopo la creazione dell'utente in Supabase Auth: profilo pubblico,
+ * dati privati (nome, cognome, data di nascita) e scadenza per il documento.
+ * Il nome mostrato agli altri è "Nome I." (iniziale del cognome): il cognome completo resta privato.
+ */
+create or replace function public.complete_registration(
+  p_username text, p_first_name text, p_last_name text, p_birth_date date, p_accept_terms boolean
+)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_cfg public.arena_config := public.arena_cfg();
+  v_user text := lower(trim(p_username));
+  v_first text := trim(p_first_name);
+  v_last text := trim(p_last_name);
+begin
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
+  if not coalesce(p_accept_terms, false) then raise exception 'Per registrarti devi accettare termini e linee guida.'; end if;
+  if v_user !~ '^[a-z0-9_.]{3,24}$' then raise exception 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso.'; end if;
+  if length(v_first) not between 1 and 60 or length(v_last) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
+  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.arena_today() then
+    raise exception 'Data di nascita non valida.';
+  end if;
+  if p_birth_date > (public.arena_today() - make_interval(years => public.min_age_years()))::date then
+    raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
+  end if;
+
+  insert into profiles (id, username, display_name) values (v_uid, v_user, left(v_first, 38) || ' ' || upper(left(v_last, 1)) || '.');
+  insert into profile_private (id, first_name, last_name, birth_date) values (v_uid, v_first, v_last, p_birth_date);
+  insert into identity_checks (user_id, deadline) values (v_uid, now() + make_interval(days => v_cfg.id_grace_days));
+  return jsonb_build_object('id', v_uid, 'username', v_user, 'display_name', left(v_first, 38) || ' ' || upper(left(v_last, 1)) || '.');
+exception when unique_violation then
+  raise exception 'Questo nome utente è già preso.';
+end;
+$$;
+
+create or replace function public.get_settings()
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object('reveal_minutes', c.reveal_minutes, 'id_grace_days', c.id_grace_days,
+                            'submission_cutoff_hour', c.submission_cutoff_hour, 'time_zone', c.time_zone)
+  from arena_config c limit 1;
+$$;
+
+create or replace function public.admin_set_settings(p_reveal_minutes int, p_id_grace_days int)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
+  if p_reveal_minutes not between 0 and 1439 then raise exception 'Orario non valido.'; end if;
+  if p_id_grace_days not between 1 and 60 then raise exception 'I giorni per il documento vanno da 1 a 60.'; end if;
+  update arena_config set reveal_minutes = p_reveal_minutes, id_grace_days = p_id_grace_days;
+  return public.get_settings();
+end;
+$$;
+
+-- L'utente ha caricato documento e selfie nella sua cartella privata del bucket "documenti".
+create or replace function public.submit_identity(p_document_path text, p_selfie_path text)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if split_part(p_document_path, '/', 1) <> v_uid::text or split_part(p_selfie_path, '/', 1) <> v_uid::text then
+    raise exception 'File non validi.';
+  end if;
+  update identity_checks set status = 'pending', document_path = p_document_path, selfie_path = p_selfie_path,
+                             submitted_at = now(), reject_reason = null
+   where user_id = v_uid and status <> 'approved';
+  if not found then raise exception 'La tua età è già verificata.'; end if;
+end;
+$$;
+
+-- Coda per l'amministratore: chi ha caricato il documento, con i dati dichiarati da confrontare.
+create or replace function public.identity_queue()
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
+  return query
+  select jsonb_build_object('user_id', i.user_id, 'username', p.username, 'first_name', v.first_name, 'last_name', v.last_name,
+                            'birth_date', v.birth_date, 'document_path', i.document_path, 'selfie_path', i.selfie_path,
+                            'submitted_at', i.submitted_at, 'deadline', i.deadline)
+  from identity_checks i join profiles p on p.id = i.user_id join profile_private v on v.id = i.user_id
+  where i.status = 'pending'
+  order by i.submitted_at;
+end;
+$$;
+
+/**
+ * Decisione dell'amministratore: 'approve' (dati coerenti, almeno 14 anni), 'reject' (foto illeggibile,
+ * dati diversi: l'utente può ricaricare) o 'underage' (meno di 14 anni: account espulso).
+ * Restituisce i percorsi dei file, che l'app dell'amministratore cancella subito dallo Storage.
+ */
+create or replace function public.identity_review(p_user_id uuid, p_decision text, p_reason text default null)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_admin uuid := auth.uid();
+  v_row identity_checks;
+begin
+  if not public.is_admin(v_admin) then raise exception 'Solo per gli amministratori.'; end if;
+  if p_decision not in ('approve', 'reject', 'underage') then raise exception 'Decisione non valida.'; end if;
+  select * into v_row from identity_checks where user_id = p_user_id for update;
+  if not found or v_row.status <> 'pending' then raise exception 'Nessun documento in attesa per questo utente.'; end if;
+
+  update identity_checks
+     set status = case when p_decision = 'approve' then 'approved' else 'rejected' end,
+         reject_reason = case when p_decision = 'approve' then null
+                              when p_decision = 'underage' then 'Hai meno di ' || public.min_age_years() || ' anni.'
+                              else left(coalesce(nullif(trim(p_reason), ''), 'Documento non leggibile o non corrispondente.'), 200) end,
+         reviewed_at = now(), reviewed_by = v_admin, document_path = null, selfie_path = null
+   where user_id = p_user_id;
+  if p_decision = 'underage' then
+    update profiles set banned_at = now() where id = p_user_id;
+    update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = p_user_id;
+  end if;
+  insert into notifications (user_id, kind, data)
+  values (p_user_id, case when p_decision = 'approve' then 'identity_ok' else 'identity_ko' end,
+          jsonb_build_object('reason', (select reject_reason from identity_checks where user_id = p_user_id)))
+  on conflict (user_id, kind, actor_id, post_id) do update set created_at = now(), read_at = null, data = excluded.data;
+  return jsonb_build_object('paths', jsonb_build_array(v_row.document_path, v_row.selfie_path));
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 12) Notifiche (nell'app): nuovi follower, mi piace, commenti, gradini in gara, copertina, verifica
+-- ---------------------------------------------------------------------------
+create table if not exists public.notifications (
+  id bigserial primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  kind text not null check (kind in ('follow', 'like', 'comment', 'tier', 'cover', 'identity_ok', 'identity_ko', 'removed')),
+  actor_id uuid references public.profiles(id) on delete cascade,
+  post_id uuid references public.posts(id) on delete cascade,
+  data jsonb not null default '{}',
+  created_at timestamptz not null default now(),
+  read_at timestamptz,
+  -- Una notifica per persona e post: togliere e rimettere un mi piace non ne crea dieci.
+  unique nulls not distinct (user_id, kind, actor_id, post_id)
+);
+create index if not exists idx_notifications_user on public.notifications (user_id, created_at desc);
+create index if not exists idx_notifications_actor on public.notifications (actor_id);
+create index if not exists idx_notifications_post on public.notifications (post_id);
+alter table public.notifications enable row level security;
+drop policy if exists "notifications own" on public.notifications;
+create policy "notifications own" on public.notifications for select to authenticated using (user_id = auth.uid());
+revoke all on public.notifications from anon;
+revoke insert, update, delete on public.notifications from authenticated;
+
+create or replace function public.notify(p_user uuid, p_kind text, p_actor uuid, p_post uuid, p_data jsonb default '{}')
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_user is null or p_user = p_actor then return; end if;
+  if p_actor is not null and public.is_blocked_pair_internal(p_user, p_actor) then return; end if;
+  insert into notifications (user_id, kind, actor_id, post_id, data) values (p_user, p_kind, p_actor, p_post, coalesce(p_data, '{}'))
+  on conflict (user_id, kind, actor_id, post_id) do update set created_at = now(), read_at = null, data = excluded.data;
+end;
+$$;
+
+-- Come is_blocked_pair ma senza il filtro su chi chiama: serve ai trigger, che agiscono per conto del sistema.
+create or replace function public.is_blocked_pair_internal(a uuid, b uuid)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (select 1 from blocks where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a));
+$$;
+
+create or replace function public.notify_on_change()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_author uuid;
+begin
+  if tg_table_name = 'follows' then
+    if tg_op = 'INSERT' then perform public.notify(new.followee_id, 'follow', new.follower_id, null);
+    else delete from notifications where user_id = old.followee_id and kind = 'follow' and actor_id = old.follower_id; end if;
+  elsif tg_table_name = 'post_likes' then
+    if tg_op = 'INSERT' then
+      select author_id into v_author from posts where id = new.post_id;
+      perform public.notify(v_author, 'like', new.user_id, new.post_id);
+    else
+      delete from notifications where kind = 'like' and actor_id = old.user_id and post_id = old.post_id;
+    end if;
+  elsif tg_table_name = 'comments' then
+    select author_id into v_author from posts where id = new.post_id;
+    perform public.notify(v_author, 'comment', new.user_id, new.post_id, jsonb_build_object('body', left(new.body, 120)));
+  elsif tg_table_name = 'arena_entries' then
+    if new.tier > old.tier and new.post_id is not null then
+      perform public.notify(new.author_id, 'tier', null, new.post_id, jsonb_build_object('tier', new.tier));
+    end if;
+  elsif tg_table_name = 'daily_viral' then
+    perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on));
+  end if;
+  return null;
+end;
+$$;
+drop trigger if exists trg_notify_follow on public.follows;
+create trigger trg_notify_follow after insert or delete on public.follows for each row execute function public.notify_on_change();
+drop trigger if exists trg_notify_like on public.post_likes;
+create trigger trg_notify_like after insert or delete on public.post_likes for each row execute function public.notify_on_change();
+drop trigger if exists trg_notify_comment on public.comments;
+create trigger trg_notify_comment after insert on public.comments for each row execute function public.notify_on_change();
+drop trigger if exists trg_notify_tier on public.arena_entries;
+create trigger trg_notify_tier after update of tier on public.arena_entries for each row execute function public.notify_on_change();
+drop trigger if exists trg_notify_cover on public.daily_viral;
+create trigger trg_notify_cover after insert on public.daily_viral for each row execute function public.notify_on_change();
+
+create or replace function public.list_notifications(p_limit int default 50)
+returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'id', n.id, 'kind', n.kind, 'data', n.data, 'created_at', n.created_at, 'read', n.read_at is not null,
+    'actor', case when a.id is null then null else jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name) end,
+    'post', case when n.post_id is null then null else jsonb_build_object('id', p.id, 'media', p.media) end
+  )
+  from notifications n
+  left join profiles a on a.id = n.actor_id
+  left join posts p on p.id = n.post_id
+  where n.user_id = auth.uid()
+    and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))
+    and (n.post_id is null or p.id is not null)
+  order by n.created_at desc
+  limit least(greatest(p_limit, 1), 100);
+$$;
+
+create or replace function public.mark_notifications_read()
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update notifications set read_at = now() where user_id = auth.uid() and read_at is null;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 13) Visualizzazioni: una per persona, post e giorno
+-- ---------------------------------------------------------------------------
+create table if not exists public.post_views (
+  post_id uuid not null references public.posts(id) on delete cascade,
+  viewer_id uuid not null references public.profiles(id) on delete cascade,
+  day date not null,
+  primary key (post_id, viewer_id, day)
+);
+create index if not exists idx_post_views_day on public.post_views (day);
+alter table public.post_views enable row level security;
+revoke all on public.post_views from anon, authenticated;
+
+-- L'app manda a gruppi i post rimasti sullo schermo almeno un secondo. I propri post non contano.
+create or replace function public.register_views(p_post_ids uuid[])
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_day date := public.arena_today();
+begin
+  if v_uid is null or not public.is_active(v_uid) or p_post_ids is null then return; end if;
+  with fresh as (
+    insert into post_views (post_id, viewer_id, day)
+    select distinct x, v_uid, v_day
+    from unnest(p_post_ids[1:20]) x
+    join posts p on p.id = x and p.author_id <> v_uid
+    where public.can_see(x, v_uid)
+    on conflict do nothing
+    returning post_id
+  )
+  update posts set view_count = view_count + 1 where id in (select post_id from fresh);
+end;
+$$;
+
+-- Chi segue e chi è seguito: elenchi visibili a tutti, senza utenti espulsi o bloccati.
+create or replace function public.list_follows(p_username text, p_kind text, p_limit int default 100)
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_target profiles;
+begin
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if p_kind not in ('followers', 'following') then raise exception 'Elenco non valido.'; end if;
+  select * into v_target from profiles where username = p_username;
+  if not found or (v_target.id <> v_uid and (v_target.banned_at is not null or public.is_blocked_pair(v_uid, v_target.id))) then
+    raise exception 'Profilo non trovato.';
+  end if;
+  return query
+  select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name,
+                            'followed', exists (select 1 from follows m where m.follower_id = v_uid and m.followee_id = a.id),
+                            'is_me', a.id = v_uid)
+  from follows f
+  join profiles a on a.id = case when p_kind = 'followers' then f.follower_id else f.followee_id end
+  where (case when p_kind = 'followers' then f.followee_id else f.follower_id end) = v_target.id
+    and a.banned_at is null and not public.is_blocked_pair(v_uid, a.id)
+  order by f.created_at desc
+  limit least(greatest(p_limit, 1), 500);
+end;
+$$;
+
+-- Lo stato dell'utente che serve all'app: verifica, ruoli, notifiche non lette, impostazioni.
+create or replace function public.my_status()
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'identity', (select jsonb_build_object('status', i.status, 'deadline', i.deadline, 'reason', i.reject_reason,
+                                           'can_act', public.can_act(auth.uid()))
+                   from identity_checks i where i.user_id = auth.uid()),
+    'is_moderator', public.is_staff(auth.uid()),
+    'is_admin', public.is_admin(auth.uid()),
+    'unread', (select count(*) from notifications n where n.user_id = auth.uid() and n.read_at is null),
+    'settings', public.get_settings()
+  );
 $$;
 
 -- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
@@ -1199,6 +1598,20 @@ grant execute on function public.list_blocked() to authenticated;
 grant execute on function public.delete_my_account() to authenticated;
 grant execute on function public.mod_queue() to authenticated;
 grant execute on function public.mod_resolve(uuid, text) to authenticated;
+grant execute on function public.can_act(uuid) to authenticated;
+grant execute on function public.is_admin(uuid) to authenticated;
+grant execute on function public.username_available(text) to anon, authenticated;
+grant execute on function public.complete_registration(text, text, text, date, boolean) to authenticated;
+grant execute on function public.my_status() to authenticated;
+grant execute on function public.get_settings() to anon, authenticated;
+grant execute on function public.admin_set_settings(int, int) to authenticated;
+grant execute on function public.submit_identity(text, text) to authenticated;
+grant execute on function public.identity_queue() to authenticated;
+grant execute on function public.identity_review(uuid, text, text) to authenticated;
+grant execute on function public.list_notifications(int) to authenticated;
+grant execute on function public.mark_notifications_read() to authenticated;
+grant execute on function public.register_views(uuid[]) to authenticated;
+grant execute on function public.list_follows(text, text, int) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 8-9) Pianificazione di mezzanotte e Storage: vedi setup-produzione.sql
@@ -1209,5 +1622,7 @@ grant execute on function public.mod_resolve(uuid, text) to authenticated;
 -- ---------------------------------------------------------------------------
 -- Dopo esserti iscritto dall'app, nomina te stesso (o il tuo team) moderatore:
 -- update public.profiles set is_moderator = true where username = 'il_tuo_username';
+-- Per l'amministratore (modera, verifica i documenti, sceglie l'orario della copertina):
+-- update public.profiles set is_admin = true where username = 'il_tuo_username';
 -- Nell'app comparirà la voce "Moderazione" nelle Impostazioni.
 

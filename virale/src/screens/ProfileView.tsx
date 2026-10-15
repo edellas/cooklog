@@ -21,7 +21,7 @@ import type { MyEntry, Post, Profile } from '../types';
 export function ProfileView({ username, showBack }: { username: string; showBack?: boolean }) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { version, setMe, bump } = useSession();
+  const { version, setMe, bump, status } = useSession();
   const [data, setData] = useState<{ profile: Profile; posts: Post[]; saved: Post[]; entry: MyEntry | null } | null>(null);
   const [tab, setTab] = useState<'post' | 'salvati'>('post');
   const [error, setError] = useState<string | null>(null);
@@ -110,9 +110,25 @@ export function ProfileView({ username, showBack }: { username: string; showBack
             <View />
           )}
           {profile.isMe ? (
-            <Press style={styles.back} onPress={() => router.push('/impostazioni' as Href)} accessibilityRole="button" accessibilityLabel="Impostazioni">
-              <Icon name="impostazioni" />
-            </Press>
+            <View style={{ flexDirection: 'row', gap: space[2] }}>
+              <Press
+                style={styles.back}
+                onPress={() => router.push('/notifiche' as Href)}
+                accessibilityRole="button"
+                accessibilityLabel={status?.unread ? `Notifiche, ${status.unread} da leggere` : 'Notifiche'}>
+                <Icon name="campanella" />
+                {status?.unread ? (
+                  <View style={styles.badge}>
+                    <Txt variant="meta" tone={color.canvas} style={{ fontFamily: font.uiBold, fontSize: 10, lineHeight: 12 }}>
+                      {status.unread > 9 ? '9+' : status.unread}
+                    </Txt>
+                  </View>
+                ) : null}
+              </Press>
+              <Press style={styles.back} onPress={() => router.push('/impostazioni' as Href)} accessibilityRole="button" accessibilityLabel="Impostazioni">
+                <Icon name="impostazioni" />
+              </Press>
+            </View>
           ) : null}
         </View>
 
@@ -134,10 +150,39 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           </Txt>
         ) : null}
 
+        {profile.isMe && status?.identity && status.identity.status !== 'approved' ? (
+          <Press style={[styles.verify, !status.identity.canAct && styles.verifyLate]} onPress={() => router.push('/verifica' as Href)} accessibilityRole="button">
+            <Icon name="documento" size={22} color={status.identity.canAct ? color.giallo : color.matita} />
+            <View style={{ flex: 1, gap: 2 }}>
+              <Txt variant="label">
+                {status.identity.status === 'pending'
+                  ? 'Documento in controllo'
+                  : status.identity.canAct
+                    ? 'Conferma la tua età'
+                    : 'Verifica scaduta: puoi solo guardare'}
+              </Txt>
+              <Txt variant="small" tone={color.paperDim}>
+                {status.identity.status === 'pending'
+                  ? 'Ti avvisiamo appena l’abbiamo controllato.'
+                  : status.identity.status === 'rejected'
+                    ? `Non accettato: ${(status.identity.reason ?? 'riprova').replace(/[.\s]+$/, '')}. Tocca per ricaricarlo.`
+                    : `Carica il documento entro il ${new Date(status.identity.deadline).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}.`}
+              </Txt>
+            </View>
+            <Icon name="destra" size={20} color={color.paperFaint} />
+          </Press>
+        ) : null}
+
         <View style={styles.stats}>
-          <Stat value={profile.followers} label="follower" />
-          <Stat value={profile.following} label="seguiti" />
+          <Stat value={profile.followers} label="follower" onPress={() => router.push(`/seguaci/${profile.username}?tipo=followers` as Href)} />
+          <Stat value={profile.following} label="seguiti" onPress={() => router.push(`/seguaci/${profile.username}?tipo=following` as Href)} />
           <Stat value={profile.covers} label={profile.covers === 1 ? 'copertina' : 'copertine'} highlight={profile.covers > 0} />
+        </View>
+        <View style={styles.viewsLine} accessible accessibilityLabel={`${formatCount(profile.views)} visualizzazioni dei post`}>
+          <Icon name="occhio" size={18} color={color.paperFaint} />
+          <Txt variant="small" tone={color.paperDim}>
+            {formatCount(profile.views)} {profile.views === 1 ? 'visualizzazione' : 'visualizzazioni'} dei post
+          </Txt>
         </View>
 
         {profile.isMe ? (
@@ -204,6 +249,12 @@ export function ProfileView({ username, showBack }: { username: string; showBack
               accessibilityRole="link"
               accessibilityLabel={`Post di @${p.author.username}${p.media.length > 1 ? `, ${p.media.length} elementi` : ''}${p.caption ? `: ${p.caption.slice(0, 60)}` : ''}`}>
               <Thumb media={p.media} rounded={6} />
+              <View style={styles.views} pointerEvents="none">
+                <Icon name="occhio" size={13} color={color.paper} strokeWidth={2} />
+                <Txt variant="meta" style={{ fontSize: 11, lineHeight: 13, fontFamily: font.uiBold }}>
+                  {formatCount(p.viewCount)}
+                </Txt>
+              </View>
             </Press>
           ))}
         </View>
@@ -234,15 +285,25 @@ export function ProfileView({ username, showBack }: { username: string; showBack
   );
 }
 
-function Stat({ value, label, highlight }: { value: number; label: string; highlight?: boolean }) {
-  return (
-    <View style={styles.stat}>
-      <Txt variant="numeral" tone={highlight ? color.giallo : color.paper} style={{ fontSize: 30, lineHeight: 34 }}>
+function Stat({ value, label, highlight, onPress }: { value: number; label: string; highlight?: boolean; onPress?: () => void }) {
+  const body = (
+    <>
+      <Txt variant="numeral" tone={highlight ? color.giallo : color.paper} style={{ fontSize: 26, lineHeight: 30 }}>
         {formatCount(value)}
       </Txt>
-      <Txt variant="meta" tone={color.paperFaint}>
+      <Txt variant="meta" tone={color.paperFaint} numberOfLines={1}>
         {label}
       </Txt>
+    </>
+  );
+  // Follower e seguiti si toccano: si apre l'elenco.
+  return onPress ? (
+    <Press style={styles.stat} scaleTo={0.97} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${formatCount(value)} ${label}: apri l’elenco`}>
+      {body}
+    </Press>
+  ) : (
+    <View style={styles.stat} accessible accessibilityLabel={`${formatCount(value)} ${label}`}>
+      {body}
     </View>
   );
 }
@@ -266,7 +327,12 @@ const styles = StyleSheet.create({
   back: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
   head: { flexDirection: 'row', alignItems: 'center', gap: space[4] },
   stats: { flexDirection: 'row', gap: space[2] },
-  stat: { flex: 1, gap: 2 },
+  stat: { flex: 1, gap: 2, minWidth: 0 },
+  viewsLine: { flexDirection: 'row', alignItems: 'center', gap: space[2], marginTop: -space[1] },
+  badge: { position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: color.matita, alignItems: 'center', justifyContent: 'center' },
+  verify: { flexDirection: 'row', alignItems: 'center', gap: space[3], backgroundColor: color.raised, borderRadius: radius.card, padding: space[4], borderWidth: 1, borderColor: color.giallo },
+  verifyLate: { borderColor: color.matita },
+  views: { position: 'absolute', left: 6, bottom: 6, flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: color.scrim, borderRadius: 999, paddingHorizontal: 6, paddingVertical: 2 },
   primary: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -9,7 +9,9 @@ import {
   DEFAULT_ARENA_CONFIG,
   emptyStats,
   lowerBoundScore,
+  coverDay,
   msUntilArenaClose,
+  msUntilReveal,
   percentile,
   qualityScore,
   recordView,
@@ -166,6 +168,18 @@ describe('date', () => {
     assert.equal(msUntilArenaClose(new Date('2026-10-24T23:00:00Z')), 24 * h);
     // Un giorno normale: alle 18:00 a Roma (16:00 UTC, ora legale) mancano 6 ore.
     assert.equal(msUntilArenaClose(new Date('2026-07-01T16:00:00Z')), 6 * h);
+  });
+
+  it('mostra la copertina nuova solo dall’orario di rivelazione', () => {
+    const h = 3600_000;
+    // Rivelazione alle 20:00 di Roma. Alle 19:00 del 1° luglio (17:00 UTC) si vede ancora quella del 30 giugno.
+    assert.equal(coverDay(20 * 60, new Date('2026-07-01T17:00:00Z')), '2026-06-30');
+    assert.equal(coverDay(20 * 60, new Date('2026-07-01T18:00:00Z')), '2026-07-01');
+    assert.equal(msUntilReveal(20 * 60, new Date('2026-07-01T17:00:00Z')), 1 * h);
+    // Dopo la rivelazione si conta fino a quella di domani.
+    assert.equal(msUntilReveal(20 * 60, new Date('2026-07-01T18:30:00Z')), 23.5 * h);
+    // Rivelazione a mezzanotte: come la chiusura della gara.
+    assert.equal(msUntilReveal(0, new Date('2026-07-01T16:00:00Z')), msUntilArenaClose(new Date('2026-07-01T16:00:00Z')));
   });
 
   it('chiude le candidature alle 20 ora di Roma', () => {

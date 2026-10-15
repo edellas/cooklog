@@ -6,6 +6,7 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Icon, type IconName } from '../../src/components/Icon';
 import { Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
+import { useSession } from '../../src/state/session';
 import { color, radius } from '../../src/design/tokens';
 
 const ITEMS: Record<string, { icon: IconName; label: string }> = {
@@ -30,6 +31,8 @@ export default function TabsLayout() {
 function TabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { status } = useSession();
+  const unread = status?.unread ?? 0;
   const routes = state.routes;
   const item = (i: number) => {
     const route = routes[i];
@@ -45,8 +48,11 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
         }}
         accessibilityRole="tab"
         accessibilityState={{ selected: focused }}
-        accessibilityLabel={meta.label}>
-        <Icon name={meta.icon} size={24} color={focused ? color.paper : color.paperFaint} strokeWidth={focused ? 2 : 1.75} />
+        accessibilityLabel={route.name === 'profilo' && unread ? `${meta.label}, ${unread} notifiche da leggere` : meta.label}>
+        <View>
+          <Icon name={meta.icon} size={24} color={focused ? color.paper : color.paperFaint} strokeWidth={focused ? 2 : 1.75} />
+          {route.name === 'profilo' && unread ? <View style={styles.dot} /> : null}
+        </View>
         <Txt variant="meta" tone={focused ? color.paper : color.paperFaint} style={{ fontSize: 11 }}>
           {meta.label}
         </Txt>
@@ -78,6 +84,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   item: { flex: 1, alignItems: 'center', gap: 3, minHeight: 44, justifyContent: 'center' },
+  dot: { position: 'absolute', top: -1, right: -3, width: 9, height: 9, borderRadius: 5, backgroundColor: color.matita, borderWidth: 1.5, borderColor: color.canvas },
   create: {
     width: 52,
     height: 36,
