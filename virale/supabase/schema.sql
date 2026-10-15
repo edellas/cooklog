@@ -3,11 +3,11 @@
 -- Stessa logica di src/engine/engine.ts: se cambi pesi o soglie, aggiornali in entrambi.
 --
 -- Flusso:
---   giorno D     create_post() + arena_submit()   -> un contenuto in gara per utente
---                arena_next_batch()   -> il server sceglie cosa mostrare (alla cieca)
+--   giorno D     insert in posts + arena_submit()  -> un post (foto e/o video) in gara per utente
+--                feed_for_you()       -> i Provini: il server sceglie cosa mostrare (alla cieca)
 --                arena_record_view()  -> segnali impliciti, promozione tra livelli
 --   fine di D    arena_close_day(D)   -> pg_cron, un solo vincitore in daily_viral
---   giorno D+1   get_daily_viral()    -> lo stesso contenuto per tutti, appena si apre l'app
+--   giorno D+1   get_today_cover()    -> la Copertina: lo stesso post per tutti, appena si apre l'app
 
 create extension if not exists pgcrypto;
 
@@ -17,28 +17,93 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   username text unique not null check (username ~ '^[a-z0-9_.]{3,24}$'),
-  display_name text not null,
-  avatar_url text,
+  display_name text not null check (length(display_name) between 1 and 40),
+  bio text not null default '' check (length(bio) <= 160),
   created_at timestamptz not null default now()
 );
+
+-- Un post: da 1 a 10 elementi, foto e/o video, come su TikTok.
+-- media = [{ "kind": "image"|"video", "url": "...", "width": 1080, "height": 1920, "duration_ms": 12000 }]
+create or replace function public.valid_media(m jsonb)
+returns boolean language sql immutable as $$
+  select jsonb_typeof(m) = 'array'
+     and jsonb_array_length(m) between 1 and 10
+     and not exists (
+       select 1 from jsonb_array_elements(m) x
+       where not (x->>'kind' in ('image', 'video') and coalesce(x->>'url', '') ~ '^https://')
+          or (x->>'kind' = 'video' and coalesce((x->>'duration_ms')::int, 0) > 61000)
+     );
+$$;
 
 create table if not exists public.posts (
   id uuid primary key default gen_random_uuid(),
   author_id uuid not null references public.profiles(id) on delete cascade,
-  media_type text not null check (media_type in ('video', 'image', 'text')),
-  -- URL pubblico nello Storage (bucket "media"); null per i post di solo testo.
-  media_url text,
-  body text,
-  caption text not null default '',
-  background text not null default '#111111',
-  created_at timestamptz not null default now(),
-  check (media_type = 'text' or media_url is not null),
-  check (media_type <> 'text' or length(coalesce(body, '')) between 1 and 280)
+  media jsonb not null check (public.valid_media(media)),
+  caption text not null default '' check (length(caption) <= 300),
+  like_count int not null default 0,
+  comment_count int not null default 0,
+  save_count int not null default 0,
+  share_count int not null default 0,
+  created_at timestamptz not null default now()
 );
 create index if not exists idx_posts_author on public.posts (author_id, created_at desc);
+create index if not exists idx_posts_recent on public.posts (created_at desc);
+
+create table if not exists public.post_likes (
+  post_id uuid not null references public.posts(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+create table if not exists public.post_saves (
+  post_id uuid not null references public.posts(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+create index if not exists idx_post_saves_user on public.post_saves (user_id, created_at desc);
+create table if not exists public.comments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.posts(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  body text not null check (length(trim(body)) between 1 and 300),
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_comments_post on public.comments (post_id, created_at);
+create table if not exists public.follows (
+  follower_id uuid not null references public.profiles(id) on delete cascade,
+  followee_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (follower_id, followee_id),
+  check (follower_id <> followee_id)
+);
+create index if not exists idx_follows_followee on public.follows (followee_id);
+
+-- Contatori mantenuti dal database: il client non può gonfiarli.
+create or replace function public.bump_post_counter()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_col text := tg_argv[0];
+  v_post uuid := coalesce(new.post_id, old.post_id);
+  v_delta int := case tg_op when 'INSERT' then 1 else -1 end;
+begin
+  execute format('update posts set %I = greatest(%I + $1, 0) where id = $2', v_col, v_col) using v_delta, v_post;
+  return null;
+end;
+$$;
+drop trigger if exists trg_likes_count on public.post_likes;
+create trigger trg_likes_count after insert or delete on public.post_likes for each row execute function public.bump_post_counter('like_count');
+drop trigger if exists trg_saves_count on public.post_saves;
+create trigger trg_saves_count after insert or delete on public.post_saves for each row execute function public.bump_post_counter('save_count');
+drop trigger if exists trg_comments_count on public.comments;
+create trigger trg_comments_count after insert or delete on public.comments for each row execute function public.bump_post_counter('comment_count');
 
 alter table public.profiles enable row level security;
 alter table public.posts enable row level security;
+alter table public.post_likes enable row level security;
+alter table public.post_saves enable row level security;
+alter table public.comments enable row level security;
+alter table public.follows enable row level security;
 
 drop policy if exists "profiles readable" on public.profiles;
 create policy "profiles readable" on public.profiles for select to anon, authenticated using (true);
@@ -49,9 +114,28 @@ create policy "profiles update own" on public.profiles for update to authenticat
 drop policy if exists "posts readable" on public.posts;
 create policy "posts readable" on public.posts for select to anon, authenticated using (true);
 drop policy if exists "posts insert own" on public.posts;
-create policy "posts insert own" on public.posts for insert to authenticated with check (auth.uid() = author_id);
+-- I contatori partono da zero: un client non può inserire un post con 10.000 like.
+create policy "posts insert own" on public.posts for insert to authenticated
+  with check (auth.uid() = author_id and like_count = 0 and comment_count = 0 and save_count = 0 and share_count = 0);
 drop policy if exists "posts delete own" on public.posts;
 create policy "posts delete own" on public.posts for delete to authenticated using (auth.uid() = author_id);
+
+drop policy if exists "likes own" on public.post_likes;
+create policy "likes own" on public.post_likes for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "saves own" on public.post_saves;
+create policy "saves own" on public.post_saves for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "comments readable" on public.comments;
+create policy "comments readable" on public.comments for select to anon, authenticated using (true);
+drop policy if exists "comments insert own" on public.comments;
+create policy "comments insert own" on public.comments for insert to authenticated with check (auth.uid() = user_id);
+drop policy if exists "comments delete own" on public.comments;
+create policy "comments delete own" on public.comments for delete to authenticated using (auth.uid() = user_id);
+drop policy if exists "follows readable" on public.follows;
+create policy "follows readable" on public.follows for select to authenticated using (true);
+drop policy if exists "follows own" on public.follows;
+create policy "follows own" on public.follows for insert to authenticated with check (auth.uid() = follower_id);
+drop policy if exists "unfollow own" on public.follows;
+create policy "unfollow own" on public.follows for delete to authenticated using (auth.uid() = follower_id);
 
 -- ---------------------------------------------------------------------------
 -- Configurazione (una riga)
@@ -119,6 +203,7 @@ create table if not exists public.arena_entry_stats (
   completes int not null default 0,
   rewatches int not null default 0,
   likes int not null default 0,
+  comments int not null default 0,
   saves int not null default 0,
   shares int not null default 0,
   skips int not null default 0,
@@ -186,14 +271,14 @@ create policy "daily viral readable" on public.daily_viral for select to anon, a
 -- ---------------------------------------------------------------------------
 create or replace function public.arena_points(s public.arena_entry_stats)
 returns numeric language sql immutable as $$
-  select s.completes * 1.0 + s.rewatches * 1.5 + s.likes * 2 + s.saves * 3 + s.shares * 6 - s.skips * 1.5 - s.reports * 20;
+  select s.completes * 1.0 + s.rewatches * 1.5 + s.likes * 2 + s.comments * 3 + s.saves * 3 + s.shares * 6 - s.skips * 1.5 - s.reports * 20;
 $$;
 
 create or replace function public.arena_entry_totals(p_entry_id uuid)
 returns public.arena_entry_stats language sql stable security definer set search_path = public as $$
   select p_entry_id, 0::smallint,
          coalesce(sum(views), 0)::int, coalesce(sum(completes), 0)::int, coalesce(sum(rewatches), 0)::int,
-         coalesce(sum(likes), 0)::int,
+         coalesce(sum(likes), 0)::int, coalesce(sum(comments), 0)::int,
          coalesce(sum(saves), 0)::int, coalesce(sum(shares), 0)::int, coalesce(sum(skips), 0)::int,
          coalesce(sum(reports), 0)::int, coalesce(sum(dwell_ms), 0)::bigint
   from public.arena_entry_stats where entry_id = p_entry_id;
@@ -228,7 +313,7 @@ begin
     raise exception 'Candidature chiuse per oggi: riprova domani.';
   end if;
   if not exists (select 1 from posts where id = p_post_id and author_id = v_uid) then
-    raise exception 'Puoi candidare solo un tuo contenuto.';
+    raise exception 'Puoi candidare solo un tuo post.';
   end if;
   if exists (
     select 1 from daily_viral
@@ -242,7 +327,7 @@ begin
   returning * into v_entry;
   return v_entry;
 exception when unique_violation then
-  raise exception 'Puoi candidare un solo contenuto al giorno.';
+  raise exception 'Puoi candidare un solo post al giorno.';
 end;
 $$;
 
@@ -276,11 +361,33 @@ begin
 end;
 $$;
 
-create or replace function public.arena_next_batch(p_limit int default 10)
-returns table (
-  entry_id uuid, post_id uuid, tier smallint, author_id uuid, author_username text, author_name text,
-  media_type text, media_url text, body text, caption text, background text, created_at timestamptz
-)
+-- Un post composto come lo legge l'app: autore, media, contatori, e cosa ne pensa chi guarda.
+create or replace function public.post_json(p_post_id uuid, p_viewer uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', p.id,
+    'author', jsonb_build_object('id', pr.id, 'username', pr.username, 'display_name', pr.display_name),
+    'media', p.media,
+    'caption', p.caption,
+    'created_at', p.created_at,
+    'like_count', p.like_count,
+    'comment_count', p.comment_count,
+    'save_count', p.save_count,
+    'share_count', p.share_count,
+    'liked', exists (select 1 from post_likes l where l.post_id = p.id and l.user_id = p_viewer),
+    'saved', exists (select 1 from post_saves v where v.post_id = p.id and v.user_id = p_viewer),
+    'contest', (
+      select jsonb_build_object('entry_id', e.id, 'tier', e.tier, 'status', e.status)
+      from arena_entries e where e.post_id = p.id and e.contest_day = public.arena_today()
+    )
+  )
+  from posts p join profiles pr on pr.id = p.author_id
+  where p.id = p_post_id;
+$$;
+
+-- I Provini ("Per te"): prima i post in gara scelti alla cieca, poi post recenti fuori gara.
+create or replace function public.feed_for_you(p_limit int default 6, p_exclude uuid[] default '{}')
+returns table (entry_id uuid, post jsonb)
 language plpgsql security definer set search_path = public as $$
 #variable_conflict use_column
 declare
@@ -290,6 +397,7 @@ declare
   v_limit int := least(greatest(p_limit, 1), 20);
   v_upper_slots int := ceil(least(greatest(p_limit, 1), 20) * v_cfg.upper_share);
   v_ids uuid[];
+  v_n int;
 begin
   if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
 
@@ -307,20 +415,81 @@ begin
   )
   select array_agg(id) into v_ids from (select id from merged order by pri, random() limit v_limit) x;
 
-  if v_ids is null then return; end if;
+  if v_ids is not null then
+    insert into arena_views (entry_id, viewer_id, contest_day)
+    select unnest(v_ids), v_uid, v_day
+    on conflict do nothing;
 
-  insert into arena_views (entry_id, viewer_id, contest_day)
-  select unnest(v_ids), v_uid, v_day
-  on conflict do nothing;
+    return query
+    select e.id, public.post_json(e.post_id, v_uid)
+    from arena_entries e
+    where e.id = any (v_ids)
+    order by random();
+  end if;
 
-  return query
-  select e.id, p.id, e.tier, e.author_id, pr.username, pr.display_name,
-         p.media_type, p.media_url, p.body, p.caption, p.background, p.created_at
-  from arena_entries e
-  join posts p on p.id = e.post_id
-  left join profiles pr on pr.id = e.author_id
-  where e.id = any (v_ids)
-  order by random();
+  v_n := coalesce(array_length(v_ids, 1), 0);
+  if v_n < v_limit then
+    -- Fuori gara: i post recenti più apprezzati, mai i propri, mai quelli già mostrati.
+    return query
+    select null::uuid, public.post_json(p.id, v_uid)
+    from posts p
+    where p.author_id <> v_uid
+      and p.created_at > now() - interval '3 days'
+      and not (p.id = any (coalesce(p_exclude, '{}')))
+      and not exists (select 1 from arena_entries e where e.post_id = p.id and e.id = any (coalesce(v_ids, '{}')))
+    order by p.like_count desc, p.created_at desc
+    limit v_limit - v_n;
+  end if;
+end;
+$$;
+
+-- "Seguiti": i post di chi segui, dal più recente.
+create or replace function public.feed_following(p_limit int default 30)
+returns setof jsonb language sql stable security definer set search_path = public as $$
+  select public.post_json(p.id, auth.uid())
+  from posts p
+  join follows f on f.followee_id = p.author_id and f.follower_id = auth.uid()
+  order by p.created_at desc
+  limit least(greatest(p_limit, 1), 60);
+$$;
+
+create or replace function public.get_post(p_post_id uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select public.post_json(p_post_id, auth.uid());
+$$;
+
+create or replace function public.register_share(p_post_id uuid)
+returns void language sql security definer set search_path = public as $$
+  update posts set share_count = share_count + 1 where id = p_post_id and auth.uid() is not null;
+$$;
+
+create or replace function public.get_profile(p_username text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_uid uuid := auth.uid();
+  v_pr profiles;
+begin
+  select * into v_pr from profiles where username = p_username;
+  if not found then raise exception 'Profilo non trovato.'; end if;
+  return jsonb_build_object(
+    'profile', jsonb_build_object(
+      'id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio,
+      'followers', (select count(*) from follows where followee_id = v_pr.id),
+      'following', (select count(*) from follows where follower_id = v_pr.id),
+      'covers', (select count(*) from daily_viral where author_id = v_pr.id and featured_on <= public.arena_today()),
+      'followed', exists (select 1 from follows where follower_id = v_uid and followee_id = v_pr.id),
+      'is_me', v_pr.id = v_uid
+    ),
+    'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) order by p.created_at desc)
+                       from (select id, created_at from posts where author_id = v_pr.id order by created_at desc limit 60) p), '[]'),
+    'saved', case when v_pr.id = v_uid then
+               coalesce((select jsonb_agg(public.post_json(s.post_id, v_uid) order by s.created_at desc)
+                         from (select post_id, created_at from post_saves where user_id = v_uid order by created_at desc limit 60) s), '[]')
+             else '[]'::jsonb end,
+    'entry', (select jsonb_build_object('entry_id', e.id, 'post_id', e.post_id, 'tier', e.tier, 'status', e.status,
+                                        'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day)
+              from arena_entries e where e.author_id = v_pr.id and e.contest_day = public.arena_today())
+  );
 end;
 $$;
 
@@ -392,6 +561,7 @@ create or replace function public.arena_record_view(
   p_completed boolean default null,
   p_rewatched boolean default false,
   p_liked boolean default false,
+  p_commented boolean default false,
   p_saved boolean default false,
   p_shared boolean default false,
   p_reported boolean default false
@@ -418,11 +588,11 @@ begin
     return false;
   end if;
 
-  insert into arena_entry_stats as s (entry_id, shard, views, completes, rewatches, likes, saves, shares, skips, reports, dwell_ms)
+  insert into arena_entry_stats as s (entry_id, shard, views, completes, rewatches, likes, comments, saves, shares, skips, reports, dwell_ms)
   values (
     p_entry_id, floor(random() * v_cfg.stat_shards)::smallint, 1,
     coalesce(p_completed, v_dwell >= v_cfg.complete_dwell_ms)::int, coalesce(p_rewatched, false)::int,
-    coalesce(p_liked, false)::int, coalesce(p_saved, false)::int,
+    coalesce(p_liked, false)::int, coalesce(p_commented, false)::int, coalesce(p_saved, false)::int,
     coalesce(p_shared, false)::int, (v_dwell < v_cfg.skip_dwell_ms)::int, coalesce(p_reported, false)::int, v_dwell
   )
   on conflict (entry_id, shard) do update set
@@ -430,6 +600,7 @@ begin
     completes = s.completes + excluded.completes,
     rewatches = s.rewatches + excluded.rewatches,
     likes = s.likes + excluded.likes,
+    comments = s.comments + excluded.comments,
     saves = s.saves + excluded.saves,
     shares = s.shares + excluded.shares,
     skips = s.skips + excluded.skips,
@@ -508,39 +679,23 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 7) Il virale di oggi: identico per tutti => cacheabile su CDN, costo trascurabile anche con milioni di utenti
 -- ---------------------------------------------------------------------------
-create or replace function public.get_daily_viral()
-returns table (
-  featured_on date, contest_day date, post_id uuid, author_id uuid, author_username text, author_name text,
-  media_type text, media_url text, body text, caption text, background text,
-  total_entries int, total_views bigint, created_at timestamptz
-)
-language sql stable security definer set search_path = public as $$
-  select d.featured_on, d.contest_day, p.id, d.author_id, pr.username, pr.display_name,
-         p.media_type, p.media_url, p.body, p.caption, p.background,
-         d.total_entries, d.total_views, p.created_at
+create or replace function public.get_today_cover()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
+                            'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  join posts p on p.id = d.post_id
-  left join profiles pr on pr.id = d.author_id
   where d.featured_on = public.arena_today();
 $$;
 
--- Albo d'oro: i vincitori dei giorni passati.
-create or replace function public.get_hall_of_fame(p_limit int default 30)
-returns table (
-  featured_on date, post_id uuid, author_id uuid, author_username text, author_name text,
-  media_type text, media_url text, body text, caption text, background text,
-  total_entries int, total_views bigint, created_at timestamptz
-)
-language sql stable security definer set search_path = public as $$
-  select d.featured_on, p.id, d.author_id, pr.username, pr.display_name,
-         p.media_type, p.media_url, p.body, p.caption, p.background,
-         d.total_entries, d.total_views, p.created_at
+-- L'Archivio: le copertine uscite, dalla più recente.
+create or replace function public.get_cover_archive(p_limit int default 60)
+returns setof jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
+                            'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  join posts p on p.id = d.post_id
-  left join profiles pr on pr.id = d.author_id
   where d.featured_on <= public.arena_today()
   order by d.featured_on desc
-  limit least(greatest(p_limit, 1), 100);
+  limit least(greatest(p_limit, 1), 120);
 $$;
 
 -- Permessi: i client chiamano solo queste funzioni.
@@ -548,12 +703,17 @@ revoke all on function public.arena_close_day(date) from public, anon, authentic
 revoke all on function public.arena_evaluate(uuid) from public, anon, authenticated;
 revoke all on function public.arena_entry_totals(uuid) from public, anon, authenticated;
 revoke all on function public.arena_pick(date, uuid, int, int, int) from public, anon, authenticated;
+revoke all on function public.bump_post_counter() from public, anon, authenticated;
 grant execute on function public.arena_submit(uuid) to authenticated;
-grant execute on function public.arena_next_batch(int) to authenticated;
-grant execute on function public.arena_record_view(uuid, int, boolean, boolean, boolean, boolean, boolean, boolean) to authenticated;
+grant execute on function public.feed_for_you(int, uuid[]) to authenticated;
+grant execute on function public.feed_following(int) to authenticated;
+grant execute on function public.arena_record_view(uuid, int, boolean, boolean, boolean, boolean, boolean, boolean, boolean) to authenticated;
 grant execute on function public.arena_my_entry() to authenticated;
-grant execute on function public.get_daily_viral() to anon, authenticated;
-grant execute on function public.get_hall_of_fame(int) to anon, authenticated;
+grant execute on function public.get_post(uuid) to anon, authenticated;
+grant execute on function public.get_profile(text) to authenticated;
+grant execute on function public.register_share(uuid) to authenticated;
+grant execute on function public.get_today_cover() to anon, authenticated;
+grant execute on function public.get_cover_archive(int) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 8) Pianificazione (Database → Extensions → abilita pg_cron)

@@ -1,0 +1,833 @@
+<title>Virale · prototipo</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,500;6..96,700;6..96,900&family=Schibsted+Grotesk:wght@400;500;700&display=swap">
+<style>
+/*
+  Layout: tavolo luminoso d'inchiostro. A sinistra il percorso (i capitoli del flusso),
+  al centro il telefono con le schermate vere, a destra la spiegazione del passaggio.
+  Mondo unico scuro, come l'app: i colori sono tutti espliciti.
+*/
+:root {
+  color-scheme: dark;
+  --canvas: #0C1322;      /* oklch(0.19 0.032 264) inchiostro */
+  --raised: #151D2D;      /* oklch(0.23 0.034 264) */
+  --sheet: #1E2637;       /* oklch(0.27 0.034 264) */
+  --line: #3A4253;        /* oklch(0.38 0.03 264) */
+  --paper: #F5F3EE;       /* oklch(0.965 0.008 95) carta */
+  --paper-dim: #C1C8D5;
+  --paper-faint: #939CAC;
+  --giallo: #FADB2C;      /* oklch(0.89 0.175 98) giallo stampa */
+  --matita: #F65041;      /* oklch(0.66 0.205 29) matita grassa */
+  --scrim: rgba(8, 12, 22, 0.55);
+  --table: #070B14;
+  --display: 'Bodoni Moda', 'Didot', 'Bodoni 72', Georgia, serif;
+  --ui: 'Schibsted Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--table);
+  color: var(--paper);
+  font-family: var(--ui);
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0;
+}
+::selection { background: var(--giallo); color: var(--canvas); }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--giallo); outline-offset: 3px; border-radius: 8px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+
+/* ---------- impaginato della pagina ---------- */
+.app {
+  min-height: 100%;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr) 380px;
+  grid-template-rows: auto 1fr;
+  gap: 0 32px;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding-block: 20px;
+}
+.top {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
+}
+.brand { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.brand b { font-family: var(--display); font-weight: 900; font-size: 34px; letter-spacing: -1px; line-height: 1; }
+.brand span { color: var(--paper-faint); font-size: 14px; }
+.progress { display: flex; align-items: center; gap: 14px; }
+.count { font-size: 14px; color: var(--paper-dim); white-space: nowrap; }
+.count strong { color: var(--paper); font-weight: 700; }
+.bar { width: 160px; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--giallo); transform-origin: left; transition: transform 300ms var(--ease-out); }
+
+.flow { align-self: start; position: sticky; top: 20px; display: flex; flex-direction: column; gap: 18px; }
+.chapter h3 { font-family: var(--display); font-weight: 700; font-size: 19px; margin-bottom: 6px; }
+.chapter ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.chapter button {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 10px;
+  color: var(--paper-faint);
+  font-size: 14px;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.chapter button .n { font-size: 12px; min-width: 18px; color: var(--paper-faint); }
+.chapter button[aria-current='step'] { background: var(--raised); color: var(--paper); }
+.chapter button[aria-current='step'] .n { color: var(--giallo); }
+.chapter button.done { color: var(--paper-dim); }
+@media (hover: hover) and (pointer: fine) { .chapter button:hover { color: var(--paper); } }
+
+.stage { display: flex; align-items: flex-start; justify-content: center; min-width: 0; }
+.notes { align-self: start; position: sticky; top: 20px; display: flex; flex-direction: column; gap: 20px; }
+.notes h2 { font-family: var(--display); font-weight: 700; font-size: 38px; line-height: 1.05; letter-spacing: -0.5px; }
+.notes .lead { font-size: 18px; line-height: 1.5; color: var(--paper); max-width: 60ch; }
+.notes ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; }
+.notes li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; color: var(--paper-dim); font-size: 15px; }
+.notes li svg { margin-top: 2px; }
+.nav { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 20px;
+  border-radius: 14px; background: var(--raised); color: var(--paper); font-weight: 700; font-size: 15px;
+  transition: transform 120ms var(--ease-out), background-color 150ms ease;
+}
+.btn:active { transform: scale(0.97); }
+.btn.primary { background: var(--giallo); color: var(--canvas); }
+.btn[disabled] { opacity: 0.35; pointer-events: none; }
+.hint { font-size: 13px; color: var(--paper-faint); }
+.notes-body { display: flex; flex-direction: column; gap: 20px; transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out); }
+.notes-body.out { opacity: 0; transform: translateY(6px); }
+
+/* ---------- il telefono ---------- */
+.device { --s: 1; width: calc(390px * var(--s) + 24px * var(--s)); height: calc(844px * var(--s) + 24px * var(--s)); position: relative; flex: none; }
+.bezel {
+  position: absolute; left: 0; top: 0; width: 414px; height: 868px; transform: scale(var(--s)); transform-origin: top left;
+  border-radius: 64px; background: #1B1F27; padding: 12px;
+  box-shadow: 0 40px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px #2E3440 inset;
+}
+.phone {
+  position: relative; width: 390px; height: 844px; border-radius: 54px; overflow: hidden; background: var(--canvas);
+  font-family: var(--ui); color: var(--paper); isolation: isolate;
+}
+.island { position: absolute; top: 11px; left: 50%; width: 120px; height: 34px; margin-left: -60px; background: #000; border-radius: 20px; z-index: 50; }
+.status { position: absolute; top: 0; left: 0; right: 0; height: 50px; z-index: 40; display: flex; justify-content: space-between; align-items: center; padding: 6px 30px 0 36px; font-weight: 700; font-size: 16px; pointer-events: none; }
+.status .sys { display: flex; gap: 6px; align-items: center; }
+.homebar { position: absolute; bottom: 8px; left: 50%; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: var(--paper); z-index: 60; opacity: 0.9; pointer-events: none; }
+.screen { position: absolute; inset: 0; }
+.screen.enter { animation: screenIn 260ms var(--ease-out) both; }
+@keyframes screenIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+.screen.fade { animation: fadeIn 220ms var(--ease-out) both; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* hotspot: come i suggerimenti di un prototipo Figma */
+.hot {
+  position: absolute; z-index: 80; border-radius: 16px; cursor: pointer;
+  box-shadow: 0 0 0 2px var(--giallo), 0 0 0 6px rgba(250, 219, 44, 0.25);
+  animation: hotPulse 1.8s var(--ease-out) infinite;
+}
+.hot span {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); white-space: nowrap;
+  background: var(--giallo); color: var(--canvas); font-weight: 700; font-size: 13px; padding: 5px 10px; border-radius: 8px;
+}
+.hot.below span { bottom: auto; top: calc(100% + 8px); }
+@keyframes hotPulse { 0%, 100% { box-shadow: 0 0 0 2px var(--giallo), 0 0 0 4px rgba(250, 219, 44, 0.35); } 50% { box-shadow: 0 0 0 2px var(--giallo), 0 0 0 10px rgba(250, 219, 44, 0); } }
+
+/* ---------- componenti dell'app ---------- */
+.txt-meta { font-size: 12px; line-height: 16px; font-weight: 500; }
+.txt-small { font-size: 14px; line-height: 20px; }
+.txt-label { font-size: 15px; line-height: 20px; font-weight: 700; }
+.txt-title { font-size: 20px; line-height: 25px; font-weight: 700; letter-spacing: -0.2px; }
+.txt-heading { font-family: var(--display); font-weight: 700; font-size: 30px; line-height: 34px; letter-spacing: -0.4px; }
+.dim { color: var(--paper-dim); } .faint { color: var(--paper-faint); }
+.mast { font-family: var(--display); font-weight: 900; letter-spacing: -0.03em; line-height: 1; display: inline-flex; }
+.mast i { font-style: normal; display: inline-block; }
+.mast.reveal i { animation: letterUp 360ms var(--ease-out) both; }
+@keyframes letterUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+.tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 84px; background: var(--canvas); border-top: 1px solid rgba(58, 66, 83, 0.7); display: flex; padding: 8px 4px 0; z-index: 20; }
+.tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; color: var(--paper-faint); font-size: 11px; font-weight: 500; }
+.tab.on { color: var(--paper); }
+.tab .plus { width: 52px; height: 36px; border-radius: 14px; background: var(--giallo); display: grid; place-items: center; margin-top: 4px; }
+
+.frame { position: relative; border-radius: 22px; overflow: hidden; background: var(--raised); }
+.slides { position: absolute; inset: 0; display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.slides::-webkit-scrollbar { display: none; }
+.slide { flex: 0 0 100%; height: 100%; scroll-snap-align: start; position: relative; }
+.slide img, .slide video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.counter { position: absolute; top: 12px; right: 12px; background: var(--scrim); border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 500; }
+.dots { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; }
+.dots b { width: 6px; height: 6px; border-radius: 3px; background: rgba(245, 243, 238, 0.45); transition: width 180ms var(--ease-out), background-color 180ms ease; }
+.dots b.on { width: 16px; background: var(--paper); }
+.stamp { position: absolute; left: 12px; bottom: 14px; background: var(--giallo); color: var(--canvas); border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 700; transform: rotate(-2deg); }
+.sound { position: absolute; top: 12px; left: 12px; width: 36px; height: 36px; border-radius: 18px; background: var(--scrim); display: grid; place-items: center; }
+.track { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(245, 243, 238, 0.2); }
+.track i { display: block; height: 100%; background: var(--giallo); transform-origin: left; transform: scaleX(0); }
+.mark { position: absolute; width: 150px; height: 150px; pointer-events: none; transition: opacity 220ms var(--ease-out); }
+.mark path { stroke-dasharray: 520; stroke-dashoffset: 520; animation: draw 420ms var(--ease-out) forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+
+.mono { border-radius: 50%; display: grid; place-items: center; font-family: var(--display); font-weight: 700; color: var(--canvas); flex: none; }
+.strip { display: flex; flex-direction: column; gap: 8px; padding: 0 4px; }
+.author { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.author .who { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.follow { border: 1px solid var(--paper); border-radius: 999px; padding: 5px 14px; font-size: 12px; font-weight: 700; }
+.actions { display: flex; gap: 20px; align-items: center; margin-top: 2px; }
+.act { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--paper-dim); min-height: 32px; }
+.act.on-red { color: var(--matita); } .act.on-yellow { color: var(--giallo); }
+
+.seg { position: relative; display: flex; width: 210px; padding: 4px; border-radius: 999px; background: var(--raised); }
+.seg .pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 999px; background: var(--paper); transition: transform 180ms var(--ease-out); }
+.seg.right .pill { transform: translateX(100%); }
+.seg button { position: relative; flex: 1; padding: 8px 0; font-size: 15px; font-weight: 700; color: var(--paper-dim); transition: color 180ms ease; }
+.seg button.on { color: var(--canvas); }
+.clock { display: inline-flex; align-items: center; gap: 6px; background: var(--raised); border-radius: 999px; padding: 8px 12px; font-size: 12px; font-weight: 700; }
+
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--sheet); border-radius: 24px 24px 0 0; z-index: 30; transform: translateY(100%); transition: transform 320ms var(--ease-sheet); box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.35); }
+.sheet.open { transform: translateY(0); }
+.grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--line); margin: 8px auto 0; }
+.backdrop { position: absolute; inset: 0; background: rgba(5, 8, 15, 0.5); z-index: 25; opacity: 0; transition: opacity 260ms var(--ease-out); }
+.backdrop.open { opacity: 1; }
+.field { display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1.5px solid var(--line); border-radius: 14px; padding: 0 16px; min-height: 48px; font-size: 16px; }
+.field.focus { border-color: var(--giallo); }
+.caret { display: inline-block; width: 2px; height: 20px; background: var(--giallo); animation: blink 1s steps(2) infinite; vertical-align: middle; }
+@keyframes blink { 50% { opacity: 0; } }
+.cta { display: grid; place-items: center; min-height: 52px; border-radius: 14px; background: var(--giallo); color: var(--canvas); font-weight: 700; font-size: 15px; }
+.cta.ghost { background: var(--raised); color: var(--paper); }
+
+.ladder { display: flex; flex-direction: column; gap: 10px; }
+.steps { display: flex; gap: 4px; }
+.steps b { flex: 1; height: 6px; border-radius: 6px; background: var(--line); overflow: hidden; position: relative; }
+.steps b i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--giallo); border-radius: 6px; transition: width 600ms var(--ease-out); }
+.steps b.final i { background: var(--matita); }
+.tiers { font-size: 12px; color: var(--paper-faint); }
+.tiers .now { color: var(--giallo); font-weight: 700; } .tiers .past { color: var(--paper); }
+
+.wall { position: absolute; inset: 0; display: flex; gap: 8px; padding: 0 4px; opacity: 0.9; }
+.wall .col { flex: 1; display: flex; flex-direction: column; gap: 8px; animation: wallUp 64s linear infinite; }
+.wall .col.rev { animation: wallDown 52s linear infinite; }
+.wall img { width: 100%; height: 252px; object-fit: cover; border-radius: 12px; display: block; }
+@keyframes wallUp { to { transform: translateY(-50%); } }
+@keyframes wallDown { from { transform: translateY(-50%); } to { transform: translateY(0); } }
+
+.pin { width: 170px; height: 255px; border-radius: 14px; border: 6px solid var(--paper); background: var(--paper); overflow: hidden; animation: pinIn 420ms var(--ease-out) both; }
+.pin img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 8px; }
+@keyframes pinIn { from { opacity: 0; transform: scale(0.92) rotate(-7deg); } to { opacity: 1; transform: scale(1) rotate(-2deg); } }
+
+.dialog { position: absolute; inset: 0; z-index: 45; display: grid; place-items: center; padding: 24px; background: rgba(5, 8, 15, 0.7); animation: fadeIn 220ms var(--ease-out) both; }
+.dialog > div { width: 100%; background: var(--sheet); border-radius: 22px; padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; animation: pop 260ms var(--ease-out) both; }
+@keyframes pop { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 12px; }
+.mini { position: relative; aspect-ratio: 2 / 3; border-radius: 16px; overflow: hidden; background: var(--raised); }
+.mini img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mini .m { position: absolute; top: 8px; left: 0; right: 0; text-align: center; font-family: var(--display); font-weight: 900; font-size: 30px; letter-spacing: -1px; line-height: 1; text-shadow: 0 1px 10px rgba(8, 12, 22, 0.7); }
+.mini .n { position: absolute; left: 8px; bottom: 8px; background: var(--giallo); color: var(--canvas); border-radius: 6px; padding: 2px 6px; font-size: 12px; font-weight: 700; }
+
+/* slide "dietro le quinte" */
+.board { width: 100%; max-width: 760px; background: var(--canvas); border: 1px solid var(--line); border-radius: 28px; padding: 32px; display: flex; flex-direction: column; gap: 26px; }
+.funnel { display: flex; flex-direction: column; gap: 10px; }
+.funnel .row { display: grid; grid-template-columns: 120px 1fr 92px; align-items: center; gap: 14px; font-size: 14px; }
+.funnel .row b { height: 28px; border-radius: 8px; background: var(--giallo); transform-origin: left; animation: grow 700ms var(--ease-out) both; }
+.funnel .row.final b { background: var(--matita); }
+.funnel .row span:last-child { text-align: right; font-weight: 700; }
+@keyframes grow { from { transform: scaleX(0.02); } to { transform: scaleX(1); } }
+.weights { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.weights div { background: var(--raised); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+.weights strong { font-family: var(--display); font-size: 26px; line-height: 1.1; }
+.weights .neg strong { color: var(--matita); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.fact { background: var(--raised); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+.fact strong { font-family: var(--display); font-weight: 700; font-size: 34px; line-height: 1; color: var(--giallo); }
+.checks { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; font-size: 14px; color: var(--paper-dim); }
+.checks li { display: flex; gap: 8px; }
+
+@media (max-width: 1220px) {
+  .app { grid-template-columns: minmax(0, 1fr) 360px; }
+  .flow { display: none; }
+}
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0, 1fr); gap: 20px; padding-block: 12px 96px; }
+  .top { margin-bottom: 4px; }
+  .bar { display: none; }
+  .brand span { display: none; }
+  .notes { position: static; }
+  .notes h2 { font-size: 30px; }
+  .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; padding: 12px max(16px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); background: var(--table); border-top: 1px solid var(--line); }
+  .nav .btn { flex: 1; justify-content: center; }
+  .hint { display: none; }
+  .board { padding: 20px; border-radius: 20px; }
+  .funnel .row { grid-template-columns: 92px 1fr 70px; font-size: 13px; }
+  .weights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .facts, .checks { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+  .wall .col { animation: none !important; }
+  .hot { animation: none !important; }
+  .mark path { stroke-dashoffset: 0; }
+}
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="brand"><b>Virale</b><span>Prototipo interattivo dell'app</span></div>
+    <div class="progress">
+      <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+      <p class="count" id="count" aria-live="polite"></p>
+    </div>
+  </header>
+
+  <nav class="flow" id="flow" aria-label="Passaggi del prototipo"></nav>
+
+  <main class="stage" id="stage"></main>
+
+  <aside class="notes">
+    <div class="notes-body" id="notes"></div>
+    <div class="nav">
+      <button class="btn" id="prev" type="button"></button>
+      <button class="btn primary" id="next" type="button"></button>
+    </div>
+    <p class="hint">Tocca il riquadro giallo sul telefono per proseguire, oppure usa i tasti freccia della tastiera.</p>
+  </aside>
+</div>
+
+<script>
+/*__MEDIA__*/
+const M = window.MEDIA || {};
+const V = window.VIDEO || {};
+
+/* ---------------- icone (stesso set dell'app) ---------------- */
+const ICONS = {
+  copertina: '<rect x="4.5" y="3" width="15" height="18" rx="2"/><path d="M4.5 8.5h15M8 13h5M8 16.5h8"/>',
+  provini: '<rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.5"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.5"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.5"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.5"/>',
+  scatta: '<path d="M12 5v14M5 12h14"/>',
+  archivio: '<rect x="5" y="7" width="14" height="14" rx="2"/><path d="M7.5 4h9M8.5 11.5h7"/>',
+  profilo: '<circle cx="12" cy="8.5" r="3.75"/><path d="M4.75 20c1.3-3.7 4.1-5.6 7.25-5.6s5.95 1.9 7.25 5.6"/>',
+  cerchia: '<path d="M16.9 5.6c-1.9-1.3-4.5-1.7-7-1.1C5.7 5.5 3.1 9.3 4 13.1c.9 3.9 5.2 6.1 9.5 5.1 4.3-1 7-4.9 6.1-8.7-.5-2-1.8-3.6-3.6-4.6-1.1-.6-2.3-.9-3.6-1"/>',
+  commento: '<path d="M5 7a2.5 2.5 0 0 1 2.5-2.5h9A2.5 2.5 0 0 1 19 7v6.5a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16H7.5A2.5 2.5 0 0 1 5 13.5Z"/>',
+  salva: '<path d="M7 4.5h10v15.5l-5-3.6-5 3.6Z"/>',
+  condividi: '<path d="M14 4h6v6M20 4l-8.5 8.5M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>',
+  chiudi: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  muto: '<path d="M4.5 9.5v5h3.5l5 4v-13l-5 4ZM16.5 9.5l5 5M21.5 9.5l-5 5"/>',
+  audio: '<path d="M4.5 9.5v5h3.5l5 4v-13l-5 4ZM16.5 9a4.2 4.2 0 0 1 0 6M19 6.5a7.8 7.8 0 0 1 0 11"/>',
+  fotocamera: '<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5Z"/><circle cx="12" cy="12.5" r="3.5"/>',
+  galleria: '<rect x="4" y="4" width="16" height="16" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="M20 15.5 15.5 11 6.5 20"/>',
+  check: '<path d="M5 12.5 9.5 17 19 7.5"/>',
+  segnala: '<path d="M6 21V4M6 4.5h11l-2.2 4L17 12.5H6"/>',
+  invia: '<path d="M12 19V5.5M6.5 11 12 5.5 17.5 11"/>',
+  cestino: '<path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/>',
+  segui: '<circle cx="10" cy="8.5" r="3.5"/><path d="M3.5 20c1.1-3.4 3.6-5.2 6.5-5.2 1.3 0 2.5.4 3.5 1M18 13.5v6M15 16.5h6"/>',
+  orologio: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4.2l2.8 1.8"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.2"/>',
+  sinistra: '<path d="M14 7l-5 5 5 5"/>',
+  destra: '<path d="M10 7l5 5-5 5"/>',
+  indietro: '<path d="M14.5 5.5 8 12l6.5 6.5"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5Z" fill="currentColor"/>',
+  dot: '<circle cx="12" cy="12" r="3" fill="currentColor"/>',
+};
+function icon(name, size = 24, color = 'currentColor', sw = 1.75, fill = 'none') {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${fill}" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:${color};flex:none">${ICONS[name]}</svg>`;
+}
+
+/* ---------------- dati demo (gli stessi dell'app) ---------------- */
+const INKS = ['#FADB2C', '#F65041', '#7FB2FF', '#61DA92', '#F2A6D6', '#FF9B54', '#B9A7FF'];
+function ink(seed) { let h = 7; for (const c of seed) h = (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0; return INKS[h % INKS.length]; }
+function mono(name, seed, size = 34) { return `<span class="mono" style="width:${size}px;height:${size}px;background:${ink(seed)};font-size:${size * 0.5}px">${name[0].toUpperCase()}</span>`; }
+
+const ME = { name: 'Emanuele', user: 'emanuele' };
+const POSTS = {
+  bimbi: { name: 'Lucia Marino', user: 'lucia.e.i.bimbi', ago: '2 h', media: ['img:bimba-fiori', 'img:bimbo'], caption: 'Lei annusa ogni fiore. Lui li vuole mangiare.', likes: 2650, comments: 1, saves: 310, shares: 180, tier: 'Bozza' },
+  lava: { name: 'Agata Russo', user: 'etna.di.notte', ago: '8 h', media: ['vid:lava-clip', 'img:lava'], caption: 'Etna stanotte, dal versante sud. Il calore si sente a 50 metri.', likes: 6930, comments: 2, saves: 1220, shares: 980, tier: 'Impaginato' },
+  gatti: { name: 'Elena Bassi', user: 'gatti.di.casa', ago: '1 h', media: ['img:gatto-neve', 'img:gatto'], caption: 'Prima neve. Prima espressione offesa della stagione.', likes: 12400, comments: 2, saves: 1840, shares: 2100 },
+  mio: { name: ME.name, user: ME.user, ago: 'ora', media: ['img:tulipani', 'img:palme', 'vid:fiore'], caption: 'Primavera in anticipo nel mio terrazzo.', likes: 0, comments: 0, saves: 0, shares: 0, tier: 'Provino' },
+};
+const COVERS = [
+  { n: 287, user: 'gatti.di.casa', img: 'gatto-neve', day: '14 ott', tot: '11.842' },
+  { n: 286, user: 'etna.di.notte', img: 'lava', day: '13 ott', tot: '10.970' },
+  { n: 285, user: 'fabio.meno18', img: 'sub', day: '12 ott', tot: '10.215' },
+  { n: 284, user: 'lupo.e.biscotto', img: 'cane-bagno', day: '11 ott', tot: '9.820' },
+  { n: 283, user: 'luca.in.quota', img: 'montagne', day: '10 ott', tot: '9.310' },
+];
+const fmt = (n) => (n >= 10000 ? Math.round(n / 1000) + 'k' : n >= 1000 ? (n / 1000).toFixed(1).replace('.', ',').replace(',0', '') + 'k' : String(n));
+
+function mediaEl(ref) {
+  const [kind, name] = ref.split(':');
+  if (kind === 'vid') {
+    const v = V[name] || {};
+    return `<video muted loop playsinline autoplay preload="auto" data-track>${v.webm ? `<source src="${v.webm}" type="video/webm">` : ''}${v.mp4 ? `<source src="${v.mp4}" type="video/mp4">` : ''}</video>`;
+  }
+  return `<img src="${M[name] || ''}" alt="" draggable="false">`;
+}
+
+/* ---------------- pezzi di schermata ---------------- */
+const statusBar = (dark) => `<div class="status" style="color:${dark ? 'var(--canvas)' : 'var(--paper)'}"><span>9:41</span><span class="sys"><svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg><svg width="26" height="12" viewBox="0 0 26 12"><rect x="0.5" y="0.5" width="22" height="11" rx="3.5" fill="none" stroke="currentColor" opacity="0.5"/><rect x="2" y="2" width="17" height="8" rx="2" fill="currentColor"/><rect x="24" y="4" width="1.5" height="4" rx="0.75" fill="currentColor" opacity="0.5"/></svg></span></div>`;
+
+function tabbar(active) {
+  const t = (key, ic, label) => `<div class="tab ${active === key ? 'on' : ''}" data-tab="${key}">${icon(ic, 24, active === key ? 'var(--paper)' : 'var(--paper-faint)', active === key ? 2 : 1.75)}<span>${label}</span></div>`;
+  return `<div class="tabbar">${t('copertina', 'copertina', 'Copertina')}${t('provini', 'provini', 'Provini')}<div class="tab" data-tab="scatta"><div class="plus">${icon('scatta', 22, 'var(--canvas)', 2.4)}</div></div>${t('archivio', 'archivio', 'Archivio')}${t('profilo', 'profilo', 'Profilo')}</div>`;
+}
+
+function frame(media, { stamp, h, rounded = true } = {}) {
+  const many = media.length > 1;
+  const isVid = media[0].startsWith('vid:');
+  return `<div class="frame" style="height:${h}px;${rounded ? '' : 'border-radius:0'}" data-frame>
+    <div class="slides" data-slides>${media.map((m) => `<div class="slide">${mediaEl(m)}${m.startsWith('vid:') ? '<div class="track"><i></i></div>' : ''}</div>`).join('')}</div>
+    ${isVid ? `<div class="sound">${icon('muto', 20, 'var(--paper)')}</div>` : ''}
+    ${many ? `<div class="counter" data-counter>1 / ${media.length}</div><div class="dots" data-dots>${media.map((_, i) => `<b class="${i === 0 ? 'on' : ''}"></b>`).join('')}</div>` : ''}
+    ${stamp ? `<div class="stamp">In gara · ${stamp}</div>` : ''}
+  </div>`;
+}
+
+function strip(p, { liked, saved } = {}) {
+  const likeN = p.likes + (liked ? 1 : 0);
+  return `<div class="strip">
+    <div class="author"><div class="who">${mono(p.name, p.user)}<div style="min-width:0"><div class="txt-label">${p.name}</div><div class="txt-meta faint">@${p.user} · ${p.ago}</div></div></div>${p.user === ME.user ? '' : '<span class="follow">Segui</span>'}</div>
+    <p class="txt-small dim" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${p.caption}</p>
+    <div class="actions">
+      <span class="act ${liked ? 'on-red' : ''}" data-like>${icon('cerchia', 24, liked ? 'var(--matita)' : 'var(--paper)', liked ? 2.4 : 1.75)}<span data-like-n>${fmt(likeN)}</span></span>
+      <span class="act" data-act="commento">${icon('commento', 24, 'var(--paper)')}${fmt(p.comments)}</span>
+      <span class="act ${saved ? 'on-yellow' : ''}">${icon('salva', 24, saved ? 'var(--giallo)' : 'var(--paper)', saved ? 2.4 : 1.75, saved ? 'var(--giallo)' : 'none')}${fmt(p.saves + (saved ? 1 : 0))}</span>
+      <span class="act">${icon('condividi', 24, 'var(--paper)')}${fmt(p.shares)}</span>
+    </div>
+  </div>`;
+}
+
+function feedHeader(mode = 'perte') {
+  return `<div style="position:absolute;top:54px;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:8px 16px">
+    <div class="seg ${mode === 'seguiti' ? 'right' : ''}" data-seg><span class="pill"></span><button class="${mode === 'perte' ? 'on' : ''}" data-mode="perte">Per te</button><button class="${mode === 'seguiti' ? 'on' : ''}" data-mode="seguiti">Seguiti</button></div>
+    <span class="clock">${icon('orologio', 16, 'var(--giallo)', 2)}<span data-clock>07:42:10</span></span>
+  </div>`;
+}
+
+function feedCard(p, opts = {}) {
+  return `<div style="position:absolute;top:112px;left:12px;right:12px;bottom:96px;display:flex;flex-direction:column;gap:12px">
+    ${frame(p.media, { stamp: opts.stamp === false ? null : p.tier, h: 486 })}
+    ${strip(p, opts)}
+  </div>`;
+}
+
+function ladder(stage, views, next) {
+  const names = ['Provino', 'Bozza', 'Impaginato', 'In macchina', 'Finale'];
+  return `<div class="ladder">
+    <div class="steps">${names.map((n, i) => `<b class="${i === 4 ? 'final' : ''}"><i style="width:${i < stage ? 100 : i === stage ? Math.max(4, views) : 0}%" ${i === stage ? 'data-fill' : ''}></i></b>`).join('')}</div>
+    <div class="tiers">${names.map((n, i) => `<span class="${i === stage ? 'now' : i < stage ? 'past' : ''}">${n}</span>`).join('  ·  ')}</div>
+    <p class="txt-small dim" data-ladder-text>${next}</p>
+  </div>`;
+}
+
+/* ---------------- le schermate ---------------- */
+const SCREENS = {
+  benvenuto: () => {
+    const cols = [['cinqueterre', 'gatto-neve', 'selfie', 'lava', 'sposi'], ['cane-bagno', 'mercato', 'sub', 'danza', 'strada'], ['bimbo', 'montagne', 'monaco', 'cavallo', 'ritratto']];
+    return `${statusBar()}<div class="wall">${cols.map((c, i) => `<div class="col ${i === 1 ? 'rev' : ''}">${[...c, ...c].map((n) => `<img src="${M[n]}" alt="">`).join('')}</div>`).join('')}</div>
+    <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(12,19,34,.35) 0%,rgba(12,19,34,.88) 45%,var(--canvas) 72%)"></div>
+    <div style="position:absolute;inset:0;padding:96px 24px 40px;display:flex;flex-direction:column">
+      <div style="text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px">${masthead(88, true)}<p style="font-family:var(--display);font-weight:500;font-size:22px;line-height:29px;max-width:320px">Ogni giorno una sola copertina. La scelgono gli occhi di tutti.</p></div>
+      <div style="flex:1"></div>
+      <div style="display:flex;flex-direction:column;gap:16px;margin-bottom:24px">
+        ${[['scatta', 'Pubblichi foto e video, come sempre.'], ['cerchia', 'Chi guarda decide: conta come ti guardano, non quanti follower hai.'], ['copertina', 'A mezzanotte un solo post diventa la copertina che vedono tutti.']].map(([i, t]) => `<div style="display:flex;gap:12px">${icon(i, 22, 'var(--giallo)')}<p>${t}</p></div>`).join('')}
+      </div>
+      <div class="cta" data-hot="inizia">Inizia</div>
+    </div>`;
+  },
+  nome: () => `${statusBar()}<div class="wall" style="opacity:.5">${[0, 1, 2].map(() => '<div class="col"></div>').join('')}</div>
+    <div style="position:absolute;inset:0;padding:96px 24px 40px;display:flex;flex-direction:column;background:var(--canvas)">
+      <div style="text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px">${masthead(88)}<p style="font-family:var(--display);font-weight:500;font-size:22px;line-height:29px;max-width:320px">Ogni giorno una sola copertina. La scelgono gli occhi di tutti.</p></div>
+      <div style="flex:1"></div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <p class="txt-title">Come ti chiami qui?</p>
+        <div class="field focus"><span class="faint">@</span><span>emanuele</span><span class="caret"></span></div>
+        <div class="field"><span>Emanuele</span></div>
+        <div class="cta" data-hot="entra">Entra</div>
+        <p class="txt-meta faint" style="text-align:center">Demo: i dati e il pubblico simulato restano su questo dispositivo.</p>
+      </div>
+    </div>`,
+  copertina: (o = {}) => coverScreen({ media: ['img:cinqueterre', 'img:borgo'], name: 'Giulia Ferri', user: 'giulia.viaggia', caption: 'Manarola alle 7, prima dei turisti. La seconda è Cortina, stessa settimana.', n: 288, day: 'giovedì 15 ottobre', tot: '12.408', views: '2 Mln', likes: 4120, reveal: o.reveal }),
+  provini: (o = {}) => `${statusBar()}${feedHeader()}${feedCard(POSTS.bimbi, { liked: o.liked })}${tabbar('provini')}`,
+  video: () => `${statusBar()}${feedHeader()}${feedCard(POSTS.lava)}${tabbar('provini')}`,
+  commenti: () => `${statusBar()}${feedHeader()}${feedCard(POSTS.lava)}${tabbar('provini')}
+    <div class="backdrop" data-backdrop></div>
+    <div class="sheet" data-sheet style="height:520px">
+      <div class="grabber"></div>
+      <div style="padding:20px 20px 0"><p class="txt-title">3 commenti</p></div>
+      <div style="padding:20px;display:flex;flex-direction:column;gap:20px">
+        ${[['Ale Rossi', 'ale.rossi', '2 h', 'Paura e meraviglia insieme'], ['Chiara B.', 'chiara.b', '1 h', 'Da quanto tempo non si vedeva così?'], ['Davide M.', 'davide_m', 'ora', 'Il rumore lo senti fino a Catania?']].map(([n, u, t, b]) => `<div style="display:flex;gap:12px">${mono(n, u, 32)}<div><p class="txt-meta faint"><b style="color:var(--paper)">@${u}</b>  ${t}</p><p>${b}</p></div></div>`).join('')}
+      </div>
+      <div style="position:absolute;left:0;right:0;bottom:0;padding:12px 16px 30px;display:flex;gap:8px;border-top:1px solid var(--line)">
+        <div class="field focus" style="flex:1"><span class="faint">Aggiungi un commento</span><span class="caret"></span></div>
+        <div style="width:48px;height:48px;border-radius:24px;background:var(--giallo);display:grid;place-items:center;opacity:.4">${icon('invia', 20, 'var(--canvas)', 2.4)}</div>
+      </div>
+    </div>`,
+  seguiti: () => `${statusBar()}${feedHeader('seguiti')}${feedCard(POSTS.gatti, { stamp: false })}${tabbar('provini')}`,
+  nuovo: () => `${statusBar()}${barTop('Nuovo post')}
+    <div style="position:absolute;top:110px;left:16px;right:16px;display:flex;flex-direction:column;gap:12px">
+      <div data-hot="galleria" style="background:var(--raised);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:8px">${icon('galleria', 30, 'var(--giallo)')}<p class="txt-title">Dalla galleria</p><p class="txt-small dim">Fino a 10 foto e video insieme, nell’ordine in cui li tocchi.</p></div>
+      <div style="background:var(--raised);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:8px">${icon('fotocamera', 30, 'var(--giallo)')}<p class="txt-title">Scatta o registra</p><p class="txt-small dim">Una foto o un video fino a 60 secondi.</p></div>
+    </div>`,
+  prepara: () => `${statusBar()}${barTop('Nuovo post')}
+    <div style="position:absolute;top:106px;left:16px;right:16px;bottom:24px;display:flex;flex-direction:column;gap:12px">
+      ${frame(POSTS.mio.media, { h: 300 })}
+      <div style="display:flex;gap:8px">${['tulipani', 'palme'].map((n, i) => `<div style="width:60px;height:90px;border-radius:10px;border:2px solid ${i === 0 ? 'var(--giallo)' : 'transparent'};padding:1px"><img src="${M[n]}" style="width:100%;height:100%;object-fit:cover;border-radius:7px;display:block" alt=""></div>`).join('')}<div style="width:60px;height:90px;border-radius:10px;background:var(--raised);display:grid;place-items:center">${icon('play', 16, 'var(--paper)')}</div><div style="width:60px;height:90px;border-radius:10px;border:2px dashed var(--line);display:grid;place-items:center">${icon('scatta', 22, 'var(--paper-dim)')}</div></div>
+      <div style="display:flex;gap:8px;align-items:center">${[['sinistra', 'Prima', 0.4], ['destra', 'Dopo', 1], ['cestino', 'Togli', 1]].map(([i, l, o]) => `<span style="opacity:${o};display:inline-flex;gap:6px;align-items:center;background:var(--raised);border-radius:999px;padding:8px 12px;font-size:12px">${icon(i, 18, 'var(--paper)')}${l}</span>`).join('')}<span class="txt-meta faint" style="margin-left:auto">3 / 10</span></div>
+      <div class="field" style="align-items:flex-start;padding:12px 16px;min-height:64px">Primavera in anticipo nel mio terrazzo.</div>
+      <div style="display:flex;gap:16px;align-items:center;background:var(--raised);border-radius:16px;padding:14px 16px"><div style="flex:1"><p class="txt-label">Candidalo per la copertina di domani</p><p class="txt-small dim">Entra nei Provini. Se vince, domani lo vede chiunque apra Virale.</p></div><span style="width:48px;height:28px;border-radius:14px;background:var(--giallo);padding:3px;flex:none"><i style="display:block;width:22px;height:22px;border-radius:11px;background:var(--paper);transform:translateX(20px)"></i></span></div>
+      <div class="cta" data-hot="pubblica">Pubblica e candida</div>
+    </div>`,
+  pubblicato: () => `${statusBar()}<div style="position:absolute;inset:0;padding:96px 24px 40px;display:flex;flex-direction:column;align-items:center;gap:24px">
+      <div class="pin"><img src="${M.tulipani}" alt=""></div>
+      <div style="text-align:center;display:flex;flex-direction:column;gap:8px"><h3 class="txt-heading">Sei nei Provini.</h3><p class="dim">Da adesso il tuo post arriva a un primo pubblico. Se piace, sale di gradino.</p></div>
+      <div style="align-self:stretch;background:var(--raised);border-radius:16px;padding:16px">${ladder(0, 0, '0 di 50 viste per passare a “Bozza”.')}</div>
+      <div style="flex:1"></div>
+      <div style="align-self:stretch;display:flex;flex-direction:column;gap:8px"><div class="cta">Guarda gli altri provini</div><div class="cta ghost" data-hot="fatto">Fatto</div></div>
+    </div>`,
+  profilo: () => `${statusBar()}<div style="position:absolute;top:58px;left:20px;right:20px;display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;align-items:center;gap:16px">${mono(ME.name, ME.user, 76)}<div><h3 class="txt-heading">${ME.name}</h3><p class="txt-small faint">@${ME.user}</p></div></div>
+      <div style="display:flex">${[['0', 'follower'], ['5', 'seguiti'], ['0', 'copertine']].map(([v, l]) => `<div style="flex:1"><p style="font-family:var(--display);font-weight:700;font-size:30px;line-height:34px">${v}</p><p class="txt-meta faint">${l}</p></div>`).join('')}</div>
+      <div data-hot="regole" style="display:flex;gap:8px;align-items:center;justify-content:center;background:var(--raised);border-radius:14px;padding:13px">${icon('info', 20, 'var(--paper)')}<span class="txt-label">Come si diventa copertina</span></div>
+      <div style="background:var(--raised);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px"><p class="txt-title">Il tuo post in gara oggi</p><div data-ladder>${ladder(0, 4, '0 di 50 viste per passare a “Bozza”.')}</div></div>
+      <div style="display:flex;gap:8px;margin-top:8px"><span style="background:var(--raised);border-radius:999px;padding:8px 14px" class="txt-label">Post 1</span><span style="padding:8px 14px" class="txt-label faint">Salvati 0</span></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin:0 -17px"><div style="aspect-ratio:2/3;border-radius:6px;overflow:hidden"><img src="${M.tulipani}" style="width:100%;height:100%;object-fit:cover;display:block" alt=""></div></div>
+    </div>${tabbar('profilo')}`,
+  regole: () => `${statusBar()}${SCREENS.profilo()}<div class="backdrop open"></div>
+    <div class="sheet open" style="top:60px;overflow:hidden">
+      <div class="grabber"></div>
+      <div style="padding:22px 20px;display:flex;flex-direction:column;gap:20px">
+        <div style="display:flex;flex-direction:column;gap:8px"><h3 class="txt-heading">Come si diventa copertina</h3><p class="dim">Ogni post candidato parte da un piccolo pubblico. Se piace più dell’80% degli altri post allo stesso gradino, sale e lo vedono più persone.</p></div>
+        <div style="background:var(--raised);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px">${ladder(2, 32, '1.210 di 1.800 viste per passare a “In macchina”.')}
+          ${[['Provino', 'fino a 50 viste'], ['Bozza', 'fino a 300 viste'], ['Impaginato', 'fino a 1.800 viste'], ['In macchina', 'fino a 10.000 viste'], ['Finale', 'pubblico aperto fino a mezzanotte']].map(([a, b]) => `<div style="display:flex;justify-content:space-between"><span class="txt-label">${a}</span><span class="txt-meta faint">${b}</span></div>`).join('')}
+        </div>
+        ${[['provini', 'Visti alla cieca', 'Nei Provini è l’app a scegliere cosa mostrare a ciascuno. Non puoi cercare un amico per votarlo e non vedi mai il tuo post.'], ['cerchia', 'Il voto è come guardi', 'Contano guardare fino in fondo, riguardare, commentare, salvare, condividere e cerchiare. Scorrere via subito conta contro.'], ['segnala', 'Niente trucchi', 'Un voto a testa per post. Gli account creati da meno di 24 ore guardano ma non votano. Oltre il 2% di segnalazioni si è fuori gara.']].map(([i, t, d]) => `<div style="display:flex;gap:16px"><span style="width:40px;height:40px;border-radius:20px;background:var(--raised);display:grid;place-items:center;flex:none">${icon(i, 22, 'var(--giallo)')}</span><div><p class="txt-label">${t}</p><p class="txt-small dim">${d}</p></div></div>`).join('')}
+      </div>
+    </div>`,
+  mezzanotte: () => coverScreen({ media: ['img:cinqueterre', 'img:borgo'], name: 'Giulia Ferri', user: 'giulia.viaggia', caption: 'Manarola alle 7, prima dei turisti. La seconda è Cortina, stessa settimana.', n: 288, day: 'giovedì 15 ottobre', tot: '12.408', views: '2 Mln', likes: 4120, clock: '00:00:03' }),
+  tuacopertina: () => coverScreen({ media: POSTS.mio.media, name: ME.name, user: ME.user, caption: POSTS.mio.caption, n: 289, day: 'venerdì 16 ottobre', tot: '12.731', views: '2,1 Mln', likes: 31840, mine: true, reveal: true }),
+  archivio: () => `${statusBar()}<div style="position:absolute;top:58px;left:16px;right:16px;bottom:84px;overflow:hidden;display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;flex-direction:column;gap:8px"><h3 class="txt-heading">Archivio</h3><p class="dim">Una copertina al giorno, scelta da chi guarda. 289 uscite finora.</p></div>
+      <div class="grid2">${[{ n: 289, user: ME.user, img: 'tulipani', day: '16 ott', tot: '12.731' }, { n: 288, user: 'giulia.viaggia', img: 'cinqueterre', day: '15 ott', tot: '12.408' }, ...COVERS].slice(0, 4).map((c) => `<div style="display:flex;flex-direction:column;gap:4px"><div class="mini"><img src="${M[c.img]}" alt=""><span class="m">Virale</span><span class="n">N. ${c.n}</span></div><p class="txt-label">@${c.user}</p><p class="txt-meta faint">${c.day} · su ${c.tot} provini</p></div>`).join('')}</div>
+    </div>${tabbar('archivio')}`,
+};
+
+function masthead(size, reveal) {
+  // Le lettere separate perdono la crenatura: la coppia V-i viene ristretta a mano.
+  if (!reveal) return `<span class="mast" style="font-size:${size}px">Virale</span>`;
+  return `<span class="mast reveal" style="font-size:${size}px" aria-label="Virale">${'Virale'.split('').map((c, i) => `<i style="animation-delay:${i * 40}ms;${i === 0 ? 'margin-right:-0.07em' : ''}" aria-hidden="true">${c}</i>`).join('')}</span>`;
+}
+function barTop(title) {
+  return `<div style="position:absolute;top:54px;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:8px 16px"><span style="width:40px;height:40px;border-radius:20px;background:var(--raised);display:grid;place-items:center">${icon('chiudi', 24, 'var(--paper)')}</span><span class="txt-title">${title}</span><span style="width:40px"></span></div>`;
+}
+function coverScreen(c) {
+  return `<div style="position:absolute;inset:0" ${c.reveal ? 'data-develop' : ''}>${frame(c.media, { h: 844, rounded: false })}</div>
+    ${c.reveal ? `<img data-blur src="${M[c.media[0].split(':')[1]]}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:blur(18px);transform:scale(1.08);transition:opacity 900ms var(--ease-out);pointer-events:none">` : ''}
+    <div style="position:absolute;top:0;left:0;right:0;height:220px;background:linear-gradient(180deg,rgba(12,19,34,.72),rgba(12,19,34,0));pointer-events:none"></div>
+    <div style="position:absolute;left:0;right:0;bottom:0;height:58%;background:linear-gradient(180deg,rgba(12,19,34,0),rgba(12,19,34,.92));pointer-events:none"></div>
+    ${statusBar()}
+    <div style="position:absolute;top:52px;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:4px;pointer-events:none">${masthead(76, c.reveal)}<div style="display:flex;align-items:center;gap:8px" class="txt-meta"><b>N. ${c.n}</b><i style="width:18px;height:1px;background:var(--paper);display:block"></i><b>${c.day}</b></div></div>
+    <div style="position:absolute;left:20px;right:20px;bottom:100px;display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;align-items:center;gap:12px">${mono(c.name, c.user, 44)}<div><p class="txt-heading">${c.name}</p><p class="txt-meta dim">@${c.user}</p></div></div>
+      ${c.mine ? '<p class="txt-label" style="align-self:flex-start;background:var(--giallo);color:var(--canvas);border-radius:8px;padding:6px 10px">Sei tu la copertina di oggi: ti vede chiunque apra Virale.</p>' : ''}
+      <p>${c.caption}</p>
+      <p class="txt-meta dim">Scelta tra ${c.tot} provini · ${c.views} viste in gara</p>
+      <div class="actions" style="margin:8px 0;gap:20px">
+        <span class="act" style="color:var(--paper-dim)">${icon('cerchia', 24, 'var(--paper)')}${fmt(c.likes)}</span><span class="act">${icon('commento', 24, 'var(--paper)')}Commenta</span><span class="act">${icon('salva', 24, 'var(--paper)')}Salva</span><span class="act">${icon('condividi', 24, 'var(--paper)')}Condividi</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;background:var(--giallo);color:var(--canvas);border-radius:14px;padding:12px 16px">${icon('orologio', 18, 'var(--canvas)', 2)}<span class="txt-label" style="flex:1">Prossima copertina tra <span data-clock>${c.clock || '07:42:10'}</span></span><span class="txt-meta" style="font-weight:700;text-decoration:underline">Come si sceglie</span></div>
+    </div>
+    ${tabbar('copertina')}`;
+}
+
+/* ---------------- slide "dietro le quinte" ---------------- */
+const BOARDS = {
+  motore: () => `<div class="board">
+    <div style="display:flex;flex-direction:column;gap:8px"><h3 class="txt-heading" style="font-size:34px;line-height:38px">Da 12.408 candidati a una copertina</h3><p class="dim">Esempio con la regola reale: a ogni gradino sale solo chi batte l’80% degli altri allo stesso gradino.</p></div>
+    <div class="funnel">${[['Provino', 12408, '50 viste'], ['Bozza', 2482, '300'], ['Impaginato', 496, '1.800'], ['In macchina', 99, '10.000'], ['Finale', 20, 'fino a 00:00'], ['Copertina', 1, '']].map(([n, v, s], i) => `<div class="row ${i === 5 ? 'final' : ''}"><span>${n}<br><span class="txt-meta faint">${s}</span></span><b style="width:${Math.max(1.5, (Math.log10(v + 1) / Math.log10(12409)) * 100)}%;animation-delay:${i * 70}ms"></b><span>${v.toLocaleString('it-IT')}</span></div>`).join('')}</div>
+    <div style="display:flex;flex-direction:column;gap:10px"><p class="txt-title">Quanto vale ogni gesto, per ogni vista</p>
+      <div class="weights">${[['+1', 'guardato fino in fondo'], ['+1,5', 'riguardato'], ['+2', 'cerchiato'], ['+3', 'commentato o salvato'], ['+6', 'condiviso'], ['−1,5', 'scorso via subito', 'neg'], ['−20', 'segnalato', 'neg'], ['20', 'viste di prudenza: con pochi dati il punteggio resta nella media']].map(([v, l, c]) => `<div class="${c || ''}"><strong>${v}</strong><span class="txt-meta dim">${l}</span></div>`).join('')}</div>
+    </div>
+    <p class="txt-small faint">Barre in scala logaritmica. Nel conteggio reale molti post non arrivano alla soglia del gradino: i numeri sopra sono il caso in cui tutti la raggiungono.</p>
+  </div>`,
+  verificato: () => `<div class="board">
+    <div style="display:flex;flex-direction:column;gap:8px"><h3 class="txt-heading" style="font-size:34px;line-height:38px">Verificato, non promesso</h3><p class="dim">Misure fatte sul codice che c’è nel repository.</p></div>
+    <div class="facts">
+      <div class="fact"><strong>10 su 10</strong><span class="txt-small dim">Giorni simulati (300 post, 5.000 spettatori) in cui il vincitore è tra i 5 migliori per qualità reale; in 7 è proprio il migliore. Lo spam acchiappa-click non vince mai.</span></div>
+      <div class="fact"><strong>~20 ms</strong><span class="txt-small dim">Per servire 10 post dei Provini e registrare 10 voti, con 20.000 post in gara, su Postgres 16 locale.</span></div>
+      <div class="fact"><strong>17 / 17</strong><span class="txt-small dim">Test del motore della gara superati (punteggi, livelli, regole, fuso orario).</span></div>
+      <div class="fact"><strong>1 riga</strong><span class="txt-small dim">La copertina è identica per tutti: si mette in cache per tutto il giorno, milioni di aperture non toccano il database.</span></div>
+    </div>
+    <ul class="checks">${['Un post in gara al giorno per persona', 'Si vota solo ciò che il server ti ha mostrato', 'Un voto per post, mai il proprio', 'Account sotto le 24 ore: guardano, non votano', 'Contatori di like non falsificabili', 'Video oltre 60 secondi rifiutati', 'Chiusura a mezzanotte idempotente', 'Solo il server può chiudere la giornata'].map((t) => `<li>${icon('check', 18, 'var(--giallo)', 2.2)}<span>${t}</span></li>`).join('')}</ul>
+  </div>`,
+};
+
+/* ---------------- il percorso ---------------- */
+const STEPS = [
+  { ch: 'Primo avvio', screen: 'benvenuto', title: 'Il primo avvio', lead: 'Dietro la testata scorre un muro di provini: i post in gara oggi. Tre righe spiegano tutto il gioco prima ancora di registrarsi.',
+    notes: ['La testata è in Bodoni, il carattere italiano per eccellenza: Virale si presenta come una rivista che esce ogni giorno.', 'Il muro scorre lento e lineare; con “Riduci movimento” attivo resta fermo.'], hot: { sel: '[data-hot=inizia]', label: 'Tocca “Inizia”' } },
+  { ch: 'Primo avvio', screen: 'nome', title: 'Basta un nome', lead: 'Uno username e si entra: nessuna email e nessuna password al primo avvio.',
+    notes: ['In produzione è un accesso anonimo di Supabase, che si può collegare dopo a un account.', 'Il campo attivo ha un bordo giallo: il focus si vede anche da tastiera.'], hot: { sel: '[data-hot=entra]', label: 'Entra' } },
+  { ch: 'La copertina', screen: 'copertina', opts: { reveal: true }, title: 'La copertina di oggi', lead: 'È il post che ha vinto la gara di ieri. Chiunque apra l’app oggi vede questo, a tutta pagina, con il numero dell’uscita e la data.',
+    notes: ['Alla prima apertura del giorno la foto “si sviluppa” da sfocata a nitida e la testata compare lettera per lettera. Succede una volta al giorno, per questo può durare un po’ di più.', 'Scorri la foto: la copertina può essere un carosello.', 'La fascia gialla conta il tempo alla prossima copertina.'], hot: { sel: '[data-tab=provini]', label: 'Apri i Provini' } },
+  { ch: 'I Provini', screen: 'provini', title: 'I Provini sono il feed', lead: 'Si scorre in verticale, un post alla volta, come su TikTok. Ma ogni post è una stampa sul tavolo luminoso: la foto in cornice e, sotto, autore, didascalia e azioni in riga.',
+    notes: ['Il timbro giallo dice che il post è in gara e a che gradino è arrivato.', 'In “Per te” l’ordine lo decide il server, alla cieca: non si può cercare l’amico per votarlo.'], hot: { x: 12, y: 112, w: 366, h: 486, label: 'Tocca due volte la foto' }, dbl: true },
+  { ch: 'I Provini', screen: 'provini', opts: { liked: true }, title: 'Cerchiare vuol dire “mi piace”', lead: 'Al doppio tocco un ovale di matita rossa si traccia attorno al punto toccato, come fa un photo editor sul provino che sceglie. Il contatore diventa rosso.',
+    notes: ['Il tratto dura 420 ms con una curva che parte veloce, poi svanisce. Il telefono vibra leggermente nello stesso istante.', 'Prova a toccare due volte in punti diversi della foto.'], enter: (s) => { const p = pendingMark || { x: 210, y: 330 }; pendingMark = null; drawMark(s, p.x, p.y); }, hot: { x: 12, y: 600, w: 366, h: 150, label: 'Avanti al post successivo', below: false }, free: true },
+  { ch: 'I Provini', screen: 'video', title: 'Video: conta guardarli fino in fondo', lead: 'I video partono da soli, senza audio; un tocco attiva il suono. La barra gialla in basso è l’avanzamento.',
+    notes: ['L’app misura se il video viene visto fino alla fine e se viene riguardato: per la gara sono tra i segnali più forti.', 'Scorri a sinistra: dopo il video c’è una foto, i post possono mescolare foto e video.'], hot: { sel: '[data-act=commento]', label: 'Commenti' } },
+  { ch: 'I Provini', screen: 'commenti', title: 'I commenti', lead: 'Si aprono in un foglio a metà schermo che si trascina fino in cima e si chiude con un gesto verso il basso.',
+    notes: ['Il foglio entra con la curva dei pannelli iOS in circa 300 ms. Su iPhone e Android è il foglio nativo del sistema.', 'Commentare è un segnale di gradimento: vale più di un cerchio.'], enter: (s) => requestAnimationFrame(() => { s.querySelector('[data-sheet]').classList.add('open'); s.querySelector('[data-backdrop]').classList.add('open'); }), hot: { x: 0, y: 54, w: 390, h: 260, label: 'Chiudi i commenti', below: true } },
+  { ch: 'I Provini', screen: 'seguiti', title: 'Per te e Seguiti', lead: 'In alto si passa da “Per te”, i post in gara scelti per te, a “Seguiti”: i post delle persone che segui, dal più recente.',
+    notes: ['Il passaggio è un interruttore: 180 ms, niente di più. Le cose che si fanno decine di volte al giorno non devono far aspettare.', 'L’orologio a destra è il tempo che resta alla chiusura della gara.'], hot: { sel: '[data-tab=scatta]', label: 'Pubblica un post' } },
+  { ch: 'Pubblicare', screen: 'nuovo', title: 'Solo foto e video', lead: 'Il pulsante giallo apre la creazione. Si pubblicano foto e video, fino a 10 elementi nello stesso post, anche mescolati.',
+    notes: ['Video fino a 60 secondi; il server rifiuta quelli più lunghi.', 'Dalla galleria si scelgono più elementi insieme, nell’ordine in cui si toccano.'], hot: { sel: '[data-hot=galleria]', label: 'Dalla galleria' } },
+  { ch: 'Pubblicare', screen: 'prepara', title: 'Prepara il post', lead: 'In alto l’anteprima che si scorre come il post vero. Sotto si riordina con Prima e Dopo, si toglie ciò che non serve, si scrive la didascalia.',
+    notes: ['L’interruttore candida il post alla copertina di domani. Se ne candida uno al giorno.', 'Il pulsante dice esattamente cosa succede: “Pubblica e candida”.'], hot: { sel: '[data-hot=pubblica]', label: 'Pubblica e candida' } },
+  { ch: 'Pubblicare', screen: 'pubblicato', title: 'Sei nei Provini', lead: 'Il post si appunta sul tavolo con una piccola rotazione e parte dal primo gradino: un primo pubblico di 50 persone.',
+    notes: ['È un momento raro, quindi può concedersi un po’ di gioia.', 'Da qui in poi è chi guarda a decidere quanto sale.'], hot: { sel: '[data-hot=fatto]', label: 'Fatto' } },
+  { ch: 'La gara', screen: 'profilo', title: 'Il tuo percorso, dal vivo', lead: 'Nel profilo il post in gara mostra i cinque gradini: Provino, Bozza, Impaginato, In macchina, Finale. La barra si riempie mentre le persone lo guardano.',
+    notes: ['Per salire servono le viste della soglia e un punteggio migliore dell’80% degli altri allo stesso gradino.', 'Nell’esempio il tuo post supera i primi 50 spettatori e passa a “Bozza”.'], enter: (s) => animateLadder(s), hot: { sel: '[data-hot=regole]', label: 'Come si diventa copertina' } },
+  { ch: 'La gara', screen: 'regole', title: 'Regole chiare per tutti', lead: 'Le regole della gara sono scritte nell’app, in parole semplici: chi partecipa sa come si vince.',
+    notes: ['Un voto a testa, mai sul proprio post. Gli account appena creati guardano ma non votano.', 'Chi va in copertina aspetta 30 giorni prima di ricandidarsi: la vetrina gira.'], hot: { x: 0, y: 0, w: 390, h: 60, label: 'Chiudi', below: true } },
+  { ch: 'La gara', screen: 'mezzanotte', title: 'Mezzanotte', lead: 'Alle 00:00 la gara si chiude. Vince il post salito più in alto; a parità, quello con il punteggio più solido su più viste.',
+    notes: ['La chiusura la fa il server (pg_cron su Supabase), non il telefono: nessuno può anticiparla.', 'Nell’esempio vince il tuo post.'], enter: (s) => midnight(s), hot: { sel: '[data-hot=vedi]', label: 'Guarda la copertina' }, wait: true },
+  { ch: 'La gara', screen: 'tuacopertina', title: 'La copertina sei tu', lead: 'Per tutto il giorno la tua foto è la prima cosa che vede chiunque apra Virale. Il resto del mondo la scopre da qui.',
+    notes: ['Stessa copertina per tutti: è anche la cosa più economica da servire a milioni di persone.', 'Il numero dell’uscita sale di uno ogni giorno: 289.'], hot: { sel: '[data-tab=archivio]', label: 'Archivio' } },
+  { ch: 'La gara', screen: 'archivio', title: 'L’Archivio', lead: 'Tutte le copertine uscite, come una pila di numeri arretrati. La tua resta lì, con il suo numero.',
+    notes: ['Ogni copertina riporta su quanti provini ha vinto.'], hot: null },
+  { ch: 'Dietro le quinte', board: 'motore', title: 'Come si sceglie la copertina', lead: 'La viralità di TikTok è una serie di esami su pubblici sempre più grandi. Virale ne fa una gara giornaliera con un solo vincitore.',
+    notes: ['Ogni gesto di chi guarda vale punti; skip e segnalazioni tolgono.', 'Il punteggio parte prudente: con pochi spettatori conta poco, così la fortuna iniziale non basta.'], hot: null },
+  { ch: 'Dietro le quinte', board: 'verificato', title: 'Funziona davvero', lead: 'Il motore della gara è testato, simulato con migliaia di spettatori e misurato su un database vero.',
+    notes: ['Per andare sugli store servono gli account Apple e Google, oltre alla moderazione dei contenuti e alla privacy policy.'], hot: null },
+];
+
+/* ---------------- motore del prototipo ---------------- */
+const stage = document.getElementById('stage');
+const notesEl = document.getElementById('notes');
+let current = -1;
+let pendingMark = null;
+let timers = [];
+const clearTimers = () => { timers.forEach((t) => clearTimeout(t)); timers = []; };
+const later = (fn, ms) => timers.push(setTimeout(fn, ms));
+
+function renderFlow() {
+  const chapters = [];
+  STEPS.forEach((s, i) => {
+    let c = chapters.find((x) => x.name === s.ch);
+    if (!c) chapters.push((c = { name: s.ch, items: [] }));
+    c.items.push([s, i]);
+  });
+  document.getElementById('flow').innerHTML = chapters.map((c) => `<section class="chapter"><h3>${c.name}</h3><ol>${c.items.map(([s, i]) => `<li><button type="button" data-go="${i}"><span class="n">${i + 1}</span><span>${s.title}</span></button></li>`).join('')}</ol></section>`).join('');
+  document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(+b.dataset.go)));
+}
+
+function fitDevice(device) {
+  const wide = window.innerWidth > 860;
+  // Su telefono si lascia spazio sotto per l'inizio della spiegazione.
+  const availH = wide ? window.innerHeight - 120 : window.innerHeight * 0.64;
+  const availW = stage.clientWidth;
+  const s = Math.min(1, availH / 868, availW / 414);
+  device.style.setProperty('--s', Math.max(0.5, s).toFixed(3));
+}
+
+function go(i) {
+  if (i < 0 || i >= STEPS.length || i === current) return;
+  const forward = i > current;
+  clearTimers();
+  current = i;
+  const step = STEPS[i];
+
+  if (step.board) {
+    stage.innerHTML = BOARDS[step.board]();
+  } else {
+    let device = stage.querySelector('.device');
+    if (!device) {
+      stage.innerHTML = `<div class="device"><div class="bezel"><div class="phone" id="phone"><div class="island"></div><div class="homebar"></div></div></div></div>`;
+      device = stage.querySelector('.device');
+    }
+    fitDevice(device);
+    const phone = document.getElementById('phone');
+    phone.querySelectorAll('.screen').forEach((n) => n.remove());
+    phone.querySelectorAll('.hot').forEach((n) => n.remove());
+    const screen = document.createElement('div');
+    screen.className = `screen ${forward ? 'enter' : 'fade'}`;
+    screen.innerHTML = SCREENS[step.screen](step.opts || {});
+    phone.prepend(screen);
+    wire(screen, step);
+    if (step.enter) step.enter(screen);
+    develop(screen);
+    if (step.hot) later(() => placeHot(phone, screen, step), step.wait ? 3600 : 450);
+  }
+
+  // Note del passaggio: dissolvenza breve, il testo cambia mentre è invisibile.
+  notesEl.classList.add('out');
+  later(() => {
+    notesEl.innerHTML = `<h2>${step.title}</h2><p class="lead">${step.lead}</p><ul>${step.notes.map((n) => `<li>${icon('dot', 22, 'var(--giallo)')}<span>${n}</span></li>`).join('')}</ul>`;
+    notesEl.classList.remove('out');
+  }, 120);
+
+  document.getElementById('count').innerHTML = `<strong>${i + 1}</strong> di ${STEPS.length} · ${step.ch}`;
+  document.getElementById('bar').style.transform = `scaleX(${(i + 1) / STEPS.length})`;
+  document.getElementById('prev').disabled = i === 0;
+  const next = document.getElementById('next');
+  next.innerHTML = i === STEPS.length - 1 ? 'Ricomincia dall’inizio' : `Avanti ${icon('destra', 20, 'var(--canvas)', 2.2)}`;
+  document.querySelectorAll('[data-go]').forEach((b) => {
+    const n = +b.dataset.go;
+    if (n === i) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current');
+    b.classList.toggle('done', n < i);
+  });
+  try { history.replaceState(null, '', `#passo-${i + 1}`); } catch (e) { /* frame bloccato: nessun problema */ }
+}
+
+function placeHot(phone, screen, step) {
+  let { x, y, w, h } = step.hot;
+  if (step.hot.sel) {
+    const el = screen.querySelector(step.hot.sel);
+    if (!el) return;
+    const pr = phone.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const s = pr.width / 390;
+    x = (r.left - pr.left) / s; y = (r.top - pr.top) / s; w = r.width / s; h = r.height / s;
+  }
+  const hot = document.createElement('button');
+  hot.type = 'button';
+  hot.className = `hot ${step.hot.below || y < 120 ? 'below' : ''}`;
+  hot.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px`;
+  hot.setAttribute('aria-label', step.hot.label);
+  hot.innerHTML = `<span>${step.hot.label}</span>`;
+  if (step.dbl) {
+    hot.style.background = 'transparent';
+    let lastTap = 0;
+    hot.addEventListener('click', (e) => {
+      const now = Date.now();
+      const pr = phone.getBoundingClientRect();
+      const s = pr.width / 390;
+      if (now - lastTap < 320) { pendingMark = { x: (e.clientX - pr.left) / s, y: (e.clientY - pr.top) / s }; go(current + 1); }
+      lastTap = now;
+    });
+  } else {
+    hot.addEventListener('click', () => go(current + 1));
+  }
+  phone.appendChild(hot);
+}
+
+/* Comportamenti dentro le schermate: carosello, video, doppio tocco, interruttore. */
+function wire(screen, step) {
+  screen.querySelectorAll('[data-frame]').forEach((fr) => {
+    const slides = fr.querySelector('[data-slides]');
+    const counter = fr.querySelector('[data-counter]');
+    const dots = fr.querySelectorAll('[data-dots] b');
+    slides.addEventListener('scroll', () => {
+      const i = Math.round(slides.scrollLeft / slides.clientWidth);
+      if (counter) counter.textContent = `${i + 1} / ${dots.length}`;
+      dots.forEach((d, k) => d.classList.toggle('on', k === i));
+    }, { passive: true });
+    if (step.free) {
+      slides.addEventListener('dblclick', (e) => {
+        const pr = screen.getBoundingClientRect();
+        const s = pr.width / 390;
+        drawMark(screen, (e.clientX - pr.left) / s, (e.clientY - pr.top) / s);
+      });
+    }
+  });
+  screen.querySelectorAll('video[data-track]').forEach((v) => {
+    const bar = v.parentElement.querySelector('.track i');
+    v.addEventListener('timeupdate', () => { if (bar && v.duration) bar.style.transform = `scaleX(${v.currentTime / v.duration})`; });
+    v.play().catch(() => {});
+  });
+  const seg = screen.querySelector('[data-seg]');
+  if (seg) seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    seg.classList.toggle('right', b.dataset.mode === 'seguiti');
+    seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+  }));
+  const clock = screen.querySelector('[data-clock]');
+  if (clock && step.screen !== 'mezzanotte') {
+    let left = 7 * 3600 + 42 * 60 + 10;
+    const tick = () => { left--; const p = (n) => String(n).padStart(2, '0'); clock.textContent = `${p(Math.floor(left / 3600))}:${p(Math.floor((left % 3600) / 60))}:${p(left % 60)}`; later(tick, 1000); };
+    later(tick, 1000);
+  }
+}
+
+function drawMark(screen, x, y, like = true) {
+  if (!screen) return;
+  const mark = document.createElement('div');
+  mark.className = 'mark';
+  mark.style.cssText = `left:${x - 75}px;top:${y - 75}px;z-index:35`;
+  mark.innerHTML = '<svg width="150" height="150" viewBox="0 0 150 150"><path d="M108 33c-12-8-28-11-44-7C37 32 20 56 26 80c6 25 33 39 60 33s45-31 39-55c-3-13-11-23-23-29-7-4-15-6-23-6" stroke="#F65041" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+  screen.appendChild(mark);
+  setTimeout(() => { mark.style.opacity = '0'; }, 650);
+  setTimeout(() => mark.remove(), 900);
+  if (like) {
+    const l = screen.querySelector('[data-like]');
+    if (l && !l.classList.contains('on-red')) {
+      l.classList.add('on-red');
+      l.querySelector('svg').outerHTML = icon('cerchia', 24, 'var(--matita)', 2.4);
+      const n = l.querySelector('[data-like-n]');
+      n.textContent = fmt(POSTS.bimbi.likes + 1);
+    }
+  }
+}
+
+function develop(screen) {
+  const blur = screen.querySelector('[data-blur]');
+  if (blur) requestAnimationFrame(() => requestAnimationFrame(() => { blur.style.opacity = '0'; }));
+}
+
+function animateLadder(screen) {
+  const box = screen.querySelector('[data-ladder]');
+  let views = 0;
+  const step = () => {
+    views = Math.min(50, views + 7);
+    if (views < 50) {
+      box.querySelector('[data-fill]').style.width = `${Math.max(4, (views / 50) * 100)}%`;
+      box.querySelector('[data-ladder-text]').textContent = `${views} di 50 viste per passare a “Bozza”.`;
+      later(step, 450);
+    } else {
+      box.innerHTML = ladder(1, 6, '64 di 300 viste per passare a “Impaginato”. Ha battuto l’83% dei provini di oggi.');
+    }
+  };
+  later(step, 700);
+}
+
+function midnight(screen) {
+  const clock = screen.querySelector('[data-clock]');
+  [2, 1, 0].forEach((s, k) => later(() => { clock.textContent = `00:00:0${s}`; }, (k + 1) * 900));
+  later(() => {
+    const d = document.createElement('div');
+    d.className = 'dialog';
+    d.innerHTML = `<div><span style="font-family:var(--display);font-weight:900;font-size:64px;line-height:1">N. 289</span><p class="txt-heading">Hai vinto tu.</p><p class="dim">Su 12.731 provini, il tuo è salito più in alto. Da adesso è la prima cosa che vede chiunque apra l’app.</p><div class="cta" data-hot="vedi" style="align-self:stretch;margin-top:6px">Guarda la copertina</div></div>`;
+    screen.appendChild(d);
+  }, 3300);
+}
+
+document.getElementById('prev').innerHTML = `${icon('sinistra', 20, 'var(--paper)', 2.2)} Indietro`;
+document.getElementById('prev').addEventListener('click', () => go(current - 1));
+document.getElementById('next').addEventListener('click', () => (current === STEPS.length - 1 ? go(0) : go(current + 1)));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') { e.preventDefault(); current === STEPS.length - 1 ? go(0) : go(current + 1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); go(current - 1); }
+});
+window.addEventListener('hashchange', () => { const m = /^#passo-(\d+)$/.exec(location.hash || ''); if (m) go(Math.min(STEPS.length, Math.max(1, +m[1])) - 1); });
+window.addEventListener('resize', () => { const d = stage.querySelector('.device'); if (d) fitDevice(d); });
+
+renderFlow();
+const fromHash = /^#passo-(\d+)$/.exec(location.hash || '');
+go(fromHash ? Math.min(STEPS.length, Math.max(1, +fromHash[1])) - 1 : 0);
+</script>

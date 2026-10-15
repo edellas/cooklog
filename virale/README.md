@@ -1,124 +1,124 @@
-# 🔥 Virale
+# Virale
 
-**Ogni giorno un solo utente diventa virale, e il giorno dopo lo vede chiunque apra l’app.**
+**Funziona come TikTok: si pubblicano foto e video e si scorrono in verticale. In più, ogni giorno un solo post diventa la Copertina, e il giorno dopo lo vede chiunque apra l'app.**
 
-App mobile multipiattaforma (iOS, Android e web da un unico codice) in Expo / React Native.
-Chiunque pubblica video, foto o testi; i contenuti si sfidano tutto il giorno nell’**Arena**,
-e a mezzanotte ne vince uno solo.
+App mobile multipiattaforma (iOS, Android e web dallo stesso codice) in Expo SDK 54 / React Native, con Expo Router.
 
-## Come funziona TikTok (e cosa abbiamo ripreso)
+- **Prototipo interattivo** (18 passaggi, stile Figma): `python3 prototype/build.py` → `prototype/dist/virale-prototipo.html`.
+- **Linguaggio visivo**: [DESIGN.md](DESIGN.md).
 
-Analisi basata su fonti pubbliche (nessuna decompilazione dell’app): il post ufficiale
-“How TikTok recommends videos #ForYou” (2020), il paper ByteDance *Monolith* (2022), il documento
-interno “TikTok Algo 101” riportato dal New York Times (2021) e il TikTok Transparency Center.
+## Cosa fa
 
-| Meccanismo di TikTok | Come lo usa Virale |
+| Schermata | Cosa succede |
 |---|---|
-| Il feed “Per te” non dipende dai follower: ogni video può arrivare a chiunque | L’Arena ignora completamente i follower: tutti partono alla pari |
-| Contano i segnali impliciti: completamento, ri-visione, condivisioni, like; lo skip è negativo | Stessi segnali, con pesi pubblici: completamento +1, ri-visione +1,5, like +2, condivisione +6, skip −1,5, segnalazione −20 |
-| Pool di traffico a livelli: un video nuovo va a poche centinaia di persone, poi sale se le metriche reggono | Livelli 50 → 300 → 1.800 → 10.000 viste, poi la finale. Sale solo chi supera l’80° percentile del proprio livello |
-| Esplorazione: una quota del feed va ai contenuti nuovi | Metà di ogni batch dell’Arena è riservata ai contenuti appena entrati in gara |
-| Moderazione e anti-frode | Assegnazione alla cieca, un voto per contenuto, account nuovi senza voto, squalifica per segnalazioni |
+| **Copertina** | Il post vincitore di ieri a tutta pagina, con testata, numero dell'uscita e data. È identico per tutti. Alla prima apertura del giorno la foto "si sviluppa" da sfocata a nitida. In basso il conto alla rovescia per la prossima copertina. |
+| **Provini** | Il feed verticale. "Per te" mostra i post in gara oggi, scelti dal server alla cieca; "Seguiti" mostra le persone che segui. Doppio tocco = cerchia (mi piace), poi commenti, salva, condividi, segui. Caroselli di foto e video, con audio a richiesta. |
+| **Pubblica** (pulsante giallo) | Da 1 a 10 foto e/o video dalla galleria o dalla fotocamera. Si possono riordinare e togliere, si scrive la didascalia e si sceglie se candidarsi per la copertina di domani (uno al giorno). |
+| **Archivio** | Tutte le copertine uscite, con il loro numero. |
+| **Profilo** | Follower, seguiti, copertine vinte; il tuo post in gara oggi con i cinque gradini; i tuoi post e i salvati. |
+| **Commenti / Regole** | Fogli nativi (form sheet) che si aprono a metà schermo. |
 
-**La differenza:** su TikTok diventano virali migliaia di contenuti al giorno e decide un modello
-opaco. Qui c’è **un vincitore al giorno**, con regole uguali per tutti, e la sua ricompensa è
-garantita: il giorno dopo è la prima cosa che vede ogni utente.
+## Come si sceglie la copertina
 
-## Il ciclo di un giorno
+1. Ogni post candidato parte da un piccolo pubblico: **Provino**, 50 viste.
+2. Al raggiungimento della soglia viene valutato. Sale solo se batte l'80% dei post che hanno completato lo stesso gradino quel giorno: **Bozza** (300) → **Impaginato** (1.800) → **In macchina** (10.000) → **Finale**.
+3. Il voto è il modo in cui si guarda. Punti per vista:
 
-1. **Pubblica**: video (max 60 s), foto o testo. Con l’interruttore “Candida al Virale di domani”
-   entra in gara: **uno al giorno per utente**, candidature fino alle 20:00 (ora di Roma).
-2. **Arena** (il feed): il server sceglie cosa mostrare a ciascuno, alla cieca. Non si può cercare
-   il contenuto di un amico per votarlo, e non si vede mai il proprio. **Il voto è come guardi**:
-   tempo di visione, video visto fino in fondo, ri-visioni, like, condivisioni, segnalazioni.
-3. **Livelli**: raggiunta la soglia di viste del proprio livello, un contenuto viene valutato. Se è
-   nel 20% migliore di chi ha completato lo stesso livello quel giorno sale e riceve un pubblico più
-   grande; altrimenti si ferma. Il creator vede la sua barra di avanzamento in tempo reale.
-4. **Mezzanotte**: vince chi è arrivato al livello più alto; a parità, chi ha il **limite inferiore**
-   del punteggio più alto. Il punteggio è bayesiano: la fortuna su pochi spettatori non basta.
-5. **Il giorno dopo**: la tab **Oggi** mostra a tutti il vincitore; resta per sempre
-   nell’**Albo d’oro**.
+   | Gesto | Punti |
+   |---|---|
+   | Visto fino in fondo | +1 |
+   | Riguardato | +1,5 |
+   | Cerchiato (mi piace) | +2 |
+   | Commentato | +3 |
+   | Salvato | +3 |
+   | Condiviso | +6 |
+   | Scorso via subito | −1,5 |
+   | Segnalato | −20 |
 
-**Anti-trucchi:** un voto per contenuto per persona; si vota solo ciò che il server ti ha mostrato;
-gli account con meno di 24 ore guardano ma non votano; tempo di visione dichiarato limitato a 60 s;
-squalifica oltre il 2% di segnalazioni; chi vince non può ripartecipare per 30 giorni (così la
-vetrina ruota).
+   Il punteggio parte da una media di prudenza di 20 viste, così pochi spettatori fortunati non bastano.
+4. A mezzanotte (Europe/Rome) vince chi è salito più in alto; a parità, il limite inferiore del punteggio più alto.
+5. **Anti-trucchi**:
+   - si vota solo ciò che il server ti ha mostrato, una volta e mai sul proprio post;
+   - gli account con meno di 24 ore guardano ma non votano;
+   - oltre il 2% di segnalazioni si è fuori gara;
+   - chi va in copertina aspetta 30 giorni per ricandidarsi;
+   - i contatori di like, salvataggi e commenti li mantiene il database.
 
 ## Avvio
 
 ```bash
 cd virale
 npm install
-npx expo start          # poi: i = iOS, a = Android, w = web, oppure scansiona il QR con Expo Go
+npx expo start        # i = iOS, a = Android, w = web, oppure il QR con Expo Go
 ```
 
-Senza configurazione l’app parte in **modalità demo**: la gara gira sul dispositivo con un pubblico
-simulato e creator fittizi, al primo avvio c’è già un “virale di oggi”, durante l’uso il pubblico
-continua a guardare (anche il tuo contenuto sale di livello dal vivo), e il pulsante
-“Chiudi la giornata (demo)” chiude subito la gara e incorona il vincitore.
+Senza configurazione parte in **modalità demo**:
+- creator, foto e video di esempio e un pubblico simulato che continua a guardare mentre usi l'app (anche il tuo post sale di gradino dal vivo);
+- il link "Demo: simula la mezzanotte" sotto la copertina chiude subito la gara.
 
 ## Verifiche
 
 ```bash
-npm test             # test del motore (16 test)
-npm run simulate     # simulazione: N contenuti con qualità nascosta e migliaia di spettatori
+npm test            # 17 test del motore della gara
+npm run simulate    # simulazione con migliaia di spettatori
 npm run typecheck
 npm run lint
 ```
 
-- **Simulazione** (`npm run simulate -- 300 5000 30 10`): con 300 contenuti, 5.000 spettatori e il 2%
-  di spam “acchiappa-click”, il vincitore è **sempre nel top 5 per qualità reale** e **lo spam non
-  vince mai** (viene squalificato dalle segnalazioni).
-- **Database**: `supabase/tests/e2e.sql` verifica su Postgres 16 le regole della gara (candidatura
-  doppia o altrui rifiutata, voto su contenuto non servito rifiutato, doppio voto rifiutato, nessuno
-  vede il proprio contenuto, promozione, vincitore corretto, chiusura idempotente, `anon` non può
-  chiudere la giornata). Un client non può scrivere direttamente nelle tabelle della gara (RLS).
+- **Simulazione** (`npm run simulate -- 300 5000 30 10`): 300 post e 5.000 spettatori, con il 2% di spam acchiappa-click. Il vincitore è tra i 5 migliori per qualità reale in 10 giorni su 10 (il migliore in 7) e lo spam non vince mai.
+- **Database**: `supabase/tests/e2e.sql`, su Postgres 16, verifica le regole della gara:
+  - media non validi rifiutati (0 o più di 10 elementi, video oltre 60 s);
+  - contatori falsificati rifiutati;
+  - doppia candidatura e candidatura di un post altrui rifiutate;
+  - voto su un post non servito e doppio voto rifiutati;
+  - nessuno vede il proprio post;
+  - mi piace a nome di altri rifiutato;
+  - contatori corretti, feed "Seguiti", profilo;
+  - promozione tra gradini, vincitore, chiusura idempotente;
+  - `anon` non può chiudere la giornata.
 
-```bash
-createdb virale_test
-psql -d virale_test -v ON_ERROR_STOP=1 -f supabase/tests/auth-stub.sql -f supabase/schema.sql -f supabase/tests/e2e.sql
-```
+  ```bash
+  createdb virale_test
+  psql -d virale_test -v ON_ERROR_STOP=1 -f supabase/tests/auth-stub.sql -f supabase/schema.sql -f supabase/tests/e2e.sql
+  ```
+- **Carico**: con 20.000 post in gara, servire 10 Provini (già composti in JSON) e registrare 10 voti richiede circa 20 ms su un core (Postgres 16 locale, senza tuning).
+- **App web**: percorso completo verificato in Chromium automatizzato (benvenuto, copertina, provini, cerchia, commenti, seguiti, pubblicazione con foto e video, profilo, archivio, regole, mezzanotte simulata). Quel Chromium non ha il codec H.264, quindi lì i video demo non partono; su iOS, Android, Chrome e Safari sì. Su un telefono vero l'app non è ancora stata provata.
 
 ## Produzione (milioni di utenti)
 
-1. Crea un progetto **Supabase**. Nel SQL Editor esegui `supabase/schema.sql`.
-2. **Authentication → Providers**: abilita gli accessi anonimi (l’onboarding chiede solo uno username;
-   puoi aggiungere email/Apple/Google in seguito).
-3. **Storage**: crea il bucket pubblico `media` con le policy in fondo allo schema.
-4. **Database → Extensions**: abilita `pg_cron` e programma la chiusura giornaliera:
+1. Crea un progetto **Supabase** ed esegui `supabase/schema.sql` nel SQL Editor.
+2. **Authentication → Providers**: abilita gli accessi anonimi; l'onboarding chiede solo uno username.
+3. **Storage**: crea il bucket pubblico `media` con le policy indicate in fondo allo schema; metti una CDN davanti ai video.
+4. **Database → Extensions**: abilita `pg_cron` e programma la chiusura:
    `select cron.schedule('arena-close-day', '5 0 * * *', $$ select public.arena_close_day(public.arena_today() - 1) $$);`
-5. Crea `virale/.env.local` con `EXPO_PUBLIC_SUPABASE_URL=…` e `EXPO_PUBLIC_SUPABASE_ANON_KEY=…`.
-6. Store: `npx eas build --platform all` e `npx eas submit` (servono gli account Apple Developer e
-   Google Play). Gli identificativi sono `app.virale.mobile` in `app.json`: cambiali se vuoi un
-   dominio tuo.
+5. Crea `virale/.env.local` con `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
+6. Store: `npx eas build --platform all` e `npx eas submit` (servono gli account Apple Developer e Google Play). Gli identificativi sono `app.virale.mobile`.
 
 Perché regge il carico:
+- la copertina è una sola riga uguale per tutti, cacheabile per tutto il giorno;
+- i contatori della gara sono divisi su 16 shard, così i post più votati non bloccano una riga;
+- i candidati si campionano da un punto casuale di un indice invece di ordinare la tabella;
+- le righe per-spettatore si cancellano dopo 7 giorni.
 
-- **Il virale è uguale per tutti**: `get_daily_viral()` restituisce una sola riga, cacheabile su CDN
-  per tutta la giornata. Milioni di aperture della tab Oggi non toccano il database.
-- **Contatori shardati**: ogni vista incrementa uno di 16 shard del contenuto, così i finalisti con
-  migliaia di viste al secondo non bloccano una riga. Il lock si prende solo al cambio di livello.
-- **Campionamento O(log n)** dei candidati da un punto casuale di un indice, invece di ordinare la
-  tabella. Misurato in locale: con 20.000 contenuti in gara, servire 10 contenuti e registrare 10 viste
-  costa ~8 ms su un core (Postgres 16 locale, senza tuning).
-- Le righe per-spettatore si cancellano dopo 7 giorni. Oltre le decine di milioni di viste al giorno:
-  partizionare `arena_views` per giorno, mettere `arena_record_view` dietro una coda con aggregazione
-  a micro-batch e servire i candidati da Redis. Le regole non cambiano.
+Oltre le decine di milioni di viste al giorno: partizionare `arena_views` per giorno, mettere `arena_record_view` dietro una coda e servire i candidati da Redis.
 
-Prima del lancio pubblico servono comunque: moderazione (umana o automatica) di video e foto e
-controllo dei finalisti prima della mezzanotte, notifica push giornaliera (“Il virale di oggi è…”),
-privacy policy, termini d’uso e segnalazione/blocco utenti come richiesto da App Store e Google Play.
+Prima del lancio servono comunque:
+- moderazione di foto e video (automatica e umana sui finalisti);
+- notifiche push;
+- privacy policy e termini d'uso;
+- blocco e segnalazione degli utenti, come richiesto dagli store.
 
 ## Struttura
 
 | Percorso | Contenuto |
 |---|---|
-| `App.tsx` | Navigazione a tab, onboarding, festeggiamento del vincitore |
-| `src/engine/engine.ts` | Motore della gara (puro TypeScript): punteggi, livelli, batch, chiusura |
-| `src/engine/engine.test.ts`, `src/engine/simulation.ts`, `scripts/simulate.ts` | Test e simulazione |
+| `app/` | Le schermate (Expo Router): `(tabs)/` Copertina, Provini, Archivio, Profilo; `scatta`, `commenti/[postId]`, `regole`, `utente/[username]`, `post/[id]`, `copertina/[day]`, `benvenuto` |
+| `src/design/` | Token (colori OKLCH convertiti, tipografia, spaziature), motion, font |
+| `src/components/` | Cornice media con carosello, video e doppio tocco; segno di matita; striscia del post; icone SVG; scala dei gradini; toast; testata |
+| `src/engine/` | Motore della gara in TypeScript puro, test e simulazione |
 | `src/services/api.ts` | Dati: Supabase se configurato, altrimenti demo locale |
-| `src/screens/` | Oggi, Arena, Pubblica, Profilo, Onboarding, Regole |
-| `src/components/PostView.tsx` | Contenuto a tutto schermo (video con misura di completamento e ri-visioni, foto, testo) |
-| `supabase/schema.sql` | Tabelle, RLS, funzioni RPC, cron (stessa logica del motore) |
+| `supabase/` | Schema, RLS, RPC, test end-to-end |
+| `prototype/` | Sorgente e script di build del prototipo interattivo |
+| `assets/demo/` | Foto e video demo ([crediti](assets/demo/CREDITI.md)) |
 
-Se cambi pesi o soglie, aggiornali sia in `src/engine/engine.ts` sia in `supabase/schema.sql`.
+Se cambi pesi o soglie della gara, aggiornali sia in `src/engine/engine.ts` sia in `supabase/schema.sql`.

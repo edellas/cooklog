@@ -1,27 +1,60 @@
 import type { EntryStatus } from './engine/engine';
 
-export type MediaType = 'video' | 'image' | 'text';
+/** Un elemento di un post: foto o video. `src` è un URL o, in demo, una chiave `demo:<nome>`. */
+export type MediaItem = {
+  kind: 'image' | 'video';
+  src: string;
+  width: number;
+  height: number;
+  durationMs?: number;
+};
 
+export type Author = {
+  id: string;
+  username: string;
+  displayName: string;
+};
+
+/** Un post: da 1 a 10 foto e/o video, come su TikTok. */
 export type Post = {
   id: string;
-  authorId: string;
-  authorUsername: string;
-  authorName: string;
-  mediaType: MediaType;
-  /** URL del video o della foto; null per i post di solo testo. */
-  mediaUrl: string | null;
-  body: string | null;
+  author: Author;
+  media: MediaItem[];
   caption: string;
-  /** Uno o due colori separati da virgola, usati come sfondo dei post di testo. */
-  background: string;
+  createdAt: string;
+  likeCount: number;
+  commentCount: number;
+  saveCount: number;
+  shareCount: number;
+  likedByMe: boolean;
+  savedByMe: boolean;
+  /** Se il post è in gara oggi: il suo livello. */
+  contest?: { entryId: string; tier: number; status: EntryStatus };
+};
+
+export type FeedCard = Post & { entryId?: string };
+
+export type Comment = {
+  id: string;
+  postId: string;
+  author: Author;
+  body: string;
   createdAt: string;
 };
 
-export type ArenaCard = { entryId: string; tier: number; post: Post };
+export type Profile = Author & {
+  bio: string;
+  followers: number;
+  following: number;
+  covers: number;
+  followedByMe: boolean;
+  isMe: boolean;
+};
 
-export type DailyViral = {
+/** La copertina: il post vincitore di un giorno, visto da tutti il giorno dopo. */
+export type Cover = {
   featuredOn: string;
-  contestDay: string;
+  issue: number;
   totalEntries: number;
   totalViews: number;
   post: Post;
@@ -36,14 +69,8 @@ export type MyEntry = {
   contestDay: string;
 };
 
-export type Me = { id: string; username: string; displayName: string };
+export type Me = Author;
 
-export type NewPost = {
-  mediaType: MediaType;
-  localUri?: string;
-  mimeType?: string;
-  body?: string;
-  caption: string;
-  background: string;
-  joinArena: boolean;
-};
+export type DraftMedia = { uri: string; kind: 'image' | 'video'; width: number; height: number; durationMs?: number; mimeType?: string };
+
+export type NewPost = { media: DraftMedia[]; caption: string; joinContest: boolean };

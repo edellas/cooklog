@@ -6,14 +6,14 @@
  * stessa logica in SQL: se cambi pesi o soglie qui, aggiornali anche lì.
  *
  * Idea (vedi README.md):
- * - Giorno D: ogni utente può candidare UN contenuto (video, foto o testo) all'Arena.
- *   Gli spettatori ricevono i contenuti alla cieca (li sceglie il server: non si può
+ * - Giorno D: ogni utente può candidare UN post (foto e/o video) ai Provini.
+ *   Gli spettatori ricevono i post alla cieca (li sceglie il server: non si può
  *   "votare l'amico") e i segnali impliciti (completamento, ri-visione, like,
- *   condivisioni, skip, segnalazioni) alimentano livelli di traffico come su TikTok:
+ *   commenti, salvataggi, condivisioni, skip, segnalazioni) alimentano livelli di traffico come su TikTok:
  *   50 → 300 → 1.800 → 10.000 viste. Sale solo chi supera il percentile del livello.
  * - Fine giorno D: vince UN solo utente (livello più alto, poi limite inferiore del
  *   punteggio: la fortuna su pochi dati non basta).
- * - Giorno D+1: il vincitore è la prima cosa che vede chiunque apra l'app.
+ * - Giorno D+1: il vincitore è la Copertina, la prima cosa che vede chiunque apra l'app.
  */
 
 export type ArenaConfig = {
@@ -69,6 +69,7 @@ export const SIGNAL_POINTS = {
   complete: 1,
   rewatch: 1.5,
   like: 2,
+  comment: 3,
   save: 3,
   share: 6,
   skip: -1.5,
@@ -80,6 +81,7 @@ export type EntryStats = {
   completes: number;
   rewatches: number;
   likes: number;
+  comments: number;
   saves: number;
   shares: number;
   skips: number;
@@ -108,6 +110,7 @@ export type ViewSignal = {
   /** Per i video: ripartito almeno una volta. */
   rewatched?: boolean;
   liked?: boolean;
+  commented?: boolean;
   saved?: boolean;
   shared?: boolean;
   reported?: boolean;
@@ -126,7 +129,7 @@ export type ArenaState = {
 export type Rng = () => number;
 
 export function emptyStats(): EntryStats {
-  return { views: 0, completes: 0, rewatches: 0, likes: 0, saves: 0, shares: 0, skips: 0, reports: 0, dwellMs: 0 };
+  return { views: 0, completes: 0, rewatches: 0, likes: 0, comments: 0, saves: 0, shares: 0, skips: 0, reports: 0, dwellMs: 0 };
 }
 
 export function applySignal(stats: EntryStats, signal: ViewSignal, cfg: ArenaConfig = DEFAULT_ARENA_CONFIG): EntryStats {
@@ -136,6 +139,7 @@ export function applySignal(stats: EntryStats, signal: ViewSignal, cfg: ArenaCon
     completes: stats.completes + ((signal.completed ?? dwell >= cfg.completeDwellMs) ? 1 : 0),
     rewatches: stats.rewatches + (signal.rewatched ? 1 : 0),
     likes: stats.likes + (signal.liked ? 1 : 0),
+    comments: stats.comments + (signal.commented ? 1 : 0),
     saves: stats.saves + (signal.saved ? 1 : 0),
     shares: stats.shares + (signal.shared ? 1 : 0),
     skips: stats.skips + (dwell < cfg.skipDwellMs ? 1 : 0),
@@ -149,6 +153,7 @@ export function engagementPoints(stats: EntryStats): number {
     stats.completes * SIGNAL_POINTS.complete +
     stats.rewatches * SIGNAL_POINTS.rewatch +
     stats.likes * SIGNAL_POINTS.like +
+    stats.comments * SIGNAL_POINTS.comment +
     stats.saves * SIGNAL_POINTS.save +
     stats.shares * SIGNAL_POINTS.share +
     stats.skips * SIGNAL_POINTS.skip +
@@ -397,6 +402,7 @@ export function syntheticReaction(quality: number, spam: boolean, rng: Rng): Vie
   return {
     dwellMs,
     liked: watches && rng() < 0.03 + 0.2 * quality,
+    commented: watches && rng() < 0.004 + 0.04 * quality,
     saved: watches && rng() < 0.005 + 0.1 * quality * quality,
     shared: watches && rng() < 0.002 + 0.05 * quality ** 3,
     reported: rng() < (spam ? 0.08 : 0.001),

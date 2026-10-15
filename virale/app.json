@@ -16,7 +16,8 @@
       "supportsTablet": false,
       "bundleIdentifier": "app.virale.mobile",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "CADisableMinimumFrameDurationOnPhone": true
       }
     },
     "android": {
@@ -32,7 +33,8 @@
       "favicon": "./assets/favicon.png",
       "name": "Virale",
       "backgroundColor": "#000000",
-      "themeColor": "#000000"
+      "themeColor": "#000000",
+      "output": "single"
     },
     "plugins": [
       "expo-video",
@@ -43,8 +45,13 @@
           "cameraPermission": "Virale usa la fotocamera per registrare video e scattare foto.",
           "microphonePermission": "Virale usa il microfono per registrare video con audio."
         }
-      ]
+      ],
+      "expo-router",
+      "expo-font"
     ],
-    "scheme": "virale"
+    "scheme": "virale",
+    "experiments": {
+      "typedRoutes": false
+    }
   }
 }

@@ -36,6 +36,13 @@ describe('punteggio', () => {
     assert.equal(qualityScore(emptyStats()), DEFAULT_ARENA_CONFIG.priorPointsPerView);
   });
 
+  it('un commento vale più di un like', () => {
+    const liked = applySignal(emptyStats(), { dwellMs: 5000, liked: true });
+    const commented = applySignal(emptyStats(), { dwellMs: 5000, commented: true });
+    assert.equal(commented.comments, 1);
+    assert.ok(qualityScore(commented) > qualityScore(liked));
+  });
+
   it('per i video conta il completamento reale, non il tempo', () => {
     const s = applySignal(emptyStats(), { dwellMs: 20000, completed: false, rewatched: true });
     assert.equal(s.completes, 0);
