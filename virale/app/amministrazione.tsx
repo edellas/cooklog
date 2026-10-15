@@ -10,7 +10,7 @@ import { haptic, Press } from '../src/components/Press';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
-import { ageOn, getIdentityQueue, MIN_AGE_YEARS, reviewIdentity, saveSettings } from '../src/services/api';
+import { ageOn, getIdentityQueue, MIN_AGE_YEARS, purgeStorage, reviewIdentity, saveSettings } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { IdentityItem } from '../src/types';
@@ -35,6 +35,7 @@ export default function AdminScreen() {
   const [queue, setQueue] = useState<IdentityItem[] | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
 
+  const isAdmin = Boolean(status?.isAdmin);
   const revealNow = reveal ?? status?.settings.revealMinutes ?? 0;
   const graceNow = grace ?? status?.settings.idGraceDays ?? 7;
   const dirty = (reveal !== null && reveal !== status?.settings.revealMinutes) || (grace !== null && grace !== status?.settings.idGraceDays);
@@ -48,6 +49,17 @@ export default function AdminScreen() {
       .catch((e: Error) => setQueueError(e.message));
   }, []);
   useFocusEffect(loadQueue);
+  // Ogni apertura cancella i file rimasti in coda (documenti già decisi, media di account chiusi).
+  useFocusEffect(
+    useCallback(() => {
+      if (!isAdmin) return;
+      purgeStorage()
+        .then((n) => {
+          if (n) toast(`Cancellati ${n} file non più necessari.`);
+        })
+        .catch((e: Error) => toast(e.message, 'error'));
+    }, [toast, isAdmin]),
+  );
 
   if (status && !status.isAdmin) {
     return (
@@ -171,13 +183,13 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmUnderage, setConfirmUnderage] = useState(false);
-  const age = ageOn(item.birthDate);
+  const age = item.birthDate ? ageOn(item.birthDate) : null;
 
   const decide = async (decision: 'approve' | 'reject' | 'underage') => {
     if (decision === 'underage' && !confirmUnderage) return setConfirmUnderage(true);
     try {
       setBusy(true);
-      await reviewIdentity(item.userId, decision, reason);
+      await reviewIdentity(item.userId, decision, reason, item.submittedAt);
       haptic('success');
       toast(decision === 'approve' ? `@${item.username}: età verificata.` : decision === 'reject' ? `@${item.username}: documento rifiutato.` : `@${item.username}: espulso.`);
       onDone();
@@ -190,10 +202,10 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
   return (
     <View style={styles.card}>
       <Txt variant="label">
-        @{item.username} · {item.firstName} {item.lastName}
+        @{item.username} · {item.firstName ?? '—'} {item.lastName ?? ''}
       </Txt>
-      <Txt variant="small" tone={color.paperDim}>
-        Nato/a il {dateIt(item.birthDate)} ({age} anni dichiarati)
+      <Txt variant="small" tone={item.birthDate ? color.paperDim : color.matita}>
+        {item.birthDate ? `Nato/a il ${dateIt(item.birthDate)} (${age} anni dichiarati)` : 'Dati personali mancanti: rifiuta e chiedi di completarli.'}
       </Txt>
       <View style={styles.photos}>
         {[item.documentUrl, item.selfieUrl].map((u, i) =>

@@ -583,7 +583,8 @@ export async function register(input: RegisterInput): Promise<Me> {
       p_birth_date: input.birthDate,
       p_accept_terms: input.acceptedTerms,
     }).catch(async (e: Error) => {
-      // Senza profilo l'utente non può fare nulla: si esce, così il prossimo tentativo riparte pulito.
+      // Senza profilo l'utente di accesso resterebbe "orfano" e terrebbe occupato il nome: lo si elimina.
+      await rpc('delete_my_account').catch(() => undefined);
       await db().auth.signOut().catch(() => undefined);
       throw e;
     });
@@ -1270,6 +1271,7 @@ type StatusJson = {
   is_moderator: boolean;
   is_admin: boolean;
   banned?: boolean;
+  needs_private?: boolean;
   unread: number;
   settings: { reveal_minutes: number; id_grace_days: number; submission_cutoff_hour: number };
 };
@@ -1282,6 +1284,7 @@ export async function getStatus(): Promise<Status> {
       isModerator: r.is_moderator,
       isAdmin: r.is_admin,
       banned: Boolean(r.banned),
+      needsPrivate: Boolean(r.needs_private),
       unread: Number(r.unread ?? 0),
       settings: { revealMinutes: r.settings.reveal_minutes, idGraceDays: r.settings.id_grace_days, cutoffHour: r.settings.submission_cutoff_hour },
     };
@@ -1294,6 +1297,7 @@ export async function getStatus(): Promise<Status> {
       isModerator: Boolean(demo.me),
       isAdmin: Boolean(demo.me),
       banned: false,
+      needsPrivate: false,
       unread: (demo.notifications ?? []).filter((n) => !n.read).length,
       settings: demo.settings!,
     };
@@ -1398,11 +1402,11 @@ export async function getIdentityQueue(): Promise<IdentityItem[]> {
 }
 
 /** Decisione sul documento: poi le foto si cancellano subito. */
-export async function reviewIdentity(userId: string, decision: 'approve' | 'reject' | 'underage', reason?: string): Promise<void> {
+export async function reviewIdentity(userId: string, decision: 'approve' | 'reject' | 'underage', reason?: string, submittedAt?: string): Promise<void> {
   if (!isDemo) {
-    const res = await rpc<{ paths: (string | null)[] }>('identity_review', { p_user_id: userId, p_decision: decision, p_reason: reason ?? null });
-    const paths = (res?.paths ?? []).filter(Boolean) as string[];
-    if (paths.length) await db().storage.from('documenti').remove(paths);
+    await rpc('identity_review', { p_user_id: userId, p_decision: decision, p_reason: reason ?? null, p_submitted_at: submittedAt ?? null });
+    // Il server ha messo le foto in coda per la cancellazione: le si cancella subito (se non riesce, alla prossima apertura).
+    await purgeStorage().catch(() => undefined);
     return;
   }
   await withDemo((demo) => {
@@ -1502,4 +1506,35 @@ export async function listFollows(username: string, kind: 'followers' | 'followi
     if (demo.following.includes(person.id) && demo.me) sample.unshift(demo.me.id);
     return sample.filter((id) => !demo.blocked.includes(id)).map(row);
   });
+}
+
+/**
+ * Cancella i file in coda (documenti dopo la decisione, media di account chiusi o eliminati).
+ * Lo fa l'app dell'amministratore: il database da solo non può cancellare file dallo Storage.
+ */
+export async function purgeStorage(): Promise<number> {
+  if (isDemo) return 0;
+  const rows = await rpc<{ bucket: 'media' | 'documenti'; path: string }[]>('storage_purge_list', { p_limit: 500 });
+  let done = 0;
+  for (const bucket of ['documenti', 'media'] as const) {
+    const paths = rows.filter((r) => r.bucket === bucket).map((r) => r.path);
+    for (let i = 0; i < paths.length; i += 100) {
+      const chunk = paths.slice(i, i + 100);
+      const { error } = await db().storage.from(bucket).remove(chunk);
+      if (error) throw new Error(`Pulizia dei file non riuscita: ${error.message}`);
+      await rpc('storage_purge_done', { p_bucket: bucket, p_paths: chunk });
+      done += chunk.length;
+    }
+  }
+  return done;
+}
+
+/** Per chi si era iscritto prima: nome, cognome e data di nascita, necessari per verificare l'età. */
+export async function completePrivateData(firstName: string, lastName: string, birthDate: string): Promise<void> {
+  const problem = validateRegistration({ username: 'utente', firstName, lastName, birthDate, password: 'a1aaaaaaaa', acceptedTerms: true });
+  if (problem) throw new Error(problem);
+  if (!isDemo) {
+    await rpc('complete_private_data', { p_first_name: firstName.trim(), p_last_name: lastName.trim(), p_birth_date: birthDate });
+    return;
+  }
 }

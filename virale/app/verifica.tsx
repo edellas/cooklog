@@ -9,7 +9,8 @@ import { haptic, Press } from '../src/components/Press';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
-import { submitIdentity } from '../src/services/api';
+import { Field } from '../src/components/Field';
+import { completePrivateData, submitIdentity } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 
@@ -85,6 +86,8 @@ export default function VerifyScreen() {
       <ScrollView contentContainerStyle={{ padding: space[5], paddingBottom: insets.bottom + space[10], gap: space[5] }}>
         {!identity ? (
           <ActivityIndicator color={color.giallo} />
+        ) : status?.needsPrivate && state !== 'approved' ? (
+          <PrivateData onDone={refreshStatus} />
         ) : state === 'approved' ? (
           <View style={[styles.state, styles.ok]}>
             <Icon name="check" size={22} color={color.verde} strokeWidth={2.4} />
@@ -151,6 +154,54 @@ export default function VerifyScreen() {
           </>
         )}
       </ScrollView>
+    </View>
+  );
+}
+
+/** Chi si era iscritto prima delle password inserisce qui i dati da confrontare con il documento. */
+function PrivateData({ onDone }: { onDone: () => void }) {
+  const [first, setFirst] = useState('');
+  const [last, setLast] = useState('');
+  const [day, setDay] = useState('');
+  const [month, setMonth] = useState('');
+  const [year, setYear] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    try {
+      setBusy(true);
+      setError(null);
+      await completePrivateData(first, last, `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
+      onDone();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={{ gap: space[3] }}>
+      <Txt variant="title">Prima, i tuoi dati</Txt>
+      <Txt variant="body" tone={color.paperDim}>
+        Ti sei iscritto prima che li chiedessimo: servono per confrontarli con il documento. Restano privati.
+      </Txt>
+      <View style={styles.row}>
+        <Field containerStyle={{ flex: 1 }} value={first} onChangeText={setFirst} placeholder="Nome" maxLength={60} accessibilityLabel="Nome" />
+        <Field containerStyle={{ flex: 1 }} value={last} onChangeText={setLast} placeholder="Cognome" maxLength={60} accessibilityLabel="Cognome" />
+      </View>
+      <View style={styles.row}>
+        <Field containerStyle={{ flex: 1 }} value={day} onChangeText={(v) => setDay(v.replace(/\D/g, '').slice(0, 2))} placeholder="GG" keyboardType="number-pad" maxLength={2} accessibilityLabel="Giorno di nascita" />
+        <Field containerStyle={{ flex: 1 }} value={month} onChangeText={(v) => setMonth(v.replace(/\D/g, '').slice(0, 2))} placeholder="MM" keyboardType="number-pad" maxLength={2} accessibilityLabel="Mese di nascita" />
+        <Field containerStyle={{ flex: 1.6 }} value={year} onChangeText={(v) => setYear(v.replace(/\D/g, '').slice(0, 4))} placeholder="AAAA" keyboardType="number-pad" maxLength={4} accessibilityLabel="Anno di nascita" />
+      </View>
+      {error ? (
+        <Txt variant="small" tone={color.matita}>
+          {error}
+        </Txt>
+      ) : null}
+      <Press style={[styles.cta, busy && styles.off]} onPress={() => void save()} disabled={busy || !first || !last || year.length !== 4} accessibilityRole="button">
+        {busy ? <ActivityIndicator color={color.canvas} /> : <Txt variant="label" tone={color.canvas}>Continua</Txt>}
+      </Press>
     </View>
   );
 }

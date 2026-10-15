@@ -145,7 +145,9 @@ returns boolean language sql stable security definer set search_path = public, p
 $$;
 create or replace function public.is_admin(p_uid uuid)
 returns boolean language sql stable security definer set search_path = public, pg_temp as $$
-  select exists (select 1 from profiles where id = p_uid and banned_at is null and is_admin);
+  -- Si può chiedere solo di sé: l'elenco degli amministratori non è pubblico.
+  select (auth.uid() is null or p_uid = auth.uid())
+     and exists (select 1 from profiles where id = p_uid and banned_at is null and is_admin);
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -190,9 +192,45 @@ revoke insert, update, delete on public.identity_checks from authenticated;
  */
 create or replace function public.can_act(p_uid uuid)
 returns boolean language sql stable security definer set search_path = public, pg_temp as $$
-  select public.is_active(p_uid) and exists (
-    select 1 from identity_checks where user_id = p_uid and (status = 'approved' or now() < deadline)
+  -- Solo di sé (lo stato di verifica degli altri è privato). Chi ha inviato il documento entro la scadenza
+  -- non resta bloccato se l'amministratore è in ritardo: ha altri 14 giorni.
+  select (auth.uid() is null or p_uid = auth.uid()) and public.is_active(p_uid) and exists (
+    select 1 from identity_checks
+    where user_id = p_uid
+      and (status = 'approved' or now() < deadline
+           or (status = 'pending' and submitted_at <= deadline and now() < deadline + interval '14 days'))
   );
+$$;
+
+-- Vota (conta nella gara) solo chi ha l'età verificata: gli account falsi non spostano la copertina.
+create or replace function public.can_vote(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select public.is_active(p_uid) and exists (select 1 from identity_checks where user_id = p_uid and status = 'approved');
+$$;
+
+-- File da cancellare dallo Storage (documenti dopo la decisione, media di account chiusi o eliminati).
+-- Il database non può cancellare i file: lo fa l'app dell'amministratore ogni volta che apre l'Amministrazione.
+create table if not exists public.storage_purge (
+  bucket text not null check (bucket in ('media', 'documenti')),
+  path text not null,
+  queued_at timestamptz not null default now(),
+  primary key (bucket, path)
+);
+alter table public.storage_purge enable row level security;
+revoke all on public.storage_purge from anon, authenticated;
+
+-- Nomi utente di account espulsi (anche per età): non si possono riprendere eliminando e ricreando l'account.
+create table if not exists public.banned_usernames (
+  username text primary key,
+  reason text not null,
+  banned_at timestamptz not null default now()
+);
+alter table public.banned_usernames enable row level security;
+revoke all on public.banned_usernames from anon, authenticated;
+
+create or replace function public.media_path(p_url text)
+returns text language sql immutable as $$
+  select substring(p_url from '/storage/v1/object/public/media/(.+)$');
 $$;
 
 /** Vero se uno dei due ha bloccato l'altro: in quel caso non si vedono più a vicenda. */
@@ -214,7 +252,9 @@ returns boolean language sql stable security definer set search_path = public, p
     select 1 from posts p join profiles a on a.id = p.author_id
     where p.id = p_post_id and p.hidden_at is null and a.banned_at is null
       and not public.is_blocked_pair(p_viewer, p.author_id)
-      and not exists (select 1 from reports r where r.post_id = p_post_id and r.reporter_id = p_viewer)
+      -- Solo per sé: chiedere "X ha segnalato questo post?" per un altro rivelerebbe chi segnala.
+      and (p_viewer is distinct from auth.uid()
+           or not exists (select 1 from reports r where r.post_id = p_post_id and r.reporter_id = p_viewer))
   );
 $$;
 
@@ -405,6 +445,10 @@ returns date language sql stable as $$
   select (now() at time zone (select time_zone from public.arena_config limit 1))::date;
 $$;
 
+-- Colonne aggiunte dopo la prima versione: prima delle funzioni che le usano (un database vecchio deve aggiornarsi).
+alter table public.arena_config add column if not exists reveal_minutes int not null default 0 check (reveal_minutes between 0 and 1439);
+alter table public.arena_config add column if not exists id_grace_days int not null default 7 check (id_grace_days between 1 and 60);
+
 -- Il giorno della copertina visibile adesso: la gara chiude a mezzanotte, ma la nuova copertina compare
 -- all'orario scelto dall'amministratore. Prima di quell'ora resta quella del giorno prima.
 create or replace function public.cover_day()
@@ -522,8 +566,6 @@ create index if not exists idx_daily_viral_entry on public.daily_viral (entry_id
 -- ("create table if not exists" non modifica tabelle già esistenti). Rieseguirlo non fa danni.
 -- ---------------------------------------------------------------------------
 alter table public.arena_entries add column if not exists disqualified_reason text;
-alter table public.arena_config add column if not exists reveal_minutes int not null default 0 check (reveal_minutes between 0 and 1439);
-alter table public.arena_config add column if not exists id_grace_days int not null default 7 check (id_grace_days between 1 and 60);
 -- Chi esisteva prima della verifica dell'età ha il periodo standard per caricare il documento.
 insert into public.identity_checks (user_id, deadline)
 select id, now() + interval '7 days' from public.profiles on conflict do nothing;
@@ -564,8 +606,9 @@ drop policy if exists "arena entries readable" on public.arena_entries;
 revoke all on public.arena_entries, public.arena_entry_stats, public.arena_tier_results, public.arena_config from anon, authenticated;
 drop policy if exists "arena views own" on public.arena_views;
 create policy "arena views own" on public.arena_views for select to authenticated using (auth.uid() = viewer_id);
+-- La copertina si legge solo con get_today_cover (che rispetta l'orario di rivelazione), mai dalla tabella.
 drop policy if exists "daily viral readable" on public.daily_viral;
-create policy "daily viral readable" on public.daily_viral for select to anon, authenticated using (true);
+revoke all on public.daily_viral from anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Punteggio (identico a qualityScore / lowerBoundScore in engine.ts)
@@ -829,7 +872,8 @@ begin
   -- non possono far sparire il primo in classifica a pochi minuti dalla mezzanotte.
   select count(distinct r.reporter_id) into v_open
     from reports r join profiles pr on pr.id = r.reporter_id
-   where r.post_id = p_post_id and r.status = 'open' and pr.created_at <= now() - v_cfg.min_viewer_account_age;
+   where r.post_id = p_post_id and r.status = 'open' and pr.created_at <= now() - v_cfg.min_viewer_account_age
+     and pr.banned_at is null and exists (select 1 from identity_checks i where i.user_id = pr.id and i.status = 'approved');
   if v_open >= 3 then
     -- Solo nascosto, non squalificato: se il moderatore dà ragione al post, torna in gara da dove era.
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'segnalazioni') where id = p_post_id;
@@ -840,7 +884,8 @@ begin
    where e.post_id = p_post_id and e.contest_day = public.arena_today() and e.status in ('active', 'finalist');
   if v_entry is not null
      and exists (select 1 from arena_views v where v.entry_id = v_entry and v.viewer_id = v_uid)
-     and exists (select 1 from profiles where id = v_uid and created_at <= now() - v_cfg.min_viewer_account_age) then
+     and exists (select 1 from profiles where id = v_uid and created_at <= now() - v_cfg.min_viewer_account_age)
+     and public.can_vote(v_uid) then
     insert into arena_entry_stats as st (entry_id, shard, reports) values (v_entry, floor(random() * v_cfg.stat_shards)::smallint, 1)
     on conflict (entry_id, shard) do update set reports = st.reports + 1;
     perform public.arena_evaluate(v_entry);
@@ -878,6 +923,14 @@ declare
   v_uid uuid := auth.uid();
 begin
   if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  -- I file restano nello Storage se l'app non riesce a cancellarli: li si mette in coda per la pulizia.
+  insert into storage_purge (bucket, path)
+  select 'documenti', x from identity_checks i, unnest(array[i.document_path, i.selfie_path]) x where i.user_id = v_uid and x is not null
+  on conflict do nothing;
+  insert into storage_purge (bucket, path)
+  select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
+  where p.author_id = v_uid and public.media_path(m->>'url') is not null
+  on conflict do nothing;
   delete from auth.users where id = v_uid;
 end;
 $$;
@@ -915,6 +968,17 @@ begin
   if not public.is_staff(v_uid) then raise exception 'Solo per i moderatori.'; end if;
   if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
   select author_id into v_author from posts where id = p_post_id;
+  if v_author is null then raise exception 'Post non trovato.'; end if;
+  if v_author = v_uid then raise exception 'Non puoi decidere sui tuoi post.'; end if;
+  -- Un moderatore agisce solo su post segnalati e non può espellere chi fa parte dello staff.
+  if not public.is_admin(v_uid) then
+    if not exists (select 1 from reports where post_id = p_post_id and status = 'open') then
+      raise exception 'Il post non ha segnalazioni aperte.';
+    end if;
+    if p_action = 'ban' and exists (select 1 from profiles where id = v_author and (is_admin or is_moderator)) then
+      raise exception 'Non puoi espellere un membro dello staff.';
+    end if;
+  end if;
 
   update reports set status = case when p_action = 'dismiss' then 'dismissed' else 'removed' end,
                      resolved_by = v_uid, resolved_at = now()
@@ -936,6 +1000,8 @@ begin
   end if;
 
   if p_action = 'ban' then
+    insert into banned_usernames (username, reason) select username, 'moderazione' from profiles where id = v_author
+    on conflict (username) do nothing;
     update profiles set banned_at = now() where id = v_author;
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = v_author;
     update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where author_id = v_author and contest_day = public.arena_today();
@@ -1087,8 +1153,9 @@ begin
      and contest_day = public.arena_today();
   if not found then return false; end if;
 
-  -- Gli account appena creati guardano ma non votano.
-  if exists (select 1 from profiles where id = v_uid and created_at > now() - v_cfg.min_viewer_account_age) then
+  -- Gli account appena creati, o senza età verificata, guardano ma non votano.
+  if exists (select 1 from profiles where id = v_uid and created_at > now() - v_cfg.min_viewer_account_age)
+     or not public.can_vote(v_uid) then
     return false;
   end if;
 
@@ -1153,7 +1220,8 @@ begin
    where entry_id = v_entry and viewer_id = new.user_id and recorded_at is not null
      and not (v_kind = any (credited))
      and exists (select 1 from profiles where id = new.user_id and banned_at is null
-                   and created_at <= now() - v_cfg.min_viewer_account_age);
+                   and created_at <= now() - v_cfg.min_viewer_account_age)
+     and public.can_vote(new.user_id);
   if not found then return null; end if;
   insert into arena_entry_stats as st (entry_id, shard, likes, comments, saves, shares)
   values (v_entry, floor(random() * v_cfg.stat_shards)::smallint,
@@ -1265,9 +1333,15 @@ $$;
 -- Età minima per iscriversi (in Italia 14 anni per i servizi online, art. 2-quinquies Codice privacy).
 create or replace function public.min_age_years() returns int language sql immutable as $$ select 14 $$;
 
+-- Dominio dell'email interna usata per l'accesso (nomeutente@dominio): deve coincidere con EXPO_PUBLIC_LOGIN_DOMAIN.
+create or replace function public.login_domain() returns text language sql immutable as $$ select 'utenti.virale.invalid' $$;
+
 create or replace function public.username_available(p_username text)
-returns boolean language sql stable security definer set search_path = public, pg_temp as $$
-  select lower(p_username) ~ '^[a-z0-9_.]{3,24}$' and not exists (select 1 from profiles where username = lower(p_username));
+returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
+  select lower(p_username) ~ '^[a-z0-9_.]{3,24}$'
+     and not exists (select 1 from profiles where username = lower(p_username))
+     and not exists (select 1 from banned_usernames where username = lower(p_username))
+     and not exists (select 1 from auth.users where lower(email) = lower(p_username) || '@' || public.login_domain());
 $$;
 
 /**
@@ -1278,7 +1352,7 @@ $$;
 create or replace function public.complete_registration(
   p_username text, p_first_name text, p_last_name text, p_birth_date date, p_accept_terms boolean
 )
-returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+returns jsonb language plpgsql security definer set search_path = public, auth, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
   v_cfg public.arena_config := public.arena_cfg();
@@ -1290,6 +1364,11 @@ begin
   if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
   if not coalesce(p_accept_terms, false) then raise exception 'Per registrarti devi accettare termini e linee guida.'; end if;
   if v_user !~ '^[a-z0-9_.]{3,24}$' then raise exception 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso.'; end if;
+  -- Il nome utente è legato all'email interna di accesso: non si registra "alice" con l'accesso di "bob".
+  if (select lower(email) from auth.users where id = v_uid) is distinct from v_user || '@' || public.login_domain() then
+    raise exception 'Nome utente non valido per questo accesso.';
+  end if;
+  if exists (select 1 from banned_usernames where username = v_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
   if length(v_first) not between 1 and 60 or length(v_last) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
   if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.arena_today() then
     raise exception 'Data di nascita non valida.';
@@ -1325,20 +1404,48 @@ begin
 end;
 $$;
 
--- L'utente ha caricato documento e selfie nella sua cartella privata del bucket "documenti".
-create or replace function public.submit_identity(p_document_path text, p_selfie_path text)
+-- Per chi si era iscritto prima delle password: nome, cognome e data di nascita, necessari per la verifica.
+create or replace function public.complete_private_data(p_first_name text, p_last_name text, p_birth_date date)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
-  if split_part(p_document_path, '/', 1) <> v_uid::text or split_part(p_selfie_path, '/', 1) <> v_uid::text then
+  if length(trim(p_first_name)) not between 1 and 60 or length(trim(p_last_name)) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
+  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.arena_today() then raise exception 'Data di nascita non valida.'; end if;
+  if p_birth_date > (public.arena_today() - make_interval(years => public.min_age_years()))::date then
+    raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
+  end if;
+  insert into profile_private (id, first_name, last_name, birth_date) values (v_uid, trim(p_first_name), trim(p_last_name), p_birth_date)
+  on conflict (id) do nothing;
+  if not found then raise exception 'Dati già inseriti.'; end if;
+end;
+$$;
+
+-- L'utente ha caricato documento e selfie nella sua cartella privata del bucket "documenti".
+create or replace function public.submit_identity(p_document_path text, p_selfie_path text)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_row identity_checks;
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if p_document_path !~ ('^' || v_uid::text || '/[A-Za-z0-9_-]+\.jpg$') or p_selfie_path !~ ('^' || v_uid::text || '/[A-Za-z0-9_-]+\.jpg$')
+     or p_document_path = p_selfie_path then
     raise exception 'File non validi.';
+  end if;
+  if not exists (select 1 from profile_private where id = v_uid) then raise exception 'Prima inserisci nome, cognome e data di nascita.'; end if;
+  select * into v_row from identity_checks where user_id = v_uid for update;
+  if not found then raise exception 'Autenticazione richiesta'; end if;
+  if v_row.status = 'approved' then raise exception 'La tua età è già verificata.'; end if;
+  -- Un invio alla volta (niente code intasate), e dopo un rifiuto si aspetta qualche minuto.
+  if v_row.status = 'pending' then raise exception 'Il documento è già in controllo.'; end if;
+  if v_row.status = 'rejected' and v_row.reviewed_at > now() - interval '10 minutes' then
+    raise exception 'Aspetta qualche minuto prima di ricaricarlo.';
   end if;
   update identity_checks set status = 'pending', document_path = p_document_path, selfie_path = p_selfie_path,
                              submitted_at = now(), reject_reason = null
-   where user_id = v_uid and status <> 'approved';
-  if not found then raise exception 'La tua età è già verificata.'; end if;
+   where user_id = v_uid;
 end;
 $$;
 
@@ -1351,7 +1458,7 @@ begin
   select jsonb_build_object('user_id', i.user_id, 'username', p.username, 'first_name', v.first_name, 'last_name', v.last_name,
                             'birth_date', v.birth_date, 'document_path', i.document_path, 'selfie_path', i.selfie_path,
                             'submitted_at', i.submitted_at, 'deadline', i.deadline)
-  from identity_checks i join profiles p on p.id = i.user_id join profile_private v on v.id = i.user_id
+  from identity_checks i join profiles p on p.id = i.user_id left join profile_private v on v.id = i.user_id
   where i.status = 'pending'
   order by i.submitted_at;
 end;
@@ -1362,16 +1469,26 @@ $$;
  * dati diversi: l'utente può ricaricare) o 'underage' (meno di 14 anni: account espulso).
  * Restituisce i percorsi dei file, che l'app dell'amministratore cancella subito dallo Storage.
  */
-create or replace function public.identity_review(p_user_id uuid, p_decision text, p_reason text default null)
+drop function if exists public.identity_review(uuid, text, text);
+create or replace function public.identity_review(p_user_id uuid, p_decision text, p_reason text default null, p_submitted_at timestamptz default null)
 returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_admin uuid := auth.uid();
   v_row identity_checks;
 begin
   if not public.is_admin(v_admin) then raise exception 'Solo per gli amministratori.'; end if;
+  if p_user_id = v_admin then raise exception 'Non puoi verificare te stesso: serve un altro amministratore.'; end if;
   if p_decision not in ('approve', 'reject', 'underage') then raise exception 'Decisione non valida.'; end if;
   select * into v_row from identity_checks where user_id = p_user_id for update;
   if not found or v_row.status <> 'pending' then raise exception 'Nessun documento in attesa per questo utente.'; end if;
+  -- Si decide sulle foto viste: se nel frattempo ne sono arrivate altre, si ricarica la coda.
+  if p_submitted_at is not null and v_row.submitted_at is distinct from p_submitted_at then
+    raise exception 'Il documento è cambiato: ricarica la coda.';
+  end if;
+  -- Le foto vanno cancellate in ogni caso: se l'app dell'amministratore non ci riesce subito, restano in coda.
+  insert into storage_purge (bucket, path)
+  select 'documenti', x from unnest(array[v_row.document_path, v_row.selfie_path]) x where x is not null
+  on conflict do nothing;
 
   update identity_checks
      set status = case when p_decision = 'approve' then 'approved' else 'rejected' end,
@@ -1381,8 +1498,16 @@ begin
          reviewed_at = now(), reviewed_by = v_admin, document_path = null, selfie_path = null
    where user_id = p_user_id;
   if p_decision = 'underage' then
+    -- Minore dell'età minima: account chiuso, contenuti e dati personali eliminati; resta solo il nome utente
+    -- tra quelli non riutilizzabili.
+    insert into banned_usernames (username, reason) select username, 'età' from profiles where id = p_user_id on conflict (username) do nothing;
     update profiles set banned_at = now() where id = p_user_id;
-    update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = p_user_id;
+    insert into storage_purge (bucket, path)
+    select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
+    where p.author_id = p_user_id and public.media_path(m->>'url') is not null
+    on conflict do nothing;
+    delete from posts where author_id = p_user_id;
+    delete from profile_private where id = p_user_id;
   end if;
   insert into notifications (user_id, kind, data)
   values (p_user_id, case when p_decision = 'approve' then 'identity_ok' else 'identity_ko' end,
@@ -1416,13 +1541,14 @@ create policy "notifications own" on public.notifications for select to authenti
 revoke all on public.notifications from anon;
 revoke insert, update, delete on public.notifications from authenticated;
 
-create or replace function public.notify(p_user uuid, p_kind text, p_actor uuid, p_post uuid, p_data jsonb default '{}')
+drop function if exists public.notify(uuid, text, uuid, uuid, jsonb);
+create or replace function public.notify(p_user uuid, p_kind text, p_actor uuid, p_post uuid, p_data jsonb default '{}', p_at timestamptz default now())
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   if p_user is null or p_user = p_actor then return; end if;
   if p_actor is not null and public.is_blocked_pair_internal(p_user, p_actor) then return; end if;
-  insert into notifications (user_id, kind, actor_id, post_id, data) values (p_user, p_kind, p_actor, p_post, coalesce(p_data, '{}'))
-  on conflict (user_id, kind, actor_id, post_id) do update set created_at = now(), read_at = null, data = excluded.data;
+  insert into notifications (user_id, kind, actor_id, post_id, data, created_at) values (p_user, p_kind, p_actor, p_post, coalesce(p_data, '{}'), p_at)
+  on conflict (user_id, kind, actor_id, post_id) do update set created_at = excluded.created_at, read_at = null, data = excluded.data;
 end;
 $$;
 
@@ -1448,6 +1574,11 @@ begin
       delete from notifications where kind = 'like' and actor_id = old.user_id and post_id = old.post_id;
     end if;
   elsif tg_table_name = 'comments' then
+    if tg_op = 'DELETE' then
+      -- Un commento cancellato non resta nelle notifiche (con il suo testo).
+      delete from notifications where kind = 'comment' and actor_id = old.user_id and post_id = old.post_id;
+      return null;
+    end if;
     select author_id into v_author from posts where id = new.post_id;
     perform public.notify(v_author, 'comment', new.user_id, new.post_id, jsonb_build_object('body', left(new.body, 120)));
   elsif tg_table_name = 'arena_entries' then
@@ -1455,7 +1586,9 @@ begin
       perform public.notify(new.author_id, 'tier', null, new.post_id, jsonb_build_object('tier', new.tier));
     end if;
   elsif tg_table_name = 'daily_viral' then
-    perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on));
+    -- Il vincitore lo scopre insieme a tutti, all'orario di rivelazione (la notifica compare da quell'istante).
+    perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on),
+      (select (new.featured_on + make_interval(mins => c.reveal_minutes))::timestamp at time zone c.time_zone from arena_config c limit 1));
   end if;
   return null;
 end;
@@ -1465,7 +1598,7 @@ create trigger trg_notify_follow after insert or delete on public.follows for ea
 drop trigger if exists trg_notify_like on public.post_likes;
 create trigger trg_notify_like after insert or delete on public.post_likes for each row execute function public.notify_on_change();
 drop trigger if exists trg_notify_comment on public.comments;
-create trigger trg_notify_comment after insert on public.comments for each row execute function public.notify_on_change();
+create trigger trg_notify_comment after insert or delete on public.comments for each row execute function public.notify_on_change();
 drop trigger if exists trg_notify_tier on public.arena_entries;
 create trigger trg_notify_tier after update of tier on public.arena_entries for each row execute function public.notify_on_change();
 drop trigger if exists trg_notify_cover on public.daily_viral;
@@ -1484,13 +1617,14 @@ returns setof jsonb language sql stable security definer set search_path = publi
   where n.user_id = auth.uid()
     and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))
     and (n.post_id is null or p.id is not null)
+    and n.created_at <= now()
   order by n.created_at desc
   limit least(greatest(p_limit, 1), 100);
 $$;
 
 create or replace function public.mark_notifications_read()
 returns void language sql security definer set search_path = public, pg_temp as $$
-  update notifications set read_at = now() where user_id = auth.uid() and read_at is null;
+  update notifications set read_at = now() where user_id = auth.uid() and read_at is null and created_at <= now();
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -1513,7 +1647,7 @@ declare
   v_uid uuid := auth.uid();
   v_day date := public.arena_today();
 begin
-  if v_uid is null or not public.is_active(v_uid) or p_post_ids is null then return; end if;
+  if v_uid is null or not public.can_act(v_uid) or p_post_ids is null then return; end if;
   with fresh as (
     insert into post_views (post_id, viewer_id, day)
     select distinct x, v_uid, v_day
@@ -1563,10 +1697,51 @@ returns jsonb language sql stable security definer set search_path = public, pg_
     'is_moderator', public.is_staff(auth.uid()),
     'is_admin', public.is_admin(auth.uid()),
     'banned', exists (select 1 from profiles where id = auth.uid() and banned_at is not null),
-    'unread', (select count(*) from notifications n where n.user_id = auth.uid() and n.read_at is null),
+    'unread', (select count(*) from notifications n left join profiles a on a.id = n.actor_id
+               where n.user_id = auth.uid() and n.read_at is null and n.created_at <= now()
+                 and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))),
+    'needs_private', not exists (select 1 from profile_private where id = auth.uid()),
     'settings', public.get_settings()
   );
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 14) Pulizia dei file e controllo degli indirizzi dei media
+-- ---------------------------------------------------------------------------
+create or replace function public.storage_purge_list(p_limit int default 200)
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
+  return query select jsonb_build_object('bucket', bucket, 'path', path) from storage_purge order by queued_at limit least(greatest(p_limit, 1), 1000);
+end;
+$$;
+
+create or replace function public.storage_purge_done(p_bucket text, p_paths text[])
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
+  delete from storage_purge where bucket = p_bucket and path = any (p_paths);
+end;
+$$;
+
+/**
+ * Foto e video di un post devono stare nel bucket "media", nella cartella dell'autore: niente immagini
+ * da siti esterni (che vedrebbero l'indirizzo di chi guarda, o cambierebbero dopo la moderazione).
+ */
+create or replace function public.check_media_urls()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if exists (
+    select 1 from jsonb_array_elements(new.media) m
+    where coalesce(m->>'url', '') !~ ('^https://[a-z0-9-]+\.supabase\.co/storage/v1/object/public/media/' || new.author_id::text || '/[^/?#]+$')
+  ) then
+    raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trg_posts_media_urls on public.posts;
+create trigger trg_posts_media_urls before insert on public.posts for each row execute function public.check_media_urls();
 
 -- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
 revoke execute on all functions in schema public from public, anon, authenticated;
@@ -1575,6 +1750,7 @@ grant execute on function public.is_active(uuid) to authenticated;
 grant execute on function public.can_see(uuid, uuid) to authenticated;
 grant execute on function public.is_blocked_pair(uuid, uuid) to authenticated;
 grant execute on function public.valid_media(jsonb) to authenticated;
+revoke truncate on all tables in schema public from anon, authenticated;
 -- Permessi: i client chiamano solo queste funzioni.
 revoke all on function public.arena_close_day(date) from public, anon, authenticated;
 revoke all on function public.arena_evaluate(uuid) from public, anon, authenticated;
@@ -1608,7 +1784,10 @@ grant execute on function public.get_settings() to anon, authenticated;
 grant execute on function public.admin_set_settings(int, int) to authenticated;
 grant execute on function public.submit_identity(text, text) to authenticated;
 grant execute on function public.identity_queue() to authenticated;
-grant execute on function public.identity_review(uuid, text, text) to authenticated;
+grant execute on function public.identity_review(uuid, text, text, timestamptz) to authenticated;
+grant execute on function public.complete_private_data(text, text, date) to authenticated;
+grant execute on function public.storage_purge_list(int) to authenticated;
+grant execute on function public.storage_purge_done(text, text[]) to authenticated;
 grant execute on function public.list_notifications(int) to authenticated;
 grant execute on function public.mark_notifications_read() to authenticated;
 grant execute on function public.register_views(uuid[]) to authenticated;

@@ -1,5 +1,10 @@
 -- Test end-to-end di supabase/schema.sql su un Postgres locale (vedi README.md).
 \set ON_ERROR_STOP on
+-- Indirizzo di un file nel bucket media, nella cartella dell'autore (come lo carica l'app).
+create function test_media(p_uid uuid, p_name text) returns jsonb language sql immutable as $$
+  select jsonb_build_array(jsonb_build_object('kind', 'image', 'url', 'https://proj.supabase.co/storage/v1/object/public/media/' || p_uid || '/' || p_name, 'width', 1080, 'height', 1620))
+$$;
+grant execute on function test_media(uuid, text) to authenticated;
 update arena_config set tier_thresholds='{3,5}', min_cohort=100, baseline_score=0.3, submission_cutoff_hour=24, report_min_views=3;
 
 -- 6 utenti: user1..user3 sono autori, tutti sono spettatori.
@@ -12,11 +17,11 @@ update profiles set created_at = now() - interval '10 days';
 insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles;
 insert into posts (id, author_id, media, caption)
   select ('10000000-0000-0000-0000-00000000000'||i)::uuid, ('00000000-0000-0000-0000-00000000000'||i)::uuid,
-         jsonb_build_array(jsonb_build_object('kind','image','url','https://cdn.example/'||i||'.jpg','width',1080,'height',1620)), 'Post '||i
+         test_media(('00000000-0000-0000-0000-00000000000'||i)::uuid, i||'.jpg'), 'Post '||i
   from generate_series(1,3) i;
 -- Un carosello misto foto + video dello stesso autore.
 insert into posts (id, author_id, media, caption) values ('10000000-0000-0000-0000-000000000009','00000000-0000-0000-0000-000000000001',
-  '[{"kind":"image","url":"https://cdn.example/a.jpg","width":1080,"height":1620},{"kind":"video","url":"https://cdn.example/b.mp4","width":720,"height":1280,"duration_ms":15000}]', 'Carosello');
+  test_media('00000000-0000-0000-0000-000000000001', 'a.jpg') || jsonb_build_array(jsonb_build_object('kind','video','url','https://proj.supabase.co/storage/v1/object/public/media/00000000-0000-0000-0000-000000000001/b.mp4','width',720,'height',1280,'duration_ms',15000)), 'Carosello');
 
 -- Media non validi: rifiutati.
 do $$ begin
@@ -24,7 +29,7 @@ do $$ begin
   raise exception 'NON DOVEVA PASSARE';
 exception when check_violation then raise notice 'ok, post senza media rifiutato'; end $$;
 do $$ begin
-  insert into posts (author_id, media) values ('00000000-0000-0000-0000-000000000001', '[{"kind":"video","url":"https://x/v.mp4","duration_ms":90000}]');
+  insert into posts (author_id, media) values ('00000000-0000-0000-0000-000000000001', jsonb_build_array(jsonb_build_object('kind','video','url','https://proj.supabase.co/storage/v1/object/public/media/00000000-0000-0000-0000-000000000001/v.mp4','duration_ms',90000)));
   raise exception 'NON DOVEVA PASSARE';
 exception when check_violation then raise notice 'ok, video oltre 60 s rifiutato'; end $$;
 
@@ -33,7 +38,7 @@ set role authenticated;
 -- Un client non può creare un post con contatori gonfiati.
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000002', false);
 do $$ begin
-  insert into posts (author_id, media, like_count) values ('00000000-0000-0000-0000-000000000002', '[{"kind":"image","url":"https://x/1.jpg"}]', 10000);
+  insert into posts (author_id, media, like_count) values ('00000000-0000-0000-0000-000000000002', test_media('00000000-0000-0000-0000-000000000002', '1.jpg'), 10000);
   raise exception 'NON DOVEVA PASSARE';
 exception when insufficient_privilege then raise notice 'ok, contatori gonfiati rifiutati'; end $$;
 
@@ -198,13 +203,13 @@ select mod_resolve('10000000-0000-0000-0000-000000000003', 'ban');
 select get_post('10000000-0000-0000-0000-000000000003') is null as post_espulso_nascosto;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000003', false);
 do $$ begin
-  insert into posts (author_id, media) values ('00000000-0000-0000-0000-000000000003', '[{"kind":"image","url":"https://x/1.jpg"}]');
+  insert into posts (author_id, media) values ('00000000-0000-0000-0000-000000000003', test_media('00000000-0000-0000-0000-000000000003', '1.jpg'));
   raise exception 'NON DOVEVA PASSARE';
 exception when insufficient_privilege then raise notice 'ok, utente espulso non può pubblicare'; end $$;
 
 -- Registrazione: età minima, nome utente libero, niente insert diretti nei profili.
 reset role;
-insert into auth.users values ('00000000-0000-0000-0000-000000000007');
+insert into auth.users (id, email) values ('00000000-0000-0000-0000-000000000007', 'user7@utenti.virale.invalid');
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000007', false);
 do $$ begin
@@ -227,7 +232,7 @@ reset role;
 update identity_checks set deadline = now() - interval '1 minute' where user_id = '00000000-0000-0000-0000-000000000007';
 set role authenticated;
 do $$ begin
-  insert into posts (author_id, media) values (auth.uid(), '[{"kind":"image","url":"https://x/7.jpg"}]');
+  insert into posts (author_id, media) values (auth.uid(), test_media(auth.uid(), '7.jpg'));
   raise exception 'NON DOVEVA PASSARE';
 exception when insufficient_privilege then raise notice 'ok, senza documento dopo la scadenza non si pubblica'; end $$;
 do $$ begin perform submit_identity('00000000-0000-0000-0000-000000000001/doc.jpg', '00000000-0000-0000-0000-000000000007/selfie.jpg'); raise exception 'NON DOVEVA PASSARE';
@@ -284,7 +289,7 @@ select count(*) as seguiti_da_user6 from list_follows('user6', 'following') x;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000002', false);
 delete from posts where id = '10000000-0000-0000-0000-000000000002';
 do $$ declare v uuid; begin
-  insert into posts (author_id, media) values (auth.uid(), '[{"kind":"image","url":"https://x/8.jpg"}]') returning id into v;
+  insert into posts (author_id, media) values (auth.uid(), test_media(auth.uid(), '8.jpg')) returning id into v;
   perform arena_submit(v); raise exception 'NON DOVEVA PASSARE';
 exception when others then if sqlerrm not like '%un solo post%' then raise; end if; raise notice 'ok, niente seconda candidatura dopo aver ritirato il post'; end $$;
 
@@ -320,3 +325,48 @@ do $$ begin perform post_json('10000000-0000-0000-0000-000000000001', null); rai
 exception when insufficient_privilege then raise notice 'ok, anon non chiama le funzioni interne'; end $$;
 do $$ begin perform arena_close_day(arena_today()); raise exception 'anon NON deve poter chiudere';
 exception when insufficient_privilege then raise notice 'ok, anon non può chiudere la giornata'; end $$;
+
+-- ---------- Revisione di sicurezza: protezioni aggiuntive ----------
+reset role;
+set role authenticated;
+-- Un post con immagini da un sito esterno viene rifiutato.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
+do $$ begin
+  insert into posts (author_id, media) values (auth.uid(), '[{"kind":"image","url":"https://evil.example/track.gif"}]');
+  raise exception 'NON DOVEVA PASSARE';
+exception when check_violation then raise notice 'ok, media da siti esterni rifiutati'; end $$;
+-- Nessuno può sapere chi è amministratore o se un altro è verificato.
+select is_admin('00000000-0000-0000-0000-000000000004') as io_admin, is_admin('00000000-0000-0000-0000-000000000006') as altro_admin_visibile,
+       can_act('00000000-0000-0000-0000-000000000006') as verifica_altrui_visibile;
+-- La tabella delle copertine non si legge direttamente (si vedrebbe prima dell'orario).
+do $$ begin perform 1 from daily_viral limit 1; raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, copertine non leggibili prima della rivelazione'; end $$;
+-- L'amministratore non verifica se stesso.
+reset role;
+update identity_checks set status = 'pending', submitted_at = now() where user_id = '00000000-0000-0000-0000-000000000004';
+set role authenticated;
+do $$ begin perform identity_review('00000000-0000-0000-0000-000000000004', 'approve'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%te stesso%' then raise; end if; raise notice 'ok, niente auto-verifica'; end $$;
+-- Un moderatore non può espellere un amministratore.
+reset role;
+update identity_checks set status = 'approved' where user_id = '00000000-0000-0000-0000-000000000004';
+update profiles set is_moderator = true where username = 'user6';
+insert into posts (id, author_id, media) values ('10000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-000000000004', test_media('00000000-0000-0000-0000-000000000004', 'a.jpg'));
+insert into reports (post_id, reported_user_id, reporter_id, reason) values ('10000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000001', 'spam');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000006', false);
+do $$ begin perform mod_resolve('10000000-0000-0000-0000-00000000000a', 'ban'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%staff%' then raise; end if; raise notice 'ok, lo staff non si espelle a vicenda'; end $$;
+-- Un nome utente espulso non si riprende.
+reset role;
+insert into banned_usernames (username, reason) values ('cattivo', 'moderazione');
+insert into auth.users (id, email) values ('00000000-0000-0000-0000-000000000008', 'cattivo@utenti.virale.invalid');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000008', false);
+select username_available('cattivo') as cattivo_disponibile;
+do $$ begin perform complete_registration('cattivo', 'C', 'A', '1990-01-01', true); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; raise notice 'ok, nome di un espulso non riutilizzabile'; end $$;
+-- Il nome utente deve corrispondere all'accesso.
+do $$ begin perform complete_registration('altro_nome', 'C', 'A', '1990-01-01', true); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non valido per questo accesso%' then raise; end if; raise notice 'ok, nome utente legato all''accesso'; end $$;
+reset role;

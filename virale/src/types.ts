@@ -104,6 +104,8 @@ export type Status = {
   isAdmin: boolean;
   /** Account chiuso dalla moderazione o perché minore dell'età minima. */
   banned: boolean;
+  /** Iscritto prima delle password: mancano nome, cognome e data di nascita. */
+  needsPrivate: boolean;
   unread: number;
   settings: Settings;
 };
@@ -125,9 +127,9 @@ export type FollowRow = Author & { followedByMe: boolean; isMe: boolean };
 export type IdentityItem = {
   userId: string;
   username: string;
-  firstName: string;
-  lastName: string;
-  birthDate: string;
+  firstName: string | null;
+  lastName: string | null;
+  birthDate: string | null;
   documentUrl: string | null;
   selfieUrl: string | null;
   submittedAt: string;
