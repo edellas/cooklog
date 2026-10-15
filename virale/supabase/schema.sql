@@ -1562,6 +1562,7 @@ returns jsonb language sql stable security definer set search_path = public, pg_
                    from identity_checks i where i.user_id = auth.uid()),
     'is_moderator', public.is_staff(auth.uid()),
     'is_admin', public.is_admin(auth.uid()),
+    'banned', exists (select 1 from profiles where id = auth.uid() and banned_at is not null),
     'unread', (select count(*) from notifications n where n.user_id = auth.uid() and n.read_at is null),
     'settings', public.get_settings()
   );

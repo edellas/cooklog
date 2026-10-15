@@ -19,6 +19,12 @@ const KEEP_MS = 3 * 60_000;
 const patches = new Map<string, { patch: PostPatch; at: number }>();
 const follows = new Map<string, { following: boolean; at: number }>();
 
+/** All'uscita (o cambiando account) i cambiamenti ricordati erano di un'altra persona: si dimenticano. */
+export function forgetRecentChanges() {
+  patches.clear();
+  follows.clear();
+}
+
 export function withRecentChanges<T extends Post>(post: T): T {
   const p = patches.get(post.id);
   const f = follows.get(post.author.id);

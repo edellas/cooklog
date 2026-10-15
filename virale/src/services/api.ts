@@ -561,6 +561,8 @@ export async function register(input: RegisterInput): Promise<Me> {
   if (problem) throw new Error(problem);
   const username = input.username.trim().toLowerCase();
   if (!isDemo) {
+    // Prima si controlla il nome: così non resta un utente di autenticazione "orfano" con un nome già preso.
+    if (!(await rpc<boolean>('username_available', { p_username: username }))) throw new Error('Questo nome utente è già preso.');
     let { data, error } = await db().auth.signUp({ email: loginEmail(username), password: input.password });
     if (error && /already registered|already exists/i.test(error.message)) {
       // Una registrazione interrotta (per esempio senza rete) ha lasciato l'utente senza profilo: si riprende.
@@ -1267,6 +1269,7 @@ type StatusJson = {
   identity: { status: IdentityStatus; deadline: string; reason: string | null; can_act: boolean } | null;
   is_moderator: boolean;
   is_admin: boolean;
+  banned?: boolean;
   unread: number;
   settings: { reveal_minutes: number; id_grace_days: number; submission_cutoff_hour: number };
 };
@@ -1278,6 +1281,7 @@ export async function getStatus(): Promise<Status> {
       identity: r.identity ? { status: r.identity.status, deadline: r.identity.deadline, reason: r.identity.reason, canAct: r.identity.can_act } : null,
       isModerator: r.is_moderator,
       isAdmin: r.is_admin,
+      banned: Boolean(r.banned),
       unread: Number(r.unread ?? 0),
       settings: { revealMinutes: r.settings.reveal_minutes, idGraceDays: r.settings.id_grace_days, cutoffHour: r.settings.submission_cutoff_hour },
     };
@@ -1289,6 +1293,7 @@ export async function getStatus(): Promise<Status> {
       identity: id ? { status: id.status, deadline: id.deadline, reason: id.reason, canAct: id.status === 'approved' || Date.now() < Date.parse(id.deadline) } : null,
       isModerator: Boolean(demo.me),
       isAdmin: Boolean(demo.me),
+      banned: false,
       unread: (demo.notifications ?? []).filter((n) => !n.read).length,
       settings: demo.settings!,
     };

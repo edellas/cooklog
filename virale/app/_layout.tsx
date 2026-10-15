@@ -10,7 +10,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ToastProvider } from '../src/components/Toast';
 import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
-import { isDemo } from '../src/services/api';
+import { isDemo, logout } from '../src/services/api';
+import { OWNER } from '../src/legal/docs';
 import { FONTS } from '../src/design/fonts';
 import { color } from '../src/design/tokens';
 import { SessionProvider, useSession } from '../src/state/session';
@@ -41,6 +42,7 @@ export default function RootLayout() {
               <View style={styles.frame}>
                 <Gate />
                 <Offline />
+                <Banned />
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: color.canvas } }}>
                   <Stack.Screen name="(tabs)" />
                   <Stack.Screen name="benvenuto" options={{ animation: 'fade', gestureEnabled: false }} />
@@ -123,6 +125,34 @@ function Gate() {
     if (me && onWelcome) router.replace('/' as Href);
   }, [me, router, segments]);
   return null;
+}
+
+/** Account chiuso: lo si dice chiaramente, con il contatto per il ricorso, invece di mostrare errori sparsi. */
+function Banned() {
+  const { status, setMe } = useSession();
+  if (!status?.banned) return null;
+  return (
+    <View style={[StyleSheet.absoluteFill, styles.fill, { alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12, zIndex: 11 }]}>
+      <Txt variant="title" style={{ textAlign: 'center' }}>
+        Il tuo account è stato chiuso.
+      </Txt>
+      <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
+        È stato chiuso per una violazione delle linee guida o perché non rispetta l’età minima. Se pensi sia un errore scrivi a {OWNER.email}.
+      </Txt>
+      <Press
+        style={styles.retry}
+        onPress={() => {
+          void logout()
+            .catch(() => undefined)
+            .then(() => setMe(null));
+        }}
+        accessibilityRole="button">
+        <Txt variant="label" tone={color.canvas}>
+          Esci
+        </Txt>
+      </Press>
+    </View>
+  );
 }
 
 /** Senza rete all'avvio non si sa se hai un account: lo si dice e si offre di riprovare. */

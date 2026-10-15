@@ -102,6 +102,8 @@ export type Status = {
   identity: { status: IdentityStatus; deadline: string; reason: string | null; canAct: boolean } | null;
   isModerator: boolean;
   isAdmin: boolean;
+  /** Account chiuso dalla moderazione o perché minore dell'età minima. */
+  banned: boolean;
   unread: number;
   settings: Settings;
 };

@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { AppState } from 'react-native';
 
 import { getMe, getStatus } from '../services/api';
+import { forgetRecentChanges } from './postEvents';
+import { flushViews } from './views';
 import type { Me, Status } from '../types';
 
 type Session = {
@@ -21,14 +23,20 @@ type Session = {
 const Ctx = createContext<Session | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [me, setMeState] = useState<Me | null | undefined>(undefined);
+  // Cambiando utente (uscita, nuovo accesso) non deve restare nulla del precedente in memoria.
+  const setMe = useCallback((next: Me | null) => {
+    flushViews();
+    forgetRecentChanges();
+    setMeState(next);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [version, setVersion] = useState(0);
   const retry = useCallback(() => {
     setError(null);
     getMe()
-      .then(setMe)
+      .then(setMeState)
       .catch((e: Error) => setError(e.message));
   }, []);
   useEffect(retry, [retry]);
@@ -59,7 +67,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const value = useMemo(
     () => ({ me, setMe, error, retry, status, refreshStatus, version, bump }),
-    [me, error, retry, status, refreshStatus, version, bump],
+    [me, setMe, error, retry, status, refreshStatus, version, bump],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
