@@ -5,15 +5,15 @@
  */
 export const OWNER = {
   /** Nome e cognome, oppure ragione sociale. È il titolare del trattamento dei dati. */
-  name: '[Nome e cognome o ragione sociale]',
+  name: 'Edoardo Della Seta',
   /** Indirizzo postale completo. */
-  address: '[Via, numero, CAP, città]',
+  address: '[Via Fonteiana, 148, 00152, Roma]',
   /** Partita IVA o codice fiscale. */
-  taxId: '[Partita IVA o codice fiscale]',
+  taxId: 'DLLDRD97R19H501K',
   /** Email per supporto, privacy e segnalazioni urgenti: deve essere letta ogni giorno. */
-  email: '[supporto@tuodominio.it]',
+  email: 'edoardo.dellaseta@gmail.com',
   /** Dove saranno pubblicate le pagine di legal-site/ (es. https://tuonome.github.io/cooklog). Senza barra finale. */
-  website: '[https://tuosito.it]',
+  website: '',
 } as const;
 
 /** Data di entrata in vigore dei documenti (aggiornala quando li modifichi). */
