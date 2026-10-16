@@ -1,4 +1,5 @@
-import { useFocusEffect } from 'expo-router';
+import { Image } from 'expo-image';
+import { useFocusEffect, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, FlatList, RefreshControl, StyleSheet, View, type LayoutChangeEvent, type ViewToken } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -9,6 +10,7 @@ import type { VideoProgress } from '../../src/components/MediaFrame';
 import { PostCard, type Interaction } from '../../src/components/PostCard';
 import { haptic, Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
+import { resolveMedia } from '../../src/data/demoMedia';
 import { clock } from '../../src/design/format';
 import { duration, ease } from '../../src/design/motion';
 import { color, font, radius, space } from '../../src/design/tokens';
@@ -29,7 +31,7 @@ const MODES: { id: Mode; label: string }[] = [
  * Il feed verticale, in tre sezioni.
  * - "In gara": i post candidati oggi. Il server li pesca a caso, più spesso quelli vicini ai tuoi gusti:
  *   come guardi è il tuo voto.
- * - "Esplora": tutti gli altri post (non in gara), ordinati per i tuoi gusti. Non finisce mai.
+ * - "Esplora": tutti i post (anche quelli in gara), ordinati per i tuoi gusti. Non finisce mai.
  * - "Seguiti": chi segui, dal più recente.
  * Tirando giù dall'alto si ricarica; arrivati in fondo si carica la pagina dopo.
  */
@@ -52,7 +54,6 @@ export default function ProviniTab() {
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [muted, setMuted] = useState(true);
   const [focused, setFocused] = useState(true);
 
   const signals = useRef<Record<string, Partial<Record<Interaction, boolean>>>>({});
@@ -64,6 +65,7 @@ export default function ProviniTab() {
   /** Ogni caricamento ha un numero: le risposte arrivate tardi (dopo un cambio di modalità) si scartano. */
   const request = useRef(0);
   const loadingMore = useRef(false);
+  const list = useRef<FlatList<FeedCard>>(null);
 
   useEffect(() => {
     cardsRef.current = cards;
@@ -233,13 +235,39 @@ export default function ProviniTab() {
     setActiveId(visible.id);
   }).current;
 
+  // Le immagini dei prossimi due post si scaricano mentre guardi questo: scorrendo sono già lì.
+  useEffect(() => {
+    const at = cards.findIndex((c) => c.id === activeId);
+    if (at < 0) return;
+    const urls = cards
+      .slice(at + 1, at + 3)
+      .flatMap((c) => c.media.slice(0, 2).map((m) => (m.kind === 'image' ? resolveMedia(m.src) : m.poster)))
+      .filter((u): u is string => typeof u === 'string' && /^https?:/.test(u));
+    if (urls.length) void Image.prefetch(urls).catch(() => undefined);
+  }, [activeId, cards]);
+
+  // Toccare di nuovo "Provini" mentre ci sei: si torna in cima e arrivano post nuovi (come su TikTok).
+  const navigation = useNavigation();
+  const refreshNow = useCallback(() => {
+    list.current?.scrollToOffset({ offset: 0, animated: false });
+    setRefreshing(true);
+    flush();
+    void load(true);
+  }, [flush, load]);
+  useEffect(
+    () =>
+      navigation.addListener('tabPress' as never, () => {
+        if (focusedRef.current) refreshNow();
+      }),
+    [navigation, refreshNow],
+  );
+
   const onInteract = useCallback((postId: string, kind: Interaction) => {
     signals.current[postId] = { ...signals.current[postId], [kind]: true };
   }, []);
   const onVideoProgress = useCallback((postId: string, p: VideoProgress) => {
     video.current[postId] = p;
   }, []);
-  const toggleMute = useCallback(() => setMuted((m) => !m), []);
 
   const renderItem = useCallback(
     ({ item }: { item: FeedCard }) => (
@@ -249,14 +277,13 @@ export default function ProviniTab() {
           meId={me?.id}
           active={focused && item.id === activeId}
           viewKey={views.current[item.id] ?? 0}
-          muted={muted}
-          onToggleMute={toggleMute}
+          blind={mode === 'gara'}
           onInteract={onInteract}
           onVideoProgress={onVideoProgress}
         />
       </View>
     ),
-    [activeId, focused, height, me?.id, muted, onInteract, onVideoProgress, toggleMute],
+    [activeId, focused, height, me?.id, mode, onInteract, onVideoProgress],
   );
 
   const onLayout = (e: LayoutChangeEvent) => setHeight(e.nativeEvent.layout.height);
@@ -332,6 +359,7 @@ export default function ProviniTab() {
           </View>
         ) : height > 0 ? (
           <FlatList
+            ref={list}
             key={mode}
             initialScrollIndex={restoreIndex.current < cards.length ? restoreIndex.current : 0}
             data={cards}
@@ -365,11 +393,7 @@ export default function ProviniTab() {
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
-                onRefresh={() => {
-                  setRefreshing(true);
-                  flush();
-                  void load(true);
-                }}
+                onRefresh={refreshNow}
                 tintColor={color.giallo}
                 colors={[color.giallo]}
                 progressBackgroundColor={color.raised}

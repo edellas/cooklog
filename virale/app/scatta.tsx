@@ -33,6 +33,7 @@ import { color, radius, space } from "../src/design/tokens";
 import { contestOpen, getMyEntry, publish } from "../src/services/api";
 import { getJson, removeKey, setJson } from "../src/services/storage";
 import { useSession } from "../src/state/session";
+import { toggleMute, useMuted } from "../src/state/sound";
 import type { DraftMedia, MediaItem, MyEntry, Post } from "../src/types";
 
 const MAX = 10;
@@ -54,7 +55,7 @@ export default function CreateScreen() {
   /** Avanzamento del caricamento dei file (0-1), mentre si pubblica. */
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [muted, setMuted] = useState(true);
+  const muted = useMuted();
   const [done, setDone] = useState<{
     post: Post;
     entry: MyEntry | null;
@@ -349,7 +350,7 @@ export default function CreateScreen() {
                 media={preview}
                 active
                 muted={muted}
-                onToggleMute={() => setMuted((x) => !x)}
+                onToggleMute={toggleMute}
                 index={selected}
                 onIndexChange={setSelected}
               />

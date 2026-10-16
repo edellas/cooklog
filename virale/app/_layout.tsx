@@ -76,6 +76,7 @@ export default function RootLayout() {
                   <Stack.Screen name="legale/[doc]" />
                   <Stack.Screen name="utente/[username]" />
                   <Stack.Screen name="post/[id]" />
+                  <Stack.Screen name="scorri/[username]" />
                   <Stack.Screen name="copertina/[day]" />
                 </Stack>
               </View>

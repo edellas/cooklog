@@ -19,10 +19,11 @@ import { clock, formatCount, longDate } from '../design/format';
 import { duration, ease } from '../design/motion';
 import { color, font, radius, space } from '../design/tokens';
 import { msUntil, msUntilReveal } from '../engine/engine';
-import { registerShare, toggleLike, toggleSave } from '../services/api';
+import { postLink, registerShare, toggleLike, toggleSave } from '../services/api';
 import { shareText } from '../services/share';
 import { emitPostChange, onPostChange, withRecentChanges } from '../state/postEvents';
 import { useSession } from '../state/session';
+import { toggleMute, useMuted } from '../state/sound';
 import { useGoBack } from '../state/useGoBack';
 import { queueView } from '../state/views';
 import type { Cover } from '../types';
@@ -53,6 +54,7 @@ export function CoverView({
   const reduced = useReducedMotion();
   // I tab restano montati: fuori fuoco la copertina non deve continuare a riprodurre video.
   const focused = useIsFocused();
+  const muted = useMuted();
   const { me, status } = useSession();
   const revealMinutes = status?.settings.revealMinutes ?? 0;
   // Vista della copertina: dopo un secondo sullo schermo.
@@ -62,7 +64,6 @@ export function CoverView({
     return () => clearTimeout(id);
   }, [focused, cover.post.id]);
   const [post, setPost] = useState(() => withRecentChanges(cover.post));
-  const [muted, setMuted] = useState(true);
 
   useEffect(() => setPost(withRecentChanges(cover.post)), [cover.post]);
   // Lo stesso post può essere anche nel feed: mi piace e salvataggi restano allineati.
@@ -105,7 +106,8 @@ export function CoverView({
   };
   const share = async () => {
     const text = isToday ? `La copertina di Virale di oggi: @${post.author.username}` : `La copertina di Virale del ${longDate(cover.featuredOn)}: @${post.author.username}`;
-    const res = await shareText(text);
+    const link = postLink(post.id);
+    const res = await shareText(link ? `${text}\n${link}` : text);
     if (res === 'none') return;
     if (res === 'copied') toast('Testo copiato: incollalo dove vuoi.');
     registerShare(post.id).catch(() => undefined);
@@ -119,8 +121,9 @@ export function CoverView({
           active={focused}
           rounded={false}
           muted={muted}
-          onToggleMute={() => setMuted((m) => !m)}
+          onToggleMute={toggleMute}
           onDoubleTap={() => like(true)}
+          onLongPress={() => router.push(`/azioni/${post.id}` as Href)}
           controlsTop={insets.top + 132}
         />
       </Animated.View>

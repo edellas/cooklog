@@ -10,6 +10,7 @@ import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { color, radius, space } from '../../src/design/tokens';
 import { blockUser, deletePost, getPost, REPORT_REASONS, reportPost, type ReportReason } from '../../src/services/api';
+import { emitPostGone } from '../../src/state/postEvents';
 import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
 import type { Post } from '../../src/types';
@@ -38,12 +39,13 @@ export default function PostActions() {
       .catch((e: Error) => setError(e.message));
   }, [postId]);
 
-  const run = async (fn: () => Promise<void>, done: string) => {
+  const run = async (fn: () => Promise<void>, done: string, gone: Parameters<typeof emitPostGone>[0]) => {
     try {
       setBusy(true);
       setError(null);
       await fn();
       haptic('success');
+      emitPostGone(gone);
       bump();
       goBack();
       toast(done);
@@ -94,7 +96,7 @@ export default function PostActions() {
             <Row
               key={r.key}
               label={r.label}
-              onPress={() => void run(() => reportPost(post.id, r.key as ReportReason), 'Grazie: post segnalato. Non lo vedrai più.')}
+              onPress={() => void run(() => reportPost(post.id, r.key as ReportReason), 'Grazie: post segnalato. Non lo vedrai più.', { postId: post.id })}
               disabled={busy}
             />
           ))}
@@ -107,7 +109,7 @@ export default function PostActions() {
           text="Non vedrete più post, commenti e profilo l’uno dell’altro, e smetterete di seguirvi. Puoi sbloccare quando vuoi dalle Impostazioni."
           action="Blocca"
           busy={busy}
-          onConfirm={() => void run(() => blockUser(post.author.id), `${who} è bloccato.`)}
+          onConfirm={() => void run(() => blockUser(post.author.id), `${who} è bloccato.`, { authorId: post.author.id })}
           onCancel={() => setStep('menu')}
         />
       ) : null}
@@ -118,7 +120,7 @@ export default function PostActions() {
           text="Lo elimini per sempre, con i suoi commenti e il suo posto nella gara di oggi."
           action="Elimina"
           busy={busy}
-          onConfirm={() => void run(() => deletePost(post.id), 'Post eliminato.')}
+          onConfirm={() => void run(() => deletePost(post.id), 'Post eliminato.', { postId: post.id })}
           onCancel={() => setStep('menu')}
         />
       ) : null}

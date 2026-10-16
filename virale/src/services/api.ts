@@ -154,6 +154,11 @@ function storagePath(url: string): string | null {
   return i >= 0 ? decodeURIComponent(url.slice(i + marker.length).split('?')[0]) : null;
 }
 
+/** Link da condividere: apre il post nell'app di chi lo riceve. In demo non c'è un server: nessun link. */
+export function postLink(postId: string): string | null {
+  return isDemo || !supabaseUrl ? null : `${supabaseUrl}/functions/v1/verifica-eta/apri/post/${postId}`;
+}
+
 /** Lato lungo massimo delle foto pubblicate: nitide su ogni telefono, ma leggere da caricare e da guardare. */
 const PHOTO_MAX = 1440;
 

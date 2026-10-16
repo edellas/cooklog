@@ -8,6 +8,7 @@ import {
   Platform,
   StyleSheet,
   View,
+  type TextInput,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -51,6 +52,15 @@ export default function CommentsSheet() {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const input = useRef<TextInput>(null);
+  const list = useRef<FlatList<Comment>>(null);
+
+  /** Rispondi: la casella parte con @nome, pronta per scrivere. */
+  const reply = (username: string) => {
+    const tag = `@${username} `;
+    setText((t) => (t.startsWith(tag) ? t : tag + t.replace(/^@\S+\s/, "")));
+    input.current?.focus();
+  };
 
   const [refreshing, setRefreshing] = useState(false);
   const [tick, setTick] = useState(0);
@@ -78,6 +88,8 @@ export default function CommentsSheet() {
         setTick((n) => n + 1);
       } else {
         setItems([...items, c]);
+        // Il commento appena scritto si vede subito, in fondo.
+        setTimeout(() => list.current?.scrollToEnd({ animated: true }), 80);
       }
       // Il conteggio sotto il post si aggiorna con il numero vero (l'elenco qui può essere filtrato o troncato).
       syncCount(true);
@@ -153,7 +165,9 @@ export default function CommentsSheet() {
         <ActivityIndicator color={color.giallo} style={{ marginTop: 40 }} />
       ) : (
         <FlatList
+          ref={list}
           data={items}
+          keyboardShouldPersistTaps="handled"
           keyExtractor={(c) => c.id}
           refreshControl={
             <RefreshControl
@@ -215,6 +229,19 @@ export default function CommentsSheet() {
                     {timeAgo(item.createdAt)}
                   </Txt>
                   <Txt variant="body">{item.body}</Txt>
+                  {!mine && !blocked ? (
+                    <Press
+                      onPress={() => reply(item.author.username)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Rispondi a @${item.author.username}`}
+                      style={styles.del}
+                      hitSlop={8}
+                    >
+                      <Txt variant="meta" tone={color.paperFaint}>
+                        Rispondi
+                      </Txt>
+                    </Press>
+                  ) : null}
                   {mine ? (
                     <Press
                       onPress={() => void remove(item)}
@@ -278,6 +305,7 @@ export default function CommentsSheet() {
           ]}
         >
           <Field
+            ref={input}
             containerStyle={{ flex: 1 }}
             style={styles.input}
             value={text}
@@ -294,12 +322,16 @@ export default function CommentsSheet() {
             accessibilityRole="button"
             accessibilityLabel="Invia commento"
           >
-            <Icon
-              name="invia"
-              size={20}
-              color={color.canvas}
-              strokeWidth={2.4}
-            />
+            {sending ? (
+              <ActivityIndicator color={color.canvas} />
+            ) : (
+              <Icon
+                name="invia"
+                size={20}
+                color={color.canvas}
+                strokeWidth={2.4}
+              />
+            )}
           </Press>
         </View>
       )}

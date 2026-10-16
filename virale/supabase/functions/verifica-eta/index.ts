@@ -7,6 +7,7 @@
 //   GET  /verifica-eta/ritorno   → finita la verifica il browser torna qui e viene rimandato nell'app.
 //   GET  /verifica-eta/stato     → controllo dal browser: quali segreti ci sono e se Didit accetta la chiave.
 //                                  Non mostra mai i valori dei segreti.
+//   GET  /verifica-eta/apri/post/<id> → link dei post condivisi: apre il post nell'app (se è installata).
 //
 // Segreti da impostare in Supabase → Edge Functions → Secrets:
 //   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET
@@ -50,8 +51,16 @@ function missingSecrets(): string[] {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
-  const route = new URL(req.url).pathname.replace(/\/+$/, '').split('/').pop();
+  const path = new URL(req.url).pathname.replace(/\/+$/, '');
+  const route = path.split('/').pop();
   try {
+    const shared = /\/apri\/post\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(path);
+    if (shared && req.method === 'GET') {
+      // Solo un rimando all'app: il post lo carica l'app, con i permessi di chi lo apre.
+      const android = /android/i.test(req.headers.get('user-agent') ?? '');
+      const to = android ? `intent://post/${shared[1]}#Intent;scheme=virale;package=app.virale.mobile;end` : `virale://post/${shared[1]}`;
+      return new Response(null, { status: 302, headers: { Location: to } });
+    }
     if (route === 'webhook' && req.method === 'POST') return await webhook(req);
     if (route === 'ritorno') {
       const android = /android/i.test(req.headers.get('user-agent') ?? '');

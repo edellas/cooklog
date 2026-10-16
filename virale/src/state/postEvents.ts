@@ -63,3 +63,21 @@ export function emitFollowChange(authorId: string, following: boolean) {
   follows.set(authorId, { following, at: Date.now() });
   for (const fn of authorListeners) fn({ authorId, following });
 }
+
+/**
+ * Post spariti per chi guarda: eliminati, segnalati, o di un autore appena bloccato. Le liste che non si
+ * ricaricano da capo (lo scorrimento dei post di un profilo) li tolgono subito.
+ */
+type Gone = { postId: string } | { authorId: string };
+const goneListeners = new Set<Listener<Gone>>();
+
+export function onPostGone(fn: Listener<Gone>): () => void {
+  goneListeners.add(fn);
+  return () => {
+    goneListeners.delete(fn);
+  };
+}
+
+export function emitPostGone(gone: Gone) {
+  for (const fn of goneListeners) fn(gone);
+}

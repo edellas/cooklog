@@ -23,7 +23,6 @@ export default function PostScreen() {
   const { me, version } = useSession();
   const [post, setPost] = useState<Post | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [muted, setMuted] = useState(true);
   const loaded = useRef(false);
 
   // Si ricarica quando qualcosa cambia altrove: se il post è stato eliminato, segnalato o il suo autore
@@ -57,7 +56,7 @@ export default function PostScreen() {
         </Press>
       </View>
       {post ? (
-        <PostCard post={post} active={focused} muted={muted} onToggleMute={() => setMuted((m) => !m)} meId={me?.id} />
+        <PostCard post={post} active={focused} meId={me?.id} />
       ) : error ? (
         <Txt variant="title" style={{ textAlign: 'center', marginTop: 80 }}>
           {error}

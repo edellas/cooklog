@@ -13,6 +13,7 @@ import { formatCount } from '../design/format';
 import { color, font, radius, space } from '../design/tokens';
 import { blockUser, getProfile, getProfilePosts, isDemo, resetDemo, toggleFollow } from '../services/api';
 import { useToast } from '../components/Toast';
+import { seedFeed } from '../state/feedSeed';
 import { emitFollowChange } from '../state/postEvents';
 import { useSession } from '../state/session';
 import { useGoBack } from '../state/useGoBack';
@@ -329,7 +330,12 @@ export function ProfileView({ username, showBack }: { username: string; showBack
               // Tre colonne esatte: la larghezza si calcola, una percentuale più gli spazi andrebbe a capo.
               style={[styles.cell, gridWidth ? { width: (gridWidth - 6 - 6) / 3 } : null]}
               scaleTo={0.98}
-              onPress={() => router.push(`/post/${p.id}` as Href)}
+              onPress={() => {
+                // Come su TikTok: dal post toccato si scorrono tutti gli altri della griglia.
+                const kind = tab === 'post' ? 'posts' : 'saved';
+                seedFeed(profile.username, kind, grid);
+                router.push(`/scorri/${profile.username}?da=${p.id}&tipo=${kind}` as Href);
+              }}
               accessibilityRole="link"
               accessibilityLabel={`Post di @${p.author.username}${p.media.length > 1 ? `, ${p.media.length} elementi` : ''}${p.caption ? `: ${p.caption.slice(0, 60)}` : ''}`}>
               <Thumb media={p.media} rounded={6} />

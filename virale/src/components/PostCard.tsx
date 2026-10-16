@@ -1,12 +1,14 @@
 import { useRouter, type Href } from 'expo-router';
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 
 import { formatCount, timeAgo } from '../design/format';
 import { color, radius, space } from '../design/tokens';
-import { registerShare, TIER_NAMES, toggleFollow, toggleLike, toggleSave } from '../services/api';
+import { postLink, registerShare, TIER_NAMES, toggleFollow, toggleLike, toggleSave } from '../services/api';
 import { shareText } from '../services/share';
 import { emitFollowChange, emitPostChange, onFollowChange, onPostChange, withRecentChanges } from '../state/postEvents';
+import { toggleMute, useMuted } from '../state/sound';
 import type { Post } from '../types';
 import { Icon } from './Icon';
 import { MediaFrame, type VideoProgress } from './MediaFrame';
@@ -20,28 +22,29 @@ export type Interaction = 'liked' | 'commented' | 'saved' | 'shared';
 /**
  * Un post come una stampa sul tavolo luminoso: la cornice con foto e video in alto,
  * sotto la striscia con autore, didascalia e azioni in riga (non una colonna di icone sopra il video).
+ * `blind` (In gara): niente numeri di mi piace, salvataggi, condivisioni e visualizzazioni, così si vota guardando il post e non
+ * seguendo chi è già avanti.
  */
 export const PostCard = memo(function PostCard({
   post: initial,
   active,
-  muted,
-  onToggleMute,
   meId,
   onInteract,
   onVideoProgress,
   viewKey,
+  blind,
 }: {
   post: Post;
   active: boolean;
-  muted: boolean;
-  onToggleMute: () => void;
   meId?: string;
   onInteract?: (postId: string, kind: Interaction) => void;
   onVideoProgress?: (postId: string, p: VideoProgress) => void;
   viewKey?: number;
+  blind?: boolean;
 }) {
   const router = useRouter();
   const toast = useToast();
+  const muted = useMuted();
   const [post, setPost] = useState(() => withRecentChanges(initial));
   const [following, setFollowing] = useState(() => withRecentChanges(initial).followingAuthor);
   const [expanded, setExpanded] = useState(false);
@@ -99,7 +102,8 @@ export const PostCard = memo(function PostCard({
   };
   const share = async () => {
     const text = post.caption ? `@${post.author.username} su Virale: “${post.caption}”` : `Guarda il post di @${post.author.username} su Virale`;
-    const res = await shareText(text);
+    const link = postLink(post.id);
+    const res = await shareText(link ? `${text}\n${link}` : text);
     if (res === 'none') return;
     if (res === 'copied') toast('Testo copiato: incollalo dove vuoi.');
     onInteract?.(post.id, 'shared');
@@ -130,8 +134,9 @@ export const PostCard = memo(function PostCard({
           media={post.media}
           active={active}
           muted={muted}
-          onToggleMute={onToggleMute}
+          onToggleMute={toggleMute}
           onDoubleTap={() => like(true)}
+          onLongPress={() => router.push(`/azioni/${post.id}` as Href)}
           onVideoProgress={onVideoProgress ? (p) => onVideoProgress(post.id, p) : undefined}
           viewKey={viewKey}
           overlay={
@@ -161,7 +166,8 @@ export const PostCard = memo(function PostCard({
                 {post.author.displayName}
               </Txt>
               <Txt variant="meta" tone={color.paperFaint} numberOfLines={1}>
-                @{post.author.username} · {timeAgo(post.createdAt)} · {formatCount(post.viewCount)} {post.viewCount === 1 ? 'visualizzazione' : 'visualizzazioni'}
+                @{post.author.username} · {timeAgo(post.createdAt)}
+                {blind ? '' : ` · ${formatCount(post.viewCount)} ${post.viewCount === 1 ? 'visualizzazione' : 'visualizzazioni'}`}
               </Txt>
             </View>
           </Press>
@@ -185,8 +191,9 @@ export const PostCard = memo(function PostCard({
         <View style={styles.actions}>
           <Action
             icon="cerchia"
-            label={formatCount(post.likeCount)}
+            label={blind ? '' : formatCount(post.likeCount)}
             on={post.likedByMe}
+            pop
             tone={color.matita}
             onPress={() => like(!post.likedByMe)}
             a11y={post.likedByMe ? 'Togli il cerchio' : 'Cerchia: mi piace'}
@@ -197,8 +204,8 @@ export const PostCard = memo(function PostCard({
             onPress={() => router.push(`/commenti/${post.id}` as Href)}
             a11y="Commenti"
           />
-          <Action icon="salva" label={formatCount(post.saveCount)} on={post.savedByMe} tone={color.giallo} filled onPress={save} a11y={post.savedByMe ? 'Togli dai salvati' : 'Salva'} />
-          <Action icon="condividi" label={formatCount(post.shareCount)} onPress={() => void share()} a11y="Condividi" />
+          <Action icon="salva" label={blind ? '' : formatCount(post.saveCount)} on={post.savedByMe} tone={color.giallo} filled onPress={save} a11y={post.savedByMe ? 'Togli dai salvati' : 'Salva'} />
+          <Action icon="condividi" label={blind ? '' : formatCount(post.shareCount)} onPress={() => void share()} a11y="Condividi" />
           <Press
             style={styles.more}
             onPress={() => router.push(`/azioni/${post.id}` as Href)}
@@ -218,6 +225,7 @@ function Action({
   on,
   tone,
   filled,
+  pop,
   onPress,
   a11y,
 }: {
@@ -226,16 +234,30 @@ function Action({
   on?: boolean;
   tone?: string;
   filled?: boolean;
+  /** Piccolo salto dell'icona quando si accende (il mi piace, anche dal doppio tocco). */
+  pop?: boolean;
   onPress: () => void;
   a11y: string;
 }) {
   const c = on && tone ? tone : color.paper;
+  const reduced = useReducedMotion();
+  const scale = useSharedValue(1);
+  const was = useRef(on);
+  useEffect(() => {
+    if (pop && on && !was.current && !reduced) scale.set(withSequence(withTiming(1.35, { duration: 110 }), withSpring(1, { damping: 9, stiffness: 260 })));
+    was.current = on;
+  }, [on, pop, reduced, scale]);
+  const iconStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.get() }] }));
   return (
     <Press style={styles.action} onPress={onPress} accessibilityRole="button" accessibilityLabel={a11y} accessibilityState={{ selected: !!on }}>
-      <Icon name={icon} size={24} color={c} strokeWidth={on ? 2.4 : 1.75} filled={filled && on} />
-      <Txt variant="meta" tone={on && tone ? tone : color.paperDim}>
-        {label}
-      </Txt>
+      <Animated.View style={iconStyle}>
+        <Icon name={icon} size={24} color={c} strokeWidth={on ? 2.4 : 1.75} filled={filled && on} />
+      </Animated.View>
+      {label ? (
+        <Txt variant="meta" tone={on && tone ? tone : color.paperDim}>
+          {label}
+        </Txt>
+      ) : null}
     </Press>
   );
 }
