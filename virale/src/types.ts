@@ -32,8 +32,8 @@ export type Post = {
   savedByMe: boolean;
   /** Segui già l'autore. */
   followingAuthor: boolean;
-  /** Se il post è in gara oggi: il suo livello. */
-  contest?: { entryId: string; tier: number; status: EntryStatus };
+  /** Se il post è in gara oggi. Livello e stato li vede solo l'autore (per gli altri sono null / 'active'). */
+  contest?: { entryId: string | null; tier: number | null; status: EntryStatus };
   /** Segnaposto per caricare la pagina successiva di un elenco (data del post o del salvataggio). */
   cursor?: string;
 };
@@ -75,7 +75,8 @@ export type Cover = {
 
 export type MyEntry = {
   entryId: string;
-  postId: string;
+  /** null: il post in gara è stato eliminato (candidatura ritirata, per oggi non se ne fa un'altra). */
+  postId: string | null;
   tier: number;
   status: EntryStatus;
   views: number;
@@ -146,4 +147,6 @@ export type IdentityItem = {
   method: 'manual' | 'didit';
   /** Perché la verifica automatica è passata a una persona (es. nome sul documento diverso). */
   providerNote: string | null;
+  /** Un altro account già verificato con la stessa persona o lo stesso documento. */
+  duplicateOf: string | null;
 };

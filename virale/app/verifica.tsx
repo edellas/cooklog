@@ -13,8 +13,11 @@ import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { Field } from '../src/components/Field';
 import { completePrivateData, getStatus, startAgeCheck, submitIdentity } from '../src/services/api';
+import { getJson, removeKey, setJson } from '../src/services/storage';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
+
+const DRAFT_KEY = 'virale.verifica.bozza';
 
 /** Scadenza con l'ora, sempre in ora italiana: è quella che usa il server. */
 const deadlineIt = (iso: string) => {
@@ -102,19 +105,23 @@ export default function VerifyScreen() {
   const identity = status?.identity;
   const state = sent && identity?.status !== 'approved' ? 'pending' : (identity?.status ?? 'missing');
 
-  // Su Android il sistema può chiudere l'app mentre la fotocamera è aperta: la foto scattata arriva qui.
+  // Su Android il sistema può chiudere l'app mentre la fotocamera è aperta: le foto già fatte e quella appena
+  // scattata si ritrovano qui, ognuna nella sua casella (si salva quale si stava scattando prima di aprire).
   useEffect(() => {
     if (Platform.OS !== 'android') return;
-    ImagePicker.getPendingResultAsync()
-      .then(async (res) => {
-        if (!res || !('assets' in res) || res.canceled || !res.assets?.[0]) return;
-        const uri = await toJpeg(res.assets[0]);
-        setDoc((d) => {
-          if (d) setSelfie(uri);
-          return d ?? uri;
-        });
-      })
-      .catch(() => undefined);
+    void (async () => {
+      const draft = await getJson<{ doc: string | null; selfie: string | null; pending: 'doc' | 'selfie' | null }>(DRAFT_KEY, {
+        doc: null,
+        selfie: null,
+        pending: null,
+      });
+      const res = await ImagePicker.getPendingResultAsync().catch(() => null);
+      let restored: string | null = null;
+      if (res && 'assets' in res && !res.canceled && res.assets?.[0]) restored = await toJpeg(res.assets[0]);
+      if (!restored && !draft.doc && !draft.selfie) return;
+      setDoc((d) => d ?? (draft.pending === 'doc' && restored ? restored : draft.doc));
+      setSelfie((x) => x ?? (draft.pending === 'selfie' && restored ? restored : draft.selfie));
+    })();
   }, []);
 
   const pick = async (which: 'doc' | 'selfie', camera: boolean) => {
@@ -131,10 +138,12 @@ export default function VerifyScreen() {
         cameraType: which === 'selfie' ? ImagePicker.CameraType.front : ImagePicker.CameraType.back,
         preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
       };
+      if (camera && Platform.OS === 'android') await setJson(DRAFT_KEY, { doc, selfie, pending: which });
       const res = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
       if (res.canceled || !res.assets[0]) return;
       const uri = await toJpeg(res.assets[0]);
       (which === 'doc' ? setDoc : setSelfie)(uri);
+      if (Platform.OS === 'android') await setJson(DRAFT_KEY, { doc: which === 'doc' ? uri : doc, selfie: which === 'selfie' ? uri : selfie, pending: null });
     } catch {
       setError('Non riesco ad aprire fotocamera o galleria. Riprova.');
     }
@@ -148,6 +157,7 @@ export default function VerifyScreen() {
       await submitIdentity(doc, selfie);
       haptic('success');
       setSent(true);
+      void removeKey(DRAFT_KEY);
       void refreshStatus();
       toast('Documento inviato: lo controlliamo al più presto.');
       setDoc(null);

@@ -1,8 +1,10 @@
+import { usePreventRemove } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
-import { useRouter, type Href } from "expo-router";
+import { useNavigation, useRouter, type Href } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -64,8 +66,28 @@ export default function CreateScreen() {
   );
   const canJoin = !alreadyIn && !closed;
 
+  // Uscire con una bozza (tasto indietro di Android, gesto, browser) chiede conferma: non si perde il lavoro.
+  const navigation = useNavigation();
+  const allowLeave = useRef(false);
+  usePreventRemove(media.length > 0 && !done, ({ data }) => {
+    if (allowLeave.current) return navigation.dispatch(data.action);
+    const leave = () => {
+      allowLeave.current = true;
+      navigation.dispatch(data.action);
+    };
+    if (Platform.OS === "web") {
+      if (globalThis.confirm?.("Scartare il post? Foto, video e didascalia andranno persi.")) leave();
+      return;
+    }
+    Alert.alert("Scartare il post?", "Foto, video e didascalia andranno persi.", [
+      { text: "Continua a modificare", style: "cancel" },
+      { text: "Scarta", style: "destructive", onPress: leave },
+    ]);
+  });
+
   /** Chiudere con foto già scelte chiede conferma: non si perde il lavoro con un tocco. */
   const close = () => {
+    if (confirmClose) allowLeave.current = true;
     if (!media.length || confirmClose) return goBack();
     setConfirmClose(true);
     if (confirmTimer.current) clearTimeout(confirmTimer.current);
@@ -81,20 +103,60 @@ export default function CreateScreen() {
       .catch(() => undefined);
   }, []);
 
-  const pick = async (camera: boolean) => {
+  /** Aggiunge foto e video scelti (o recuperati dopo un riavvio dell'app), con i controlli di durata e numero. */
+  const addAssets = (assets: ImagePicker.ImagePickerAsset[]) => {
+    const room = MAX - media.length;
+    // Sul web la durata arriva in secondi, sul telefono in millisecondi.
+    const ms = (d: number | null | undefined) =>
+      d == null ? undefined : Math.round(Platform.OS === "web" ? d * 1000 : d);
+    const tooLong = assets.some((a) => a.type === "video" && (ms(a.duration) ?? 0) > 61_000);
+    const next: DraftMedia[] = assets
+      .filter((a) => !(a.type === "video" && (ms(a.duration) ?? 0) > 61_000))
+      .map((a) => ({
+        uri: a.uri,
+        kind: a.type === "video" ? "video" : "image",
+        width: a.width,
+        height: a.height,
+        durationMs: ms(a.duration),
+        mimeType: a.mimeType ?? undefined,
+      }));
+    const extra = next.length - room;
+    if (tooLong)
+      setError("I video possono durare al massimo 60 secondi: quelli più lunghi non sono stati aggiunti.");
+    else if (extra > 0)
+      setError(`Al massimo ${MAX} per post: ne ho tenuti ${room}, gli altri ${extra} no.`);
+    setMedia((m) => [...m, ...next].slice(0, MAX));
+  };
+
+  // Su Android il sistema può chiudere l'app mentre la fotocamera è aperta (succede con i video lunghi):
+  // riaprendola, la foto o il video appena fatti arrivano qui invece di andare persi.
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    ImagePicker.getPendingResultAsync()
+      .then((res) => {
+        if (res && "assets" in res && !res.canceled && res.assets?.length) addAssets(res.assets);
+      })
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Galleria: più foto e video insieme. Fotocamera: una foto oppure un video, con due pulsanti separati
+   * (su Android la fotocamera che accetta "foto o video" scatta solo foto).
+   */
+  const pick = async (source: "gallery" | "photo" | "video") => {
     setError(null);
     const room = MAX - media.length;
     if (room <= 0) return setError(`Al massimo ${MAX} foto e video per post.`);
+    const camera = source !== "gallery";
     try {
       if (camera) {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
         if (!perm.granted)
-          return setError(
-            "Serve il permesso della fotocamera: puoi darlo dalle Impostazioni.",
-          );
+          return setError("Serve il permesso della fotocamera: puoi darlo dalle Impostazioni.");
       }
       const opts: ImagePicker.ImagePickerOptions = {
-        mediaTypes: ["images", "videos"],
+        mediaTypes: source === "photo" ? ["images"] : source === "video" ? ["videos"] : ["images", "videos"],
         quality: 0.8,
         videoMaxDuration: 60,
         allowsMultipleSelection: !camera,
@@ -108,36 +170,9 @@ export default function CreateScreen() {
         ? await ImagePicker.launchCameraAsync(opts)
         : await ImagePicker.launchImageLibraryAsync(opts);
       if (res.canceled) return;
-      // Sul web la durata arriva in secondi, sul telefono in millisecondi.
-      const ms = (d: number | null | undefined) =>
-        d == null
-          ? undefined
-          : Math.round(Platform.OS === "web" ? d * 1000 : d);
-      const tooLong = res.assets.some(
-        (a) => a.type === "video" && (ms(a.duration) ?? 0) > 61_000,
-      );
-      const next: DraftMedia[] = res.assets
-        .filter((a) => !(a.type === "video" && (ms(a.duration) ?? 0) > 61_000))
-        .map((a) => ({
-          uri: a.uri,
-          kind: a.type === "video" ? "video" : "image",
-          width: a.width,
-          height: a.height,
-          durationMs: ms(a.duration),
-          mimeType: a.mimeType ?? undefined,
-        }));
-      const extra = next.length - room;
-      if (tooLong)
-        setError(
-          "I video possono durare al massimo 60 secondi: quelli più lunghi non sono stati aggiunti.",
-        );
-      else if (extra > 0)
-        setError(
-          `Al massimo ${MAX} per post: ne ho tenuti ${room}, gli altri ${extra} no.`,
-        );
-      setMedia((m) => [...m, ...next].slice(0, MAX));
+      addAssets(res.assets);
     } catch {
-      setError("Non riesco ad aprire la galleria. Riprova.");
+      setError(camera ? "Non riesco ad aprire la fotocamera. Riprova." : "Non riesco ad aprire la galleria. Riprova.");
     }
   };
 
@@ -182,7 +217,11 @@ export default function CreateScreen() {
         entry={done.entry}
         contestError={done.contestError}
         onClose={goBack}
-        onGo={() => router.replace("/provini" as Href)}
+        onGo={() => {
+          // Si chiude questa schermata e si va alla scheda Provini (non una seconda barra di schede sopra).
+          allowLeave.current = true;
+          router.dismissTo("/provini" as Href);
+        }}
       />
     );
 
@@ -251,7 +290,7 @@ export default function CreateScreen() {
           <View style={{ gap: space[3] }}>
             <Press
               style={styles.source}
-              onPress={() => void pick(false)}
+              onPress={() => void pick("gallery")}
               accessibilityRole="button"
             >
               <Icon name="galleria" size={30} color={color.giallo} />
@@ -261,17 +300,30 @@ export default function CreateScreen() {
               </Txt>
             </Press>
             {Platform.OS !== "web" ? (
-              <Press
-                style={styles.source}
-                onPress={() => void pick(true)}
-                accessibilityRole="button"
-              >
-                <Icon name="fotocamera" size={30} color={color.giallo} />
-                <Txt variant="title">Scatta o registra</Txt>
-                <Txt variant="small" tone={color.paperDim}>
-                  Una foto o un video fino a 60 secondi.
-                </Txt>
-              </Press>
+              <View style={{ flexDirection: "row", gap: space[3] }}>
+                <Press
+                  style={[styles.source, { flex: 1 }]}
+                  onPress={() => void pick("photo")}
+                  accessibilityRole="button"
+                >
+                  <Icon name="fotocamera" size={30} color={color.giallo} />
+                  <Txt variant="title">Scatta</Txt>
+                  <Txt variant="small" tone={color.paperDim}>
+                    Una foto.
+                  </Txt>
+                </Press>
+                <Press
+                  style={[styles.source, { flex: 1 }]}
+                  onPress={() => void pick("video")}
+                  accessibilityRole="button"
+                >
+                  <Icon name="video" size={30} color={color.giallo} />
+                  <Txt variant="title">Registra</Txt>
+                  <Txt variant="small" tone={color.paperDim}>
+                    Un video fino a 60 secondi.
+                  </Txt>
+                </Press>
+              </View>
             ) : null}
           </View>
         ) : (
@@ -318,7 +370,7 @@ export default function CreateScreen() {
               {media.length < MAX ? (
                 <Press
                   style={[styles.thumb, styles.add]}
-                  onPress={() => void pick(false)}
+                  onPress={() => void pick("gallery")}
                   accessibilityRole="button"
                   accessibilityLabel="Aggiungi foto o video"
                 >

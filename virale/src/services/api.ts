@@ -79,7 +79,7 @@ type PostJson = {
   liked: boolean;
   saved: boolean;
   following?: boolean;
-  contest?: { entry_id: string; tier: number; status: EntryStatus } | null;
+  contest?: { entry_id: string | null; tier: number | null; status: EntryStatus } | null;
   cursor?: string;
 };
 
@@ -352,7 +352,15 @@ function notifyDemo(demo: DemoDb, kind: NotificationKind, actorId: string | null
   const key = (n: AppNotification) => `${n.kind}|${n.actor?.id ?? ''}|${n.post?.id ?? ''}`;
   const actor = actorId ? author(demo, actorId) : null;
   const post = postId && demo.posts[postId] ? { id: postId, media: demo.posts[postId].media } : null;
-  const item: AppNotification = { id: `n-${Date.now()}-${list.length}`, kind, actor, post, data, createdAt: new Date().toISOString(), read: false };
+  const item: AppNotification = {
+    id: `n-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    kind,
+    actor,
+    post,
+    data,
+    createdAt: new Date().toISOString(),
+    read: false,
+  };
   demo.notifications = [item, ...list.filter((n) => key(n) !== key(item))].slice(0, 100);
 }
 
@@ -444,7 +452,14 @@ function toPost(demo: DemoDb, id: string): Post {
     likedByMe: liked,
     savedByMe: saved,
     followingAuthor: demo.following.includes(sp.authorId),
-    contest: entry ? { entryId: entry.id, tier: entry.tier, status: entry.status } : undefined,
+    // Come sul server: livello e stato li vede solo l'autore, chi vota sa solo che è in gara.
+    contest: !entry
+      ? undefined
+      : sp.authorId === demo.me?.id
+        ? { entryId: entry.id, tier: entry.tier, status: entry.status }
+        : entry.status === 'active' || entry.status === 'finalist'
+          ? { entryId: null, tier: null, status: 'active' }
+          : undefined,
   };
 }
 
@@ -854,7 +869,7 @@ export async function getForYou(limit = 6, excludeIds: string[] = []): Promise<F
   return withDemo((demo) => {
     if (!demo.me) return [];
     crowdTick(demo, 10);
-    const batch = serveBatch(demo.state, demo.me.id, limit);
+    const batch = serveBatch(demo.state, demo.me.id, limit, Math.random, DEFAULT_ARENA_CONFIG, new Set(excludeIds));
     // Come sul server: dentro la pagina vengono prima i post più vicini ai tuoi gusti (con un po' di caso).
     const cards: FeedCard[] = batch
       .filter((e) => visible(demo, e.postId))
@@ -963,18 +978,21 @@ export async function toggleSave(postId: string, on: boolean): Promise<void> {
 }
 
 /** Registra una condivisione. Conta una volta per persona e post, come sul server. */
-export async function registerShare(postId: string): Promise<void> {
-  if (!isDemo) {
-    await rpc('register_share', { p_post_id: postId });
-    return;
-  }
-  await withDemo((demo) => {
+/**
+ * Registra una condivisione (una per persona e post). Restituisce true se è la prima: solo allora il contatore sale.
+ * Su Android il sistema non dice se il foglio è stato chiuso senza condividere: conta comunque una volta sola,
+ * come una condivisione vera, quindi non si può usare per gonfiare la gara.
+ */
+export async function registerShare(postId: string): Promise<boolean> {
+  if (!isDemo) return Boolean(await rpc<boolean | null>('register_share', { p_post_id: postId }));
+  return withDemo((demo) => {
     const p = stored(demo, postId);
     demo.shared ??= [];
-    if (demo.shared.includes(postId)) return;
+    if (demo.shared.includes(postId)) return false;
     demo.shared.push(postId);
     p.shares += 1;
     bumpInterest(demo, postId, 2);
+    return true;
   }, true);
 }
 
@@ -1409,21 +1427,10 @@ export async function deletePost(postId: string): Promise<void> {
  */
 export async function deleteAccount(): Promise<void> {
   if (!isDemo) {
-    const me = await uid();
-    // Foto e video pubblicati, e gli eventuali documenti d'identità ancora in attesa.
-    for (const name of ['media', 'documenti']) {
-      const bucket = db().storage.from(name);
-      for (;;) {
-        const { data, error } = await bucket.list(me, { limit: 100 });
-        if (error) throw new Error(error.message);
-        if (!data?.length) break;
-        const { error: rmError } = await bucket.remove(data.map((f) => `${me}/${f.name}`));
-        if (rmError) throw new Error(rmError.message);
-        if (data.length < 100) break;
-      }
-    }
+    // Prima l'account (che mette in coda di cancellazione tutti i suoi file, foto, video e documenti):
+    // se cancellassimo prima i file e poi la chiamata fallisse, resterebbe un account senza più i suoi post.
     await rpc('delete_my_account');
-    await db().auth.signOut();
+    await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
     return;
   }
   await resetDemo();
@@ -1639,7 +1646,7 @@ export async function submitIdentity(documentUri: string, selfieUri: string): Pr
 export async function getIdentityQueue(): Promise<IdentityItem[]> {
   if (!isDemo) {
     const rows = await rpc<
-      { user_id: string; username: string; first_name: string; last_name: string; birth_date: string; document_path: string; selfie_path: string; submitted_at: string; deadline: string; method?: 'manual' | 'didit'; provider_note?: string | null }[]
+      { user_id: string; username: string; first_name: string; last_name: string; birth_date: string; document_path: string; selfie_path: string; submitted_at: string; deadline: string; method?: 'manual' | 'didit'; provider_note?: string | null; duplicate_of?: string | null }[]
     >('identity_queue');
     const paths = rows.flatMap((r) => [r.document_path, r.selfie_path]).filter(Boolean);
     const signed = paths.length ? (await db().storage.from('documenti').createSignedUrls(paths, 600)).data ?? [] : [];
@@ -1656,6 +1663,7 @@ export async function getIdentityQueue(): Promise<IdentityItem[]> {
       deadline: r.deadline,
       method: r.method ?? 'manual',
       providerNote: r.provider_note ?? null,
+      duplicateOf: r.duplicate_of ?? null,
     }));
   }
   return withDemo((demo) =>
@@ -1673,6 +1681,7 @@ export async function getIdentityQueue(): Promise<IdentityItem[]> {
         deadline: a.identity.deadline,
         method: 'manual' as const,
         providerNote: null,
+        duplicateOf: null,
       })),
   );
 }

@@ -278,6 +278,12 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
       <Txt variant="label">
         @{item.username} · {item.firstName ?? '—'} {item.lastName ?? ''}
       </Txt>
+      {item.duplicateOf ? (
+        <Txt variant="small" tone={color.matita}>
+          Attenzione: la stessa persona (nome, cognome e data di nascita) ha già un account verificato, @{item.duplicateOf}. Una persona, un account:
+          approva solo se è un caso giustificato (per esempio l’account vecchio è perso).
+        </Txt>
+      ) : null}
       {item.method === 'didit' ? (
         <Txt variant="small" tone={color.giallo}>
           {item.providerNote

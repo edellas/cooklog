@@ -12,7 +12,7 @@ import { Txt } from '../../src/components/Txt';
 import { clock } from '../../src/design/format';
 import { duration, ease } from '../../src/design/motion';
 import { color, font, radius, space } from '../../src/design/tokens';
-import { msUntilArenaClose } from '../../src/engine/engine';
+import { arenaDay, msUntilArenaClose } from '../../src/engine/engine';
 import { getExplore, getFollowing, getForYou, recordView } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
@@ -119,32 +119,75 @@ export default function ProviniTab() {
   }, [mode]);
 
   // A mezzanotte la gara chiude e ne parte una nuova: i post di ieri spariscono, il feed si ricarica.
-  const [day, setDay] = useState(0);
+  // Il timer può fermarsi col telefono in standby: si ricontrolla anche riaprendo l'app (sotto).
+  const [day, setDay] = useState(() => arenaDay());
   useEffect(() => {
-    const id = setTimeout(() => setDay((n) => n + 1), msUntilArenaClose() + 90_000);
+    const id = setTimeout(() => setDay(arenaDay()), msUntilArenaClose() + 90_000);
     return () => clearTimeout(id);
   }, [day]);
 
+  /**
+   * Ogni sezione ricorda la sua lista e dove eri: tornando da Esplora a In gara ritrovi i provini che non avevi
+   * ancora guardato (consegnati dal server, non vanno buttati). Un cambiamento vero (nuovo post, blocco,
+   * segnalazione, nuovo giorno) svuota tutto.
+   */
+  const saved = useRef<Partial<Record<Mode, { cards: FeedCard[]; activeId: string | null; ended: boolean; at: number }>>>({});
+  const restoreIndex = useRef(0);
+  const lastKey = useRef({ version, day });
+  const switchMode = (m: Mode) => {
+    if (m === mode) return;
+    flush();
+    saved.current[mode] = { cards: cardsRef.current, activeId: activeIdRef.current, ended: exhausted.current, at: Date.now() };
+    setMode(m);
+  };
+
   useEffect(() => {
     flush();
+    if (lastKey.current.version !== version || lastKey.current.day !== day) saved.current = {};
+    lastKey.current = { version, day };
+    const keep = saved.current[mode];
+    delete saved.current[mode];
+    if (keep && keep.cards.length && Date.now() - keep.at < 10 * 60_000) {
+      request.current += 1;
+      loadingMore.current = false;
+      resetting.current = false;
+      exhausted.current = keep.ended;
+      setEnded(keep.ended);
+      restoreIndex.current = Math.max(0, keep.cards.findIndex((c) => c.id === keep.activeId));
+      setCards(keep.cards);
+      setActiveId(keep.activeId);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+    restoreIndex.current = 0;
     setLoading(true);
     setError(null);
     setCards([]);
     setActiveId(null);
     void load(true);
-  }, [flush, load, version, day]);
+  }, [flush, load, mode, version, day]);
 
   // Mettendo l'app in background la vista corrente si chiude (e conta); riaprendola riprende.
   const focusedRef = useRef(false);
+  const dayRef = useRef(day);
+  useEffect(() => {
+    dayRef.current = day;
+  }, [day]);
   useEffect(() => {
     focusedRef.current = focused;
   }, [focused]);
   useEffect(() => {
     const sub = AppState.addEventListener('change', (st) => {
-      if (st === 'background' || st === 'inactive') flushRef.current();
-      else if (st === 'active' && focusedRef.current && !current.current) {
-        const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
-        if (visible) current.current = { card: visible, since: Date.now() };
+      // Solo "background": su iPhone "inactive" arriva anche abbassando il Centro di controllo o per una
+      // notifica, e chiuderebbe la vista (come uno scorrimento) mentre si sta ancora guardando.
+      if (st === 'background') flushRef.current();
+      else if (st === 'active') {
+        if (arenaDay() !== dayRef.current) setDay(arenaDay());
+        if (focusedRef.current && !current.current) {
+          const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
+          if (visible) current.current = { card: visible, since: Date.now() };
+        }
       }
     });
     return () => sub.remove();
@@ -174,7 +217,13 @@ export default function ProviniTab() {
   }, [flush]);
   const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<FeedCard>[] }) => {
     const visible = viewableItems[0]?.item;
-    if (!visible || visible.id === current.current?.card.id) return;
+    // Sulla pagina finale non c'è nessun post: si chiude la vista dell'ultimo (non deve contare il tempo lì).
+    if (!visible) {
+      flushRef.current();
+      setActiveId(null);
+      return;
+    }
+    if (visible.id === current.current?.card.id) return;
     flushRef.current();
     current.current = { card: visible, since: Date.now() };
     views.current[visible.id] = (views.current[visible.id] ?? 0) + 1;
@@ -216,7 +265,7 @@ export default function ProviniTab() {
           value={mode}
           onChange={(m) => {
             haptic('selection');
-            setMode(m);
+            switchMode(m);
           }}
         />
         {mode === 'gara' ? <ArenaClock /> : null}
@@ -260,7 +309,7 @@ export default function ProviniTab() {
                   : 'Ogni candidato lo vedi una volta sola, e i tuoi non li vedi: il tuo voto è come guardi. Ne arrivano di nuovi durante il giorno.'}
             </Txt>
             {mode === 'gara' ? (
-              <Press style={styles.retry} onPress={() => setMode('esplora')} accessibilityRole="button">
+              <Press style={styles.retry} onPress={() => switchMode('esplora')} accessibilityRole="button">
                 <Txt variant="label" tone={color.canvas}>
                   Vai su Esplora
                 </Txt>
@@ -280,6 +329,8 @@ export default function ProviniTab() {
           </View>
         ) : height > 0 ? (
           <FlatList
+            key={mode}
+            initialScrollIndex={restoreIndex.current < cards.length ? restoreIndex.current : 0}
             data={cards}
             keyExtractor={(c) => c.id}
             pagingEnabled
@@ -300,7 +351,7 @@ export default function ProviniTab() {
                   <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
                     {mode === 'gara' ? 'Ne arrivano di nuovi durante il giorno: tira giù per controllare.' : 'Intanto scopri qualcosa di nuovo.'}
                   </Txt>
-                  <Press style={styles.retry} onPress={() => setMode('esplora')} accessibilityRole="button">
+                  <Press style={styles.retry} onPress={() => switchMode('esplora')} accessibilityRole="button">
                     <Txt variant="label" tone={color.canvas}>
                       Vai su Esplora
                     </Txt>

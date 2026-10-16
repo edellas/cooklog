@@ -616,3 +616,13 @@ do $$ declare w uuid; d date := arena_today(); author uuid; again uuid; begin
   if again is distinct from (select entry_id from daily_viral where contest_day = d) then raise exception 'secondo vincitore'; end if;
   raise notice 'ok, la copertina non si riassegna se il vincitore se ne va';
 end $$;
+
+-- Una condivisione conta una volta: la seconda non alza il contatore.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e4', false);
+do $$ begin
+  if not register_share('30000000-0000-0000-0000-000000000003') then raise exception 'prima condivisione non registrata'; end if;
+  if register_share('30000000-0000-0000-0000-000000000003') then raise exception 'seconda condivisione contata'; end if;
+  raise notice 'ok, una condivisione per persona e post';
+end $$;
+reset role;

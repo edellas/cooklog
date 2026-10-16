@@ -21,6 +21,7 @@ export type IconName =
   | 'audio'
   | 'muto'
   | 'fotocamera'
+  | 'video'
   | 'galleria'
   | 'check'
   | 'segnala'
@@ -129,6 +130,13 @@ export function Icon({
               <>
                 <Path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5Z" {...p} />
                 <Circle cx={12} cy={12.5} r={3.5} {...p} />
+              </>
+            );
+          case 'video':
+            return (
+              <>
+                <Rect x={3.5} y={6.5} width={12.5} height={11} rx={2.5} {...p} />
+                <Path d="m16 10.5 4.5-2.5v8L16 13.5" {...p} />
               </>
             );
           case 'galleria':

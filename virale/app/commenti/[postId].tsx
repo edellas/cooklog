@@ -72,9 +72,13 @@ export default function CommentsSheet() {
       setError(null);
       const c = await addComment(postId, text);
       haptic("light");
-      const next = [...(items ?? []), c];
-      setItems(next);
       setText("");
+      if (items === null) {
+        // L'elenco non era arrivato: si ricarica tutto invece di mostrare solo il nuovo commento.
+        setTick((n) => n + 1);
+      } else {
+        setItems([...items, c]);
+      }
       // Il conteggio sotto il post si aggiorna con il numero vero (l'elenco qui può essere filtrato o troncato).
       syncCount(true);
     } catch (e) {

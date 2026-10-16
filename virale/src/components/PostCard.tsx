@@ -103,8 +103,11 @@ export const PostCard = memo(function PostCard({
     if (res === 'none') return;
     if (res === 'copied') toast('Testo copiato: incollalo dove vuoi.');
     onInteract?.(post.id, 'shared');
-    setPost((p) => ({ ...p, shareCount: p.shareCount + 1 }));
-    registerShare(post.id).catch(() => undefined);
+    registerShare(post.id)
+      .then((first) => {
+        if (first) setPost((p) => ({ ...p, shareCount: p.shareCount + 1 }));
+      })
+      .catch(() => undefined);
   };
   const follow = () => {
     setFollowing(true);
@@ -135,7 +138,9 @@ export const PostCard = memo(function PostCard({
             contest && contest.status !== 'disqualified' ? (
               <View style={styles.stamp} pointerEvents="none">
                 <Txt variant="meta" tone={color.canvas} style={styles.stampText}>
-                  In gara · {TIER_NAMES[contest.status === 'finalist' ? TIER_NAMES.length - 1 : contest.tier]}
+                  {contest.tier === null
+                    ? 'In gara'
+                    : `In gara · ${TIER_NAMES[contest.status === 'finalist' ? TIER_NAMES.length - 1 : contest.tier]}`}
                 </Txt>
               </View>
             ) : null

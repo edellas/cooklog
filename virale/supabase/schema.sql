@@ -1074,12 +1074,18 @@ end;
 $$;
 
 -- Una condivisione per persona e post: il contatore lo tiene il trigger su post_shares.
+-- Restituisce true solo alla prima condivisione: l'app alza il contatore solo allora.
+drop function if exists public.register_share(uuid);
 create or replace function public.register_share(p_post_id uuid)
-returns void language sql security definer set search_path = public, pg_temp as $$
-  insert into post_shares (post_id, user_id)
-  select p_post_id, auth.uid()
-  where auth.uid() is not null and public.can_act(auth.uid()) and public.can_see(p_post_id, auth.uid())
-  on conflict do nothing;
+returns boolean language sql security definer set search_path = public, pg_temp as $$
+  with ins as (
+    insert into post_shares (post_id, user_id)
+    select p_post_id, auth.uid()
+    where auth.uid() is not null and public.can_act(auth.uid()) and public.can_see(p_post_id, auth.uid())
+    on conflict do nothing
+    returning 1
+  )
+  select exists (select 1 from ins);
 $$;
 
 create or replace function public.get_profile(p_username text)
@@ -1240,7 +1246,9 @@ begin
   v_saved := exists (select 1 from post_saves where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
   v_shared := exists (select 1 from post_shares where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
   -- Completamento e ri-visione li misura il telefono, ma devono essere compatibili col tempo passato sul post.
-  v_completed := v_dwell >= v_cfg.complete_dwell_ms or (coalesce(p_completed, false) and v_dwell >= v_cfg.skip_dwell_ms);
+  -- Video (p_completed presente): conta l'arrivo alla fine, con un tempo minimo. Foto: conta il tempo.
+  v_completed := case when p_completed is null then v_dwell >= v_cfg.complete_dwell_ms
+                      else p_completed and v_dwell >= v_cfg.skip_dwell_ms end;
   update arena_views set counted = true, credited = array_remove(array[
       case when v_liked then 'like' end, case when v_commented then 'comment' end,
       case when v_saved then 'save' end, case when v_shared then 'share' end], null)
@@ -1322,7 +1330,8 @@ returns table (entry_id uuid, post_id uuid, tier smallint, status text, views in
 language sql stable security definer set search_path = public, pg_temp as $$
   select e.id, e.post_id, e.tier, e.status, (public.arena_entry_totals(e.id)).views, e.contest_day
   from arena_entries e
-  where e.author_id = auth.uid() and e.contest_day = public.arena_today() and e.post_id is not null;
+  -- Anche la candidatura ritirata (post eliminato, post_id nullo): per oggi non se ne può fare un'altra.
+  where e.author_id = auth.uid() and e.contest_day = public.arena_today();
 $$;
 
 -- ---------------------------------------------------------------------------

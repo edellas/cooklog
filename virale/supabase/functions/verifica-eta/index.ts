@@ -56,8 +56,9 @@ Deno.serve(async (req) => {
     if (route === 'verifica-eta' && req.method === 'POST') return await start(req);
     return json({ error: 'Indirizzo non valido.' }, 404);
   } catch (e) {
+    // Il dettaglio finisce nei log (Supabase → Edge Functions → verifica-eta → Logs), non a chi chiama.
     console.error('verifica-eta', e);
-    return json({ error: `Errore interno della funzione: ${(e as Error).message ?? e}` }, 500);
+    return json({ error: 'Errore interno della funzione verifica-eta: guarda i log su Supabase.' }, 500);
   }
 });
 
@@ -71,14 +72,22 @@ async function diditProblem(res: Response, what: string): Promise<string> {
   return `Il servizio di verifica non risponde (Didit, errore ${res.status}). Riprova tra poco.`;
 }
 
+/** Ultimo controllo della chiave: al massimo uno al minuto, così questa pagina pubblica non consuma i limiti di Didit. */
+let keyCheck: { at: number; result: string } | null = null;
+
 /** Controllo dal browser del telefono: https://<progetto>.supabase.co/functions/v1/verifica-eta/stato */
 async function stato(): Promise<Response> {
   const missing = missingSecrets();
   let chiave = 'non controllata (manca DIDIT_API_KEY)';
   if (env('DIDIT_API_KEY')) {
-    // Una sessione che non esiste: con una chiave buona Didit risponde "non trovata", con una sbagliata "non autorizzato".
-    const res = await fetch(`${DIDIT}/session/00000000-0000-0000-0000-000000000000/decision/`, { headers: { 'x-api-key': env('DIDIT_API_KEY') } });
-    chiave = res.status === 401 || res.status === 403 ? `RIFIUTATA da Didit (errore ${res.status})` : `accettata (Didit ha risposto ${res.status})`;
+    if (keyCheck && Date.now() - keyCheck.at < 60_000) {
+      chiave = keyCheck.result;
+    } else {
+      // Una sessione che non esiste: con una chiave buona Didit risponde "non trovata", con una sbagliata "non autorizzato".
+      const res = await fetch(`${DIDIT}/session/00000000-0000-0000-0000-000000000000/decision/`, { headers: { 'x-api-key': env('DIDIT_API_KEY') } });
+      chiave = res.status === 401 || res.status === 403 ? `RIFIUTATA da Didit (errore ${res.status})` : `accettata (Didit ha risposto ${res.status})`;
+      keyCheck = { at: Date.now(), result: chiave };
+    }
   }
   const { data: cfg, error } = await admin.from('arena_config').select('id_provider').limit(1).maybeSingle();
   return json({
@@ -131,8 +140,8 @@ function createSession(vendorData: string): Promise<Response> {
 
 /** Solo per l'amministratore: apre e cancella subito una sessione di prova, così si sa se chiave e workflow vanno. */
 async function diagnosi(userId: string): Promise<Response> {
-  const { data: me } = await admin.from('profiles').select('is_admin').eq('id', userId).maybeSingle();
-  if (!me?.is_admin) return json({ error: 'Solo per gli amministratori.' }, 403);
+  const { data: me } = await admin.from('profiles').select('is_admin, banned_at').eq('id', userId).maybeSingle();
+  if (!me?.is_admin || me.banned_at) return json({ error: 'Solo per gli amministratori.' }, 403);
   const checks: string[] = [];
   const missing = missingSecrets();
   checks.push(missing.length ? `✗ Segreti mancanti su Supabase: ${missing.join(', ')}` : '✓ Segreti presenti');
@@ -178,8 +187,8 @@ async function webhook(req: Request): Promise<Response> {
   const decision = (await res.json()) as {
     status: string;
     vendor_data?: string;
-    id_verifications?: { date_of_birth?: string; first_name?: string; last_name?: string }[];
-    id_verification?: { date_of_birth?: string; first_name?: string; last_name?: string };
+    id_verifications?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string }[];
+    id_verification?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string };
   };
   if (decision.vendor_data && decision.vendor_data !== event.vendor_data) return json({ ok: true });
   const doc = decision.id_verifications?.[0] ?? decision.id_verification;
@@ -193,6 +202,8 @@ async function webhook(req: Request): Promise<Response> {
     p_birth_date: birth,
     p_first_name: doc?.first_name ?? null,
     p_last_name: doc?.last_name ?? null,
+    // Il numero del documento non si salva: il database ne tiene solo un'impronta per riconoscere i doppioni.
+    p_document_number: typeof doc?.document_number === 'string' ? doc.document_number.slice(0, 40) : null,
   });
   if (error) throw error;
 

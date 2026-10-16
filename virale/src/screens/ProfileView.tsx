@@ -49,9 +49,18 @@ export function ProfileView({ username, showBack }: { username: string; showBack
     () =>
       getProfile(username)
         .then((d) => {
-          setData(d);
+          // Le pagine già caricate più in basso restano (tornando da un post la griglia non si accorcia):
+          // si aggiorna la prima pagina e si tengono le altre che esistono ancora.
+          setData((prev) => {
+            if (!prev || prev.profile.id !== d.profile.id) return d;
+            const merge = (first: Post[], old: Post[]) => {
+              const last = first.at(-1)?.cursor;
+              const have = new Set(first.map((x) => x.id));
+              return [...first, ...old.filter((x) => !have.has(x.id) && last !== undefined && x.cursor !== undefined && x.cursor < last)];
+            };
+            return { ...d, posts: merge(d.posts, prev.posts), saved: merge(d.saved, prev.saved) };
+          });
           setError(null);
-          more.current = { post: false, salvati: false };
         })
         .catch((e: Error) => setError(e.message)),
     [username],
@@ -93,7 +102,8 @@ export function ProfileView({ username, showBack }: { username: string; showBack
     if (e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 600) loadMore();
   };
 
-  if (error || !data) {
+  // Un errore nell'aggiornamento non nasconde un profilo già caricato.
+  if (!data) {
     return (
       <View style={[styles.root, { paddingTop: insets.top + space[3] }]}>
         {showBack ? (
@@ -281,14 +291,22 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           </Press>
         ) : null}
 
-        {entry ? (
+        {entry && !entry.postId ? (
+          <View style={styles.contestEmpty}>
+            <Txt variant="label">Oggi hai ritirato la candidatura.</Txt>
+            <Txt variant="small" tone={color.paperDim}>
+              Il post in gara è stato eliminato. Si partecipa con un post al giorno: potrai candidarne un altro domani.
+            </Txt>
+          </View>
+        ) : entry ? (
           <View style={styles.contest}>
             <View style={styles.contestHead}>
               <Txt variant="title">{profile.isMe ? 'Il tuo post in gara oggi' : 'In gara oggi'}</Txt>
             </View>
             <TierLadder entry={entry} />
           </View>
-        ) : profile.isMe ? (
+        ) : null}
+        {!entry && profile.isMe ? (
           <Press style={styles.contestEmpty} onPress={() => router.push('/scatta' as Href)} accessibilityRole="button">
             <Txt variant="label">Oggi non sei in gara.</Txt>
             <Txt variant="small" tone={color.paperDim}>

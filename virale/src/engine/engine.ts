@@ -139,8 +139,11 @@ export function applySignal(stats: EntryStats, signal: ViewSignal, cfg: ArenaCon
   const dwell = Math.max(0, Math.min(cfg.maxDwellMs, Math.round(signal.dwellMs || 0)));
   return {
     views: stats.views + 1,
-    completes: stats.completes + ((signal.completed ?? dwell >= cfg.completeDwellMs) ? 1 : 0),
-    rewatches: stats.rewatches + (signal.rewatched ? 1 : 0),
+    // Come arena_record_view: per i video conta se è arrivato alla fine (con un tempo compatibile), per le
+    // foto il tempo; la ri-visione conta solo con almeno due volte la soglia di completamento.
+    completes:
+      stats.completes + ((signal.completed !== undefined ? signal.completed && dwell >= cfg.skipDwellMs : dwell >= cfg.completeDwellMs) ? 1 : 0),
+    rewatches: stats.rewatches + (signal.rewatched && dwell >= 2 * cfg.completeDwellMs ? 1 : 0),
     likes: stats.likes + (signal.liked ? 1 : 0),
     comments: stats.comments + (signal.commented ? 1 : 0),
     saves: stats.saves + (signal.saved ? 1 : 0),
@@ -246,10 +249,13 @@ export function serveBatch(
   limit: number,
   rng: Rng = Math.random,
   cfg: ArenaConfig = DEFAULT_ARENA_CONFIG,
+  /** Già sullo schermo di chi guarda: non si ripropongono nella stessa lista. */
+  exclude: ReadonlySet<string> = new Set(),
 ): ArenaEntry[] {
   if (state.closed || limit <= 0) return [];
   const seen = state.served[viewerId] ?? {};
-  const candidates = state.entries.filter((e) => isServable(e) && e.authorId !== viewerId && !(e.id in seen));
+  // Come sul server: un candidato consegnato ma mai guardato torna disponibile (non si perde se il feed si ricarica).
+  const candidates = state.entries.filter((e) => isServable(e) && e.authorId !== viewerId && seen[e.id] !== true && !exclude.has(e.id));
   const upper = candidates.filter((e) => e.tier >= 1);
   const lower = candidates.filter((e) => e.tier === 0);
 
