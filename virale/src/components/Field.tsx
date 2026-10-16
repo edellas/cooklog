@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { forwardRef, useState, type ReactNode } from 'react';
 import { Platform, StyleSheet, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
 
 import { color, font, radius, space } from '../design/tokens';
@@ -7,12 +7,16 @@ import { color, font, radius, space } from '../design/tokens';
  * Campo di testo con stato di focus disegnato: il bordo diventa giallo (visibile anche da tastiera),
  * al posto del contorno di default del browser. Cursore e selezione nel colore del sistema.
  */
-export function Field({ prefix, containerStyle, style, ...rest }: TextInputProps & { prefix?: ReactNode; containerStyle?: StyleProp<ViewStyle> }) {
+export const Field = forwardRef<TextInput, TextInputProps & { prefix?: ReactNode; containerStyle?: StyleProp<ViewStyle> }>(function Field(
+  { prefix, containerStyle, style, ...rest },
+  ref,
+) {
   const [focused, setFocused] = useState(false);
   return (
     <View style={[styles.box, focused && styles.focused, containerStyle]}>
       {prefix}
       <TextInput
+        ref={ref}
         placeholderTextColor={color.paperFaint}
         selectionColor={color.giallo}
         cursorColor={color.giallo}
@@ -29,7 +33,7 @@ export function Field({ prefix, containerStyle, style, ...rest }: TextInputProps
       />
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   box: {

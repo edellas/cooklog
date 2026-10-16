@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Field } from '../src/components/Field';
@@ -41,13 +41,14 @@ export default function AdminScreen() {
   const dirty = (reveal !== null && reveal !== status?.settings.revealMinutes) || (grace !== null && grace !== status?.settings.idGraceDays);
 
   const loadQueue = useCallback(() => {
+    if (!isAdmin) return;
     getIdentityQueue()
       .then((q) => {
         setQueue(q);
         setQueueError(null);
       })
       .catch((e: Error) => setQueueError(e.message));
-  }, []);
+  }, [isAdmin]);
   useFocusEffect(loadQueue);
   // Ogni apertura cancella i file rimasti in coda (documenti già decisi, media di account chiusi).
   useFocusEffect(
@@ -61,7 +62,14 @@ export default function AdminScreen() {
     }, [toast, isAdmin]),
   );
 
-  if (status && !status.isAdmin) {
+  if (!status) {
+    return (
+      <View style={[styles.root, styles.center]}>
+        <ActivityIndicator color={color.giallo} />
+      </View>
+    );
+  }
+  if (!status.isAdmin) {
     return (
       <View style={[styles.root, styles.center]}>
         <Txt variant="title">Solo per gli amministratori.</Txt>
@@ -77,9 +85,10 @@ export default function AdminScreen() {
       setSaving(true);
       await saveSettings(revealNow, graceNow);
       haptic('success');
+      // Prima si rilegge lo stato, poi si azzerano le modifiche: così i selettori non tornano un attimo al valore vecchio.
+      await refreshStatus();
       setReveal(null);
       setGrace(null);
-      refreshStatus();
       bump();
       toast(`Fatto: la copertina compare alle ${hhmm(revealNow)}.`);
     } catch (e) {
@@ -184,6 +193,7 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirmUnderage, setConfirmUnderage] = useState(false);
   const age = item.birthDate ? ageOn(item.birthDate) : null;
+  const [zoom, setZoom] = useState<string | null>(null);
 
   const decide = async (decision: 'approve' | 'reject' | 'underage') => {
     if (decision === 'underage' && !confirmUnderage) return setConfirmUnderage(true);
@@ -196,6 +206,8 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
     } catch (e) {
       toast((e as Error).message, 'error');
       setBusy(false);
+      // Spesso significa che qualcun altro ha già deciso o che l'utente ha rimandato le foto: si ricarica la coda.
+      onDone();
     }
   };
 
@@ -210,7 +222,9 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
       <View style={styles.photos}>
         {[item.documentUrl, item.selfieUrl].map((u, i) =>
           u ? (
-            <Image key={i} source={{ uri: u }} style={styles.photo} contentFit="contain" accessibilityLabel={i === 0 ? 'Documento' : 'Selfie con documento'} />
+            <Press key={i} style={styles.photo} onPress={() => setZoom(u)} accessibilityRole="imagebutton" accessibilityLabel={`${i === 0 ? 'Documento' : 'Selfie con documento'}: tocca per ingrandire`}>
+              <Image source={{ uri: u }} style={StyleSheet.absoluteFill} contentFit="contain" />
+            </Press>
           ) : (
             <View key={i} style={[styles.photo, styles.center]}>
               <Txt variant="meta" tone={color.paperFaint}>
@@ -220,6 +234,11 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
           ),
         )}
       </View>
+      <Modal visible={Boolean(zoom)} transparent animationType="fade" onRequestClose={() => setZoom(null)}>
+        <Press style={styles.zoom} onPress={() => setZoom(null)} accessibilityRole="button" accessibilityLabel="Chiudi">
+          {zoom ? <Image source={{ uri: zoom }} style={StyleSheet.absoluteFill} contentFit="contain" /> : null}
+        </Press>
+      </Modal>
       <Field value={reason} onChangeText={setReason} placeholder="Motivo, se rifiuti (lo legge l’utente)" maxLength={200} accessibilityLabel="Motivo del rifiuto" />
       <View style={styles.actions}>
         <Press style={[styles.btn, styles.ok]} onPress={() => void decide('approve')} disabled={busy} accessibilityRole="button">
@@ -256,7 +275,8 @@ const styles = StyleSheet.create({
   pill: { borderWidth: 1, borderColor: color.paper, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 8 },
   card: { backgroundColor: color.raised, borderRadius: radius.card, padding: space[4], gap: space[3] },
   photos: { flexDirection: 'row', gap: space[2] },
-  photo: { flex: 1, aspectRatio: 0.75, borderRadius: radius.control, backgroundColor: color.sheet },
+  photo: { flex: 1, aspectRatio: 0.75, borderRadius: radius.control, backgroundColor: color.sheet, overflow: 'hidden' },
+  zoom: { flex: 1, backgroundColor: '#000' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space[3] },
   btn: { borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 10 },
   ok: { backgroundColor: color.verde },

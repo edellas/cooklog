@@ -12,7 +12,7 @@ const RULES: { icon: IconName; title: string; text: string }[] = [
   { icon: 'scatta', title: 'Un post in gara al giorno', text: 'Pubblica quanto vuoi, ma candidane uno solo al giorno. Le candidature chiudono alle 20:00.' },
   { icon: 'provini', title: 'Visti alla cieca', text: 'Nei Provini è l’app a scegliere cosa mostrare a ciascuno. Non puoi cercare un amico per votarlo e non vedi mai il tuo post.' },
   { icon: 'cerchia', title: 'Il voto è come guardi', text: 'Contano guardare fino in fondo, riguardare, commentare, salvare, condividere e cerchiare. Scorrere via subito conta contro. Le segnalazioni pesano molto.' },
-  { icon: 'copertina', title: 'Una sola copertina', text: 'A mezzanotte vince chi è salito più in alto; a parità, chi ha il punteggio più solido su più viste. Il giorno dopo è la prima cosa che vede chiunque apra l’app.' },
+  { icon: 'copertina', title: 'Una sola copertina', text: 'A mezzanotte vince chi è salito più in alto; a parità, chi ha il punteggio più solido su più viste. Il giorno dopo, all’ora della rivelazione, diventa la prima cosa che vede chiunque apra l’app.' },
   { icon: 'segnala', title: 'Niente trucchi', text: 'Un voto a testa per post. Votano solo gli account con l’età verificata e creati da almeno 24 ore: gli altri guardano. Oltre il 2% di segnalazioni si è fuori gara. Chi va in copertina aspetta 30 giorni prima di ricandidarsi.' },
 ];
 

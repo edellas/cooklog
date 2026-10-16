@@ -150,6 +150,18 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           </Txt>
         ) : null}
 
+        {profile.isMe && status?.needsPassword ? (
+          <Press style={[styles.verify, styles.verifyLate]} onPress={() => router.push('/impostazioni' as Href)} accessibilityRole="button">
+            <Icon name="chiave" size={22} color={color.matita} />
+            <View style={{ flex: 1, gap: 2 }}>
+              <Txt variant="label">Imposta una password</Txt>
+              <Txt variant="small" tone={color.paperDim}>
+                Senza password non potrai rientrare nel tuo account. Tocca per impostarla.
+              </Txt>
+            </View>
+          </Press>
+        ) : null}
+
         {profile.isMe && status?.identity && status.identity.status !== 'approved' ? (
           <Press style={[styles.verify, !status.identity.canAct && styles.verifyLate]} onPress={() => router.push('/verifica' as Href)} accessibilityRole="button">
             <Icon name="documento" size={22} color={status.identity.canAct ? color.giallo : color.matita} />

@@ -1,8 +1,8 @@
 import { useFonts } from 'expo-font';
-import { Stack, useRouter, useSegments, type Href } from 'expo-router';
+import { Stack, usePathname, useRouter, useSegments, type Href } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -113,18 +113,26 @@ function Misconfigured() {
 function Gate() {
   const { me } = useSession();
   const segments = useSegments();
+  const pathname = usePathname();
   const router = useRouter();
+  // Un link aperto da fuori (un post condiviso) prima di accedere: dopo l'accesso si va lì, non in copertina.
+  const intended = useRef<string | null>(null);
   useEffect(() => {
     if (me === undefined) return;
     const onWelcome = segments[0] === 'benvenuto';
     const open = onWelcome || segments[0] === 'legale';
     if (!me && !open) {
+      if (me === null && /^\/(post|utente)\//.test(pathname)) intended.current = pathname;
       // Uscendo (account eliminato, demo azzerata) non deve restare nulla sotto il benvenuto.
       if (router.canDismiss()) router.dismissAll();
       router.replace('/benvenuto' as Href);
     }
-    if (me && onWelcome) router.replace('/' as Href);
-  }, [me, router, segments]);
+    if (me && onWelcome) {
+      const to = intended.current ?? '/';
+      intended.current = null;
+      router.replace(to as Href);
+    }
+  }, [me, router, segments, pathname]);
   return null;
 }
 

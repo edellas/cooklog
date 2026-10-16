@@ -1,8 +1,8 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, type Href } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, BackHandler, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState, type Ref } from 'react';
+import { ActivityIndicator, BackHandler, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -28,7 +28,7 @@ const TILE = 168;
 const POINTS: { icon: IconName; text: string }[] = [
   { icon: 'scatta', text: 'Pubblichi foto e video, come sempre.' },
   { icon: 'cerchia', text: 'Chi guarda decide: conta come ti guardano, non quanti follower hai.' },
-  { icon: 'copertina', text: 'A mezzanotte un solo post diventa la copertina che vedono tutti.' },
+  { icon: 'copertina', text: 'Ogni giorno un solo post diventa la copertina che vedono tutti.' },
 ];
 
 type Step = 'intro' | 'registrati' | 'accedi';
@@ -117,11 +117,27 @@ function FormHead({ title, onBack }: { title: string; onBack: () => void }) {
   );
 }
 
-function PasswordField({ value, onChange, placeholder, label, onSubmit }: { value: string; onChange: (v: string) => void; placeholder: string; label: string; onSubmit?: () => void }) {
+function PasswordField({
+  value,
+  onChange,
+  placeholder,
+  label,
+  onSubmit,
+  inputRef,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  label: string;
+  onSubmit?: () => void;
+  inputRef?: Ref<TextInput>;
+}) {
   const [shown, setShown] = useState(false);
   return (
     <View>
       <Field
+        ref={inputRef}
+        submitBehavior={onSubmit ? 'submit' : 'blurAndSubmit'}
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}
@@ -181,6 +197,14 @@ function RegisterForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [graceDays, setGraceDays] = useState(7);
+  const inFlight = useRef(false);
+  const lastRef = useRef<TextInput>(null);
+  const dayRef = useRef<TextInput>(null);
+  const monthRef = useRef<TextInput>(null);
+  const yearRef = useRef<TextInput>(null);
+  const userRef = useRef<TextInput>(null);
+  const passRef = useRef<TextInput>(null);
+  const againRef = useRef<TextInput>(null);
   useEffect(() => {
     getSettings()
       .then((st) => setGraceDays(st.idGraceDays))
@@ -199,15 +223,19 @@ function RegisterForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () =
   };
 
   const submit = async () => {
+    if (inFlight.current) return;
     const problem = validateRegistration(input) ?? (password !== again ? 'Le due password non coincidono.' : null);
     if (problem) return setError(problem);
     try {
+      inFlight.current = true;
       setBusy(true);
       setError(null);
       setMe(await register(input));
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
+    } finally {
+      inFlight.current = false;
     }
   };
 
@@ -215,8 +243,8 @@ function RegisterForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () =
     <View style={{ gap: space[3] }}>
       <FormHead title="Crea un account" onBack={onBack} />
       <View style={styles.row}>
-        <Field containerStyle={{ flex: 1 }} value={first} onChangeText={setFirst} placeholder="Nome" autoComplete="given-name" textContentType="givenName" maxLength={60} accessibilityLabel="Nome" />
-        <Field containerStyle={{ flex: 1 }} value={last} onChangeText={setLast} placeholder="Cognome" autoComplete="family-name" textContentType="familyName" maxLength={60} accessibilityLabel="Cognome" />
+        <Field containerStyle={{ flex: 1 }} value={first} onChangeText={setFirst} placeholder="Nome" autoComplete="given-name" textContentType="givenName" maxLength={60} accessibilityLabel="Nome" returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => lastRef.current?.focus()} />
+        <Field ref={lastRef} containerStyle={{ flex: 1 }} value={last} onChangeText={setLast} placeholder="Cognome" autoComplete="family-name" textContentType="familyName" maxLength={60} accessibilityLabel="Cognome" returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => dayRef.current?.focus()} />
       </View>
       <Txt variant="meta" tone={color.paperFaint}>
         Gli altri vedono solo il nome e l’iniziale del cognome.
@@ -225,11 +253,54 @@ function RegisterForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () =
         Data di nascita
       </Txt>
       <View style={styles.row}>
-        <Field containerStyle={{ flex: 1 }} value={day} onChangeText={(v) => setDay(v.replace(/\D/g, '').slice(0, 2))} placeholder="GG" keyboardType="number-pad" maxLength={2} accessibilityLabel="Giorno di nascita" />
-        <Field containerStyle={{ flex: 1 }} value={month} onChangeText={(v) => setMonth(v.replace(/\D/g, '').slice(0, 2))} placeholder="MM" keyboardType="number-pad" maxLength={2} accessibilityLabel="Mese di nascita" />
-        <Field containerStyle={{ flex: 1.6 }} value={year} onChangeText={(v) => setYear(v.replace(/\D/g, '').slice(0, 4))} placeholder="AAAA" keyboardType="number-pad" maxLength={4} accessibilityLabel="Anno di nascita" />
+        <Field
+          ref={dayRef}
+          containerStyle={{ flex: 1 }}
+          value={day}
+          onChangeText={(v) => {
+            const d = v.replace(/\D/g, '').slice(0, 2);
+            setDay(d);
+            if (d.length === 2) monthRef.current?.focus();
+          }}
+          placeholder="GG"
+          keyboardType="number-pad"
+          maxLength={2}
+          accessibilityLabel="Giorno di nascita"
+        />
+        <Field
+          ref={monthRef}
+          containerStyle={{ flex: 1 }}
+          value={month}
+          onChangeText={(v) => {
+            const m = v.replace(/\D/g, '').slice(0, 2);
+            setMonth(m);
+            if (m.length === 2) yearRef.current?.focus();
+          }}
+          placeholder="MM"
+          keyboardType="number-pad"
+          maxLength={2}
+          accessibilityLabel="Mese di nascita"
+        />
+        <Field
+          ref={yearRef}
+          containerStyle={{ flex: 1.6 }}
+          value={year}
+          onChangeText={(v) => {
+            const y = v.replace(/\D/g, '').slice(0, 4);
+            setYear(y);
+            if (y.length === 4) userRef.current?.focus();
+          }}
+          placeholder="AAAA"
+          keyboardType="number-pad"
+          maxLength={4}
+          accessibilityLabel="Anno di nascita"
+        />
       </View>
       <Field
+        ref={userRef}
+        returnKeyType="next"
+        submitBehavior="submit"
+        onSubmitEditing={() => passRef.current?.focus()}
         prefix={
           <Txt variant="body" tone={color.paperFaint}>
             @
@@ -255,11 +326,11 @@ function RegisterForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () =
           @{username} è già preso: prova ad aggiungere un numero.
         </Txt>
       ) : null}
-      <PasswordField value={password} onChange={setPassword} placeholder="Password" label="Password" />
+      <PasswordField inputRef={passRef} value={password} onChange={setPassword} placeholder="Password" label="Password" />
       <Txt variant="meta" tone={color.paperFaint}>
         Almeno {PASSWORD_MIN} caratteri, con lettere e numeri.
       </Txt>
-      <PasswordField value={again} onChange={setAgain} placeholder="Ripeti la password" label="Ripeti la password" onSubmit={() => void submit()} />
+      <PasswordField inputRef={againRef} value={again} onChange={setAgain} placeholder="Ripeti la password" label="Ripeti la password" onSubmit={() => void submit()} />
       <Txt variant="meta" tone={color.paperFaint}>
         Entro {graceDays} {graceDays === 1 ? 'giorno' : 'giorni'} ti chiederemo una foto del documento d’identità per confermare l’età: senza, potrai solo guardare.
       </Txt>
@@ -304,16 +375,22 @@ function LoginForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () => v
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const passRef = useRef<TextInput>(null);
 
   const submit = async () => {
+    if (inFlight.current) return;
     if (!username || !password) return setError('Scrivi nome utente e password.');
     try {
+      inFlight.current = true;
       setBusy(true);
       setError(null);
       setMe(await login(username, password));
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
+    } finally {
+      inFlight.current = false;
     }
   };
 
@@ -338,8 +415,11 @@ function LoginForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () => v
         textContentType="username"
         maxLength={24}
         accessibilityLabel="Nome utente"
+        returnKeyType="next"
+        submitBehavior="submit"
+        onSubmitEditing={() => passRef.current?.focus()}
       />
-      <PasswordField value={password} onChange={setPassword} placeholder="Password" label="Password" onSubmit={() => void submit()} />
+      <PasswordField inputRef={passRef} value={password} onChange={setPassword} placeholder="Password" label="Password" onSubmit={() => void submit()} />
       {error ? (
         <Txt variant="small" tone={color.matita} accessibilityLiveRegion="polite">
           {error}
