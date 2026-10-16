@@ -106,6 +106,11 @@ contenuti degli utenti, aperto dai 14 anni.
    8. Nell'app: **Impostazioni → Copertina e documenti → Come si verifica l'età → Automatica (Didit)**.
       Prova con il tuo account (o uno nuovo): "Verifica ora".
    Se qualcosa non va, torna su "Foto all'amministratore": l'app continua a funzionare come prima.
+
+   La stessa funzione fa anche da **link di condivisione**: quando qualcuno condivide un post, il messaggio
+   contiene `https://<il-tuo-progetto>.supabase.co/functions/v1/verifica-eta/apri/post/<id>`, che apre il
+   post nell'app di chi lo riceve. Anche se non usi Didit, pubblica la funzione (passo 5) perché i link funzionino.
+   **Ogni volta che il file `index.ts` cambia**, aprila su Supabase, incolla di nuovo tutto il file e ripubblica.
 8. **Project Settings → API** (o *API Keys*): copia
    - **Project URL** (tipo `https://abcd1234.supabase.co`)
    - **anon / publishable key** (la chiave pubblica; **mai** la `service_role`).
@@ -169,7 +174,8 @@ eas build --platform android --profile preview
 
 Alla fine EAS ti dà un link/QR: aprilo dal telefono e installa l'APK. Controlla:
 - iscrizione con la casella dei termini;
-- pubblicazione di foto e video;
+- pubblicazione di foto e video (con la percentuale di caricamento);
+- nei Provini: un tocco mette in pausa, la barra in basso si trascina, tenendo premuto si aprono le opzioni;
 - "···" sotto un post → Segnala e Blocca;
 - Profilo → impostazioni → Elimina account.
 
