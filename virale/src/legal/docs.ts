@@ -1,20 +1,22 @@
 /**
- * Dati di chi pubblica l'app. COMPILALI prima di andare sugli store: compaiono nei documenti
- * legali, nelle Impostazioni e nelle schede degli store. `npm run check:release` segnala
- * quelli ancora tra parentesi quadre.
+ * Dati di chi pubblica l'app: compaiono nei documenti legali e nelle Impostazioni.
+ * NON scriverli qui (il repository è pubblico): si mettono nelle variabili d'ambiente,
+ * su expo.dev → Environment variables (ambiente "preview" e "production") oppure in .env.local
+ * per le prove sul computer. Vedi .env.example. `npm run check:release` segnala quelli mancanti.
+ * Expo inserisce nell'app solo le variabili scritte per esteso (process.env.EXPO_PUBLIC_…).
  */
 export const OWNER = {
   /** Nome e cognome, oppure ragione sociale. È il titolare del trattamento dei dati. */
-  name: 'Edoardo Della Seta',
+  name: process.env.EXPO_PUBLIC_OWNER_NAME || '[Nome e cognome o ragione sociale]',
   /** Indirizzo postale completo. */
-  address: '[Via Fonteiana, 148, 00152, Roma]',
+  address: process.env.EXPO_PUBLIC_OWNER_ADDRESS || '[Via, numero, CAP, città]',
   /** Partita IVA o codice fiscale. */
-  taxId: 'DLLDRD97R19H501K',
+  taxId: process.env.EXPO_PUBLIC_OWNER_TAX_ID || '[Partita IVA o codice fiscale]',
   /** Email per supporto, privacy e segnalazioni urgenti: deve essere letta ogni giorno. */
-  email: 'edoardo.dellaseta@gmail.com',
+  email: process.env.EXPO_PUBLIC_OWNER_EMAIL || '[supporto@tuodominio.it]',
   /** Dove saranno pubblicate le pagine di legal-site/ (es. https://tuonome.github.io/cooklog). Senza barra finale. */
-  website: '',
-} as const;
+  website: process.env.EXPO_PUBLIC_OWNER_WEBSITE || '',
+};
 
 /** Data di entrata in vigore dei documenti (aggiornala quando li modifichi). */
 export const LEGAL_UPDATED = '15 ottobre 2026';

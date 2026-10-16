@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit",
     "build:web": "expo export --platform web",
     "lint": "expo lint",
-    "export:legal": "node --experimental-strip-types --no-warnings scripts/export-legal.ts",
-    "check:release": "node --experimental-strip-types --no-warnings scripts/check-release.ts",
+    "export:legal": "node --env-file-if-exists=.env.local --experimental-strip-types --no-warnings scripts/export-legal.ts",
+    "check:release": "node --env-file-if-exists=.env.local --experimental-strip-types --no-warnings scripts/check-release.ts",
     "icons": "python3 scripts/make-icons.py",
     "store:grafica": "python3 scripts/make-feature-graphic.py"
   },

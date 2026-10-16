@@ -12,7 +12,7 @@ const problems: string[] = [];
 const ok: string[] = [];
 
 for (const [k, v] of Object.entries(OWNER)) {
-  if (v.includes('[')) problems.push(`src/legal/docs.ts → OWNER.${k} è ancora da compilare (${v})`);
+  if (v.includes('[')) problems.push(`OWNER.${k} manca: impostalo nelle variabili d'ambiente (vedi .env.example)`);
 }
 if (!problems.length) ok.push('Dati del titolare compilati');
 
