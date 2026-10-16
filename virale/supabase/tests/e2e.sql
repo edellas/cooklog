@@ -256,7 +256,15 @@ select count(*) as notifica_verifica from list_notifications() n where n ->> 'ki
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
 select admin_set_settings(1439, 10) ->> 'reveal_minutes' as nuovo_orario;
 reset role;
-select cover_day() = arena_today() - 1 as prima_della_rivelazione_si_vede_ieri;
+do $$ begin
+  -- Con la copertina alle 23:59 la gara di oggi è iniziata ieri alle 23:59: fino ad allora vale il giorno prima.
+  if extract(hour from now() at time zone 'Europe/Rome') * 60 + extract(minute from now() at time zone 'Europe/Rome') < 1439
+     and arena_today() <> (now() at time zone 'Europe/Rome')::date - 1 then
+    raise exception 'giorno di gara non spostato dall''orario: %', arena_today();
+  end if;
+  if cover_day() <> arena_today() then raise exception 'copertina e gara su giorni diversi'; end if;
+  raise notice 'ok, il giorno di gara va da un orario di copertina all''altro';
+end $$;
 update arena_config set reveal_minutes = 0;
 select cover_day() = arena_today() as dopo_la_rivelazione_si_vede_oggi;
 set role authenticated;
@@ -400,13 +408,13 @@ do $$ declare a real; b real; t real; v int; begin
 end $$;
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', false);
-do $$ declare first_author text; ids text[]; begin
-  select array_agg(x ->> 'id'), (array_agg(x -> 'author' ->> 'username'))[1] into ids, first_author from feed_explore(20) x;
-  if first_author <> 'gatti' then raise exception 'in Esplora doveva venire prima chi piace: %', first_author; end if;
+do $$ declare authors text[]; ids text[]; g int; au int; begin
+  select array_agg(x ->> 'id'), array_agg(x -> 'author' ->> 'username') into ids, authors from feed_explore(20) x;
+  g := array_position(authors, 'gatti');
+  au := coalesce(array_position(authors, 'auto'), 999);
+  if g is null or g > au then raise exception 'in Esplora doveva venire prima chi piace: %', authors; end if;
   if exists (select 1 from posts where id::text = any (ids) and author_id = auth.uid()) then raise exception 'propri post in Esplora'; end if;
-  -- I post in gara di oggi (Post 1-3 di user1-3) restano nei Provini.
-  if ids && array['10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002'] then raise exception 'post in gara in Esplora'; end if;
-  raise notice 'ok, Esplora ordinata per gusti, senza propri post né post in gara';
+  raise notice 'ok, Esplora ordinata per gusti, senza i propri post';
 end $$;
 do $$ declare n int; begin
   select count(*) into n from feed_explore(5, array['20000000-0000-0000-0000-000000000002'::uuid]) x where x ->> 'id' = '20000000-0000-0000-0000-000000000002';
@@ -626,3 +634,34 @@ do $$ begin
   raise notice 'ok, una condivisione per persona e post';
 end $$;
 reset role;
+
+-- Esplora mostra anche i post in gara (e di chi non si segue): nessun post resta invisibile.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e6', false);
+do $$ begin
+  if not exists (select 1 from feed_explore(20, '{}') x where x ->> 'id' = '30000000-0000-0000-0000-000000000001') then
+    raise exception 'un post in gara non compare in Esplora';
+  end if;
+  raise notice 'ok, Esplora mostra anche i post in gara';
+end $$;
+reset role;
+
+-- La gara chiude da sola all'orario della copertina, anche senza voti validi, e la copertina esce subito.
+do $$ declare d date; w uuid; begin
+  update arena_config set reveal_minutes = 0 where id;
+  d := arena_today() - 1;
+  delete from daily_viral where contest_day = d or featured_on = d + 1;
+  delete from arena_closed_days where contest_day >= d;
+  update arena_entries set contest_day = d where post_id = '30000000-0000-0000-0000-000000000002';
+  perform arena_close_due();
+  select entry_id into w from daily_viral where contest_day = d;
+  if w is null then raise exception 'nessuna copertina senza voti'; end if;
+  if not exists (select 1 from arena_closed_days where contest_day = d) then raise exception 'giorno non segnato come chiuso'; end if;
+  if arena_today() <> d + 1 then raise exception 'giorno di gara sbagliato dopo la chiusura'; end if;
+  raise notice 'ok, la gara chiude da sola e la copertina esce anche senza voti validi';
+end $$;
+select set_config('request.jwt.claim.sub', '', false);
+do $$ begin
+  if (select c ->> 'featured_on' from get_today_cover() c)::date is distinct from arena_today() then raise exception 'copertina appena uscita non visibile'; end if;
+  raise notice 'ok, la copertina appena scelta è visibile subito';
+end $$;

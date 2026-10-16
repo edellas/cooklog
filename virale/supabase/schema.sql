@@ -451,26 +451,36 @@ returns public.arena_config language sql stable as $$
   select * from public.arena_config limit 1;
 $$;
 
-create or replace function public.arena_today()
-returns date language sql stable as $$
-  select (now() at time zone (select time_zone from public.arena_config limit 1))::date;
-$$;
-
 -- Colonne aggiunte dopo la prima versione: prima delle funzioni che le usano (un database vecchio deve aggiornarsi).
 alter table public.arena_config add column if not exists reveal_minutes int not null default 0 check (reveal_minutes between 0 and 1439);
 alter table public.arena_config add column if not exists id_grace_days int not null default 7 check (id_grace_days between 1 and 60);
 -- Come si verifica l'età: 'manual' (foto controllate dall'amministratore) o 'didit' (verifica automatica, sezione 16).
 alter table public.arena_config add column if not exists id_provider text not null default 'manual' check (id_provider in ('manual', 'didit'));
 
--- Il giorno della copertina visibile adesso: la gara chiude a mezzanotte, ma la nuova copertina compare
--- all'orario scelto dall'amministratore. Prima di quell'ora resta quella del giorno prima.
+-- Giorni di gara già chiusi (anche senza vincitore): il giorno di gara non torna mai indietro, nemmeno se
+-- l'amministratore sposta l'orario più avanti dopo la chiusura.
+create table if not exists public.arena_closed_days (
+  contest_day date primary key,
+  closed_at timestamptz not null default now()
+);
+alter table public.arena_closed_days enable row level security;
+revoke all on public.arena_closed_days from anon, authenticated;
+
+-- Il giorno di gara va da un orario di rivelazione al successivo (ora italiana): all'orario scelto
+-- dall'amministratore la gara chiude, si sceglie il vincitore e la nuova copertina esce subito.
+-- Con l'orario a mezzanotte (0) è il giorno di calendario.
+create or replace function public.arena_today()
+returns date language sql stable security definer set search_path = public, pg_temp as $$
+  select greatest(
+           ((now() at time zone c.time_zone) - make_interval(mins => c.reveal_minutes))::date,
+           coalesce((select max(d.contest_day) + 1 from public.arena_closed_days d), '-infinity'::date))
+  from public.arena_config c limit 1;
+$$;
+
+-- La copertina visibile adesso è quella uscita alla fine della gara precedente: stessa data della gara in corso.
 create or replace function public.cover_day()
-returns date language sql stable as $$
-  select case
-    when extract(hour from l) * 60 + extract(minute from l) >= c.reveal_minutes then l::date
-    else l::date - 1 end
-  from public.arena_config c, lateral (select now() at time zone c.time_zone as l) t
-  limit 1;
+returns date language sql stable security definer set search_path = public, pg_temp as $$
+  select public.arena_today();
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -679,8 +689,12 @@ declare
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
   if not public.can_act(v_uid) then raise exception 'Per partecipare devi verificare la tua età: carica il documento dal profilo.'; end if;
-  if extract(hour from now() at time zone v_cfg.time_zone) >= v_cfg.submission_cutoff_hour then
-    raise exception 'Candidature chiuse per oggi: riprova domani.';
+  -- Le candidature restano aperte per le prime submission_cutoff_hour ore della gara (di norma 20 su 24):
+  -- le ultime ore servono a far vedere a tutti i post appena candidati.
+  if extract(epoch from ((now() at time zone v_cfg.time_zone) - make_interval(mins => v_cfg.reveal_minutes))::time) / 60
+     >= v_cfg.submission_cutoff_hour * 60 then
+    raise exception 'Candidature chiuse: riaprono alle %, quando esce la nuova copertina.',
+      to_char(make_time(v_cfg.reveal_minutes / 60, v_cfg.reveal_minutes % 60, 0), 'HH24:MI');
   end if;
   if not exists (select 1 from posts where id = p_post_id and author_id = v_uid) then
     raise exception 'Puoi candidare solo un tuo post.';
@@ -1355,6 +1369,10 @@ begin
   if exists (select 1 from daily_viral where contest_day = p_day) then
     return (select entry_id from daily_viral where contest_day = p_day);
   end if;
+  -- Il giorno (se è davvero finito) risulta chiuso anche senza vincitore: non si riapre.
+  if p_day < ((now() at time zone v_cfg.time_zone) - make_interval(mins => v_cfg.reveal_minutes))::date then
+    insert into arena_closed_days (contest_day) values (p_day) on conflict do nothing;
+  end if;
 
   select count(*) into v_total_entries from arena_entries where contest_day = p_day;
   select coalesce(sum(s.views), 0) into v_total_views
@@ -1372,13 +1390,17 @@ begin
     and exists (select 1 from posts p join profiles a on a.id = p.author_id
                  where p.id = e.post_id and a.banned_at is null
                    and (p.hidden_at is null or p.hidden_reason = 'segnalazioni'))
-    and t.views > 0
     and not (t.views >= v_cfg.report_min_views and t.reports::numeric / t.views > v_cfg.max_report_rate)
     and not exists (
       select 1 from daily_viral d
       where d.author_id = e.author_id and d.featured_on > p_day + 1 - v_cfg.winner_cooldown_days
     )
-  order by e.tier desc, lcb desc, e.created_at asc
+  -- Prima chi ha voti validi (livello, poi punteggio prudente); se nessuno ne ha (comunità piccola, nessun
+  -- votante verificato) vince il post più apprezzato: ogni giorno con candidati ha la sua copertina.
+  order by (t.views > 0) desc, e.tier desc, lcb desc,
+           (select p.like_count + 2 * p.save_count + 2 * p.share_count + p.comment_count + p.view_count / 10.0
+              from posts p where p.id = e.post_id) desc nulls last,
+           e.created_at asc
   limit 1;
 
   if not found then return null; end if;
@@ -1392,6 +1414,22 @@ begin
 end;
 $$;
 
+-- Chiude la gara appena finita (la chiama pg_cron ogni minuto, e l'amministratore quando cambia l'orario):
+-- appena passa l'orario di rivelazione si sceglie il vincitore e la copertina esce. Se non c'è nulla da
+-- chiudere costa una lettura.
+create or replace function public.arena_close_due()
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_cfg public.arena_config := public.arena_cfg();
+  v_natural date := ((now() at time zone v_cfg.time_zone) - make_interval(mins => v_cfg.reveal_minutes))::date;
+begin
+  if not exists (select 1 from arena_closed_days where contest_day = v_natural - 1)
+     and not exists (select 1 from arena_closed_days where contest_day >= v_natural) then
+    perform public.arena_close_day(v_natural - 1);
+  end if;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- 7) Il virale di oggi: identico per tutti => cacheabile su CDN, costo trascurabile anche con milioni di utenti
 -- ---------------------------------------------------------------------------
@@ -1400,7 +1438,10 @@ returns jsonb language sql stable security definer set search_path = public, pg_
   select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
                             'post', public.post_json(d.post_id, auth.uid()))
   from daily_viral d
-  where d.featured_on = public.cover_day() and public.can_see(d.post_id, auth.uid());
+  -- La più recente già uscita: se la gara appena chiusa non ha avuto candidati, resta quella di prima.
+  where d.featured_on <= public.cover_day() and public.can_see(d.post_id, auth.uid())
+  order by d.featured_on desc
+  limit 1;
 $$;
 
 -- L'Archivio: le copertine uscite, dalla più recente.
@@ -1489,6 +1530,8 @@ begin
   if p_id_grace_days not between 1 and 60 then raise exception 'I giorni per il documento vanno da 1 a 60.'; end if;
   -- Supabase rifiuta gli UPDATE senza WHERE (estensione safeupdate) anche dentro le funzioni.
   update arena_config set reveal_minutes = p_reveal_minutes, id_grace_days = p_id_grace_days where id;
+  -- Se il nuovo orario per oggi è già passato, la gara chiude adesso e la copertina esce subito.
+  perform public.arena_close_due();
   return public.get_settings();
 end;
 $$;
@@ -1694,9 +1737,8 @@ begin
       perform public.notify(new.author_id, 'tier', null, new.post_id, jsonb_build_object('tier', new.tier));
     end if;
   elsif tg_table_name = 'daily_viral' then
-    -- Il vincitore lo scopre insieme a tutti, all'orario di rivelazione (la notifica compare da quell'istante).
-    perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on),
-      (select (new.featured_on + make_interval(mins => c.reveal_minutes))::timestamp at time zone c.time_zone from arena_config c limit 1));
+    -- La copertina esce nel momento in cui la gara chiude: il vincitore lo scopre insieme a tutti.
+    perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on));
   end if;
   return null;
 end;
@@ -2047,8 +2089,9 @@ returns table (post_id uuid, score real) language sql stable security definer se
   left join crowd cr on cr.post_id = c.id;
 $$;
 
--- Esplora: tutti i post fuori dalla gara di oggi, ordinati per te. Un po' di caso (esplorazione) fa
--- scoprire anche cose nuove, e al massimo due post dello stesso autore per pagina.
+-- Esplora: tutti i post di tutti (anche quelli in gara e di chi non segui), ordinati per te. Un po' di caso
+-- (esplorazione) fa scoprire anche cose nuove, e al massimo due post dello stesso autore per pagina.
+-- Guardare qui un post in gara non è un voto: si vota solo in "In gara", dove i post arrivano alla cieca.
 -- Finiti quelli nuovi, ripropone i meno recenti: il feed non finisce mai.
 create or replace function public.feed_explore(p_limit int default 8, p_exclude uuid[] default '{}')
 returns setof jsonb language plpgsql security definer set search_path = public, pg_temp as $$
@@ -2068,7 +2111,6 @@ begin
     where p.author_id <> v_uid
       and p.created_at > now() - interval '30 days'
       and not (p.id = any (v_ex))
-      and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
       and not exists (select 1 from seen_posts s where s.user_id = v_uid and s.post_id = p.id and s.seen_at > now() - interval '3 days')
       and public.can_see(p.id, v_uid)
     order by p.created_at desc
@@ -2082,7 +2124,6 @@ begin
         select p.id from posts p
         where p.author_id <> v_uid
           and not (p.id = any (v_ex))
-          and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
         order by p.created_at desc
         limit 3000
       ) r
@@ -2427,6 +2468,9 @@ exception when insufficient_privilege then
   raise notice 'Non ho i permessi per il controllo sul nome di accesso (auth.users): salto.';
 end $$;
 
+-- Database esistenti: i giorni che hanno già una copertina risultano chiusi.
+insert into public.arena_closed_days (contest_day) select contest_day from public.daily_viral on conflict do nothing;
+
 -- Database esistenti: le viste già registrate oggi da chi poteva votare contano come "contate".
 update public.arena_views v set counted = true
  where v.recorded_at is not null and not v.counted and v.contest_day >= public.arena_today() - 1 and public.can_vote(v.viewer_id);
@@ -2441,6 +2485,7 @@ grant execute on function public.valid_media(jsonb) to authenticated;
 revoke truncate on all tables in schema public from anon, authenticated;
 -- Permessi: i client chiamano solo queste funzioni.
 revoke all on function public.arena_close_day(date) from public, anon, authenticated;
+revoke all on function public.arena_close_due() from public, anon, authenticated;
 revoke all on function public.arena_evaluate(uuid) from public, anon, authenticated;
 revoke all on function public.arena_entry_totals(uuid) from public, anon, authenticated;
 revoke all on function public.arena_pick(date, uuid, int, int, int) from public, anon, authenticated;

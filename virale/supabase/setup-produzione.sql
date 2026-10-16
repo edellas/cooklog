@@ -59,14 +59,13 @@ drop policy if exists "documenti delete own or admin" on storage.objects;
 create policy "documenti delete own or admin" on storage.objects for delete to authenticated
   using (bucket_id = 'documenti' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin(auth.uid())));
 
--- 3) Chiusura della giornata a mezzanotte (ora di Roma): sceglie la Copertina.
---    pg_cron ragiona in UTC: la mezzanotte italiana è alle 22:00 UTC d'estate e alle 23:00 UTC d'inverno.
---    Gira un minuto dopo entrambe: una delle due è la mezzanotte giusta, l'altra non fa nulla
---    (la giornata è già chiusa). Così la nuova copertina esce al minuto 00:01 tutto l'anno.
+-- 3) Chiusura della gara: ogni minuto si controlla se è passato l'orario della copertina (scelto
+--    dall'amministratore, ora di Roma). Appena passa, la gara chiude, si sceglie il vincitore e la nuova
+--    copertina esce. Negli altri minuti non fa nulla (una lettura).
 create extension if not exists pg_cron;
 select cron.unschedule(jobid) from cron.job where jobname in ('arena-close-day', 'virale-pulizia');
 -- Solo la chiusura: da sola, così un errore nelle pulizie non può annullarla.
-select cron.schedule('arena-close-day', '1 22,23 * * *', $$ select public.arena_close_day(public.arena_today() - 1) $$);
+select cron.schedule('arena-close-day', '* * * * *', $$ select public.arena_close_due() $$);
 
 -- Pulizie, una volta al giorno alle 3:17 UTC, in un'operazione separata.
 select cron.schedule(
