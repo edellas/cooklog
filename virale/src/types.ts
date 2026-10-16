@@ -7,6 +7,8 @@ export type MediaItem = {
   width: number;
   height: number;
   durationMs?: number;
+  /** Solo video: un fotogramma come immagine (miniature e attesa del primo fotogramma). */
+  poster?: string;
 };
 
 export type Author = {

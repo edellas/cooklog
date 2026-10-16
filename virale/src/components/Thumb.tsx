@@ -7,17 +7,18 @@ import type { MediaItem } from '../types';
 import { Icon } from './Icon';
 
 /**
- * Miniatura di un post: la prima immagine (o un fotogramma del video, qui reso dall'icona play).
+ * Miniatura di un post: la prima immagine, o l'anteprima del video quando c'è.
  * Indica con un'icona se è un video o un carosello.
  */
 export function Thumb({ media, rounded = radius.card }: { media: MediaItem[]; rounded?: number }) {
   const first = media[0];
-  const stillOf = media.find((m) => m.kind === 'image');
+  // La prima foto, oppure l'anteprima del primo video (i video pubblicati ne hanno una).
+  const image = media.find((m) => m.kind === 'image');
+  const poster = media.find((m) => m.poster)?.poster;
+  const still = image ? resolveMedia(image.src) : poster ? { uri: poster } : null;
   return (
     <View style={[styles.box, { borderRadius: rounded }]}>
-      {stillOf ? (
-        <Image source={resolveMedia(stillOf.src)} style={StyleSheet.absoluteFill} contentFit="cover" transition={120} recyclingKey={stillOf.src} />
-      ) : null}
+      {still ? <Image source={still} style={StyleSheet.absoluteFill} contentFit="cover" transition={120} recyclingKey={JSON.stringify(still)} /> : null}
       {first?.kind === 'video' ? (
         <View style={styles.badge}>
           <Icon name="play" size={14} color={color.paper} />

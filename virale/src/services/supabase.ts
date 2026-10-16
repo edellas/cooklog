@@ -8,6 +8,9 @@ const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(url && anonKey);
+/** Per i caricamenti in streaming dal disco (expo-file-system), che parlano direttamente con lo Storage. */
+export const supabaseUrl = url ?? '';
+export const supabaseAnonKey = anonKey ?? '';
 
 export const supabase = isSupabaseConfigured
   ? createClient(url!, anonKey!, {

@@ -166,8 +166,24 @@ export function MediaFrame({
                   {item.kind === 'video' ? (
                     // Un lettore video solo per l'elemento visibile e i vicini: i decoder del telefono sono pochi.
                     Math.abs(i - index) <= 1 ? (
-                      <VideoItem src={item.src} playing={active && i === index} muted={muted} viewKey={viewKey} onProgress={onVideoProgress} />
+                      <VideoItem
+                        src={item.src}
+                        poster={item.poster}
+                        fit={fitFor(item, size)}
+                        playing={active && i === index}
+                        muted={muted}
+                        viewKey={viewKey}
+                        onProgress={onVideoProgress}
+                      />
+                    ) : item.poster ? (
+                      <Image source={{ uri: item.poster }} style={StyleSheet.absoluteFill} contentFit="cover" />
                     ) : null
+                  ) : fitFor(item, size) === 'contain' ? (
+                    // Foto molto più larga (o più alta) della cornice: intera, su uno sfondo sfocato di sé stessa.
+                    <>
+                      <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={24} />
+                      <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="contain" transition={120} />
+                    </>
                   ) : (
                     <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="cover" transition={120} />
                   )}
@@ -209,7 +225,34 @@ export function MediaFrame({
   );
 }
 
-function VideoItem({ src, playing, muted, viewKey, onProgress }: { src: string; playing: boolean; muted: boolean; viewKey: number; onProgress?: (p: VideoProgress) => void }) {
+/**
+ * Come riempire la cornice: "cover" se le proporzioni sono simili (si taglia poco), altrimenti "contain"
+ * (una foto orizzontale in una cornice verticale perderebbe metà dell'immagine).
+ */
+function fitFor(item: MediaItem, size: { w: number; h: number }): 'cover' | 'contain' {
+  if (!item.width || !item.height || !size.w || !size.h) return 'cover';
+  const ratio = item.width / item.height / (size.w / size.h);
+  return ratio > 1.25 || ratio < 0.8 ? 'contain' : 'cover';
+}
+
+function VideoItem({
+  src,
+  poster,
+  fit,
+  playing,
+  muted,
+  viewKey,
+  onProgress,
+}: {
+  src: string;
+  poster?: string;
+  fit: 'cover' | 'contain';
+  playing: boolean;
+  muted: boolean;
+  viewKey: number;
+  onProgress?: (p: VideoProgress) => void;
+}) {
+  const [firstFrame, setFirstFrame] = useState(false);
   const player = useVideoPlayer(resolveMedia(src) as never, (p) => {
     p.loop = true;
     p.muted = true;
@@ -258,7 +301,18 @@ function VideoItem({ src, playing, muted, viewKey, onProgress }: { src: string; 
 
   return (
     <>
-      <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="cover" nativeControls={false} />
+      {poster && fit === 'contain' ? <Image source={{ uri: poster }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={24} /> : null}
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        contentFit={fit}
+        nativeControls={false}
+        // Android: "textureView" rispetta gli angoli arrotondati e non lampeggia scorrendo il feed.
+        surfaceType="textureView"
+        onFirstFrameRender={() => setFirstFrame(true)}
+      />
+      {/* Finché il primo fotogramma non c'è, si vede l'anteprima invece di un rettangolo scuro. */}
+      {poster && !firstFrame ? <Image source={{ uri: poster }} style={StyleSheet.absoluteFill} contentFit={fit} pointerEvents="none" /> : null}
       <View style={styles.track} pointerEvents="none">
         <Animated.View style={[styles.trackFill, barStyle]} />
       </View>

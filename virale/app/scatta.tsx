@@ -51,6 +51,8 @@ export default function CreateScreen() {
   const [join, setJoin] = useState(true);
   const [alreadyIn, setAlreadyIn] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** Avanzamento del caricamento dei file (0-1), mentre si pubblica. */
+  const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [muted, setMuted] = useState(true);
   const [done, setDone] = useState<{
@@ -204,11 +206,15 @@ export default function CreateScreen() {
     try {
       setBusy(true);
       setError(null);
-      const res = await publish({
-        media,
-        caption,
-        joinContest: join && canJoin,
-      });
+      setProgress(0);
+      const res = await publish(
+        {
+          media,
+          caption,
+          joinContest: join && canJoin,
+        },
+        setProgress,
+      );
       haptic("success");
       bump();
       setDone(res);
@@ -216,6 +222,7 @@ export default function CreateScreen() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
@@ -463,7 +470,10 @@ export default function CreateScreen() {
           </Txt>
         ) : null}
 
-        {media.length && !blocked ? (
+      </ScrollView>
+      {/* Il pulsante resta sempre in basso, visibile anche con la tastiera aperta. */}
+      {media.length && !blocked ? (
+        <View style={[styles.publishBar, { paddingBottom: Math.max(insets.bottom, space[3]) }]}>
           <Press
             style={[styles.publish, busy && styles.off]}
             onPress={() => void submit()}
@@ -471,15 +481,20 @@ export default function CreateScreen() {
             accessibilityRole="button"
           >
             {busy ? (
-              <ActivityIndicator color={color.canvas} />
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
+                <ActivityIndicator color={color.canvas} />
+                <Txt variant="label" tone={color.canvas}>
+                  {progress !== null && progress < 1 ? `Carico… ${Math.round(progress * 100)}%` : "Pubblico…"}
+                </Txt>
+              </View>
             ) : (
               <Txt variant="label" tone={color.canvas}>
                 {join && canJoin ? "Pubblica e candida" : "Pubblica"}
               </Txt>
             )}
           </Press>
-        ) : null}
-      </ScrollView>
+        </View>
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -704,6 +719,13 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 11,
     backgroundColor: color.paper,
+  },
+  publishBar: {
+    paddingHorizontal: space[5],
+    paddingTop: space[3],
+    backgroundColor: color.canvas,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.line,
   },
   publish: {
     backgroundColor: color.giallo,

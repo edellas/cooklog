@@ -830,14 +830,20 @@ declare
   v_day date := public.arena_today();
   v_limit int := least(greatest(p_limit, 1), 20);
   v_upper_slots int := ceil(least(greatest(p_limit, 1), 20) * v_cfg.upper_share);
+  -- Quanti dei candidati pescati potrebbero essere scartati perché già nella lista: se ne pescano altrettanti in più.
+  v_extra int := least(coalesce(cardinality(p_exclude), 0), 300);
   v_ids uuid[];
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
 
   with pool as materialized (
-    select p.id, p.post_id, p.tier, true as upper from public.arena_pick(v_day, v_uid, 1, 32767, 200) p
-    union all
-    select p.id, p.post_id, p.tier, false from public.arena_pick(v_day, v_uid, 0, 0, v_limit * 4) p
+    select x.* from (
+      select p.id, p.post_id, p.tier, true as upper from public.arena_pick(v_day, v_uid, 1, 32767, 200 + v_extra) p
+      union all
+      select p.id, p.post_id, p.tier, false from public.arena_pick(v_day, v_uid, 0, 0, v_limit * 4 + v_extra) p
+    ) x
+    -- Già nella lista sullo schermo (consegnati e tornati dopo 10 minuti): non si ripetono nella stessa lista.
+    where not (x.post_id = any (coalesce(p_exclude, '{}'::uuid[])))
   ), ranked as (
     -- Solo i gusti personali (niente popolarità): la gara la decidono gli sguardi, non chi è già avanti.
     select r.post_id, r.score from public.rank_posts(v_uid, array(select post_id from pool), true) r

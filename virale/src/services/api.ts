@@ -39,7 +39,10 @@ import type {
 import { Platform } from 'react-native';
 
 import { getJson, removeKey, setJson } from './storage';
-import { isSupabaseConfigured, supabase } from './supabase';
+import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from './supabase';
+import * as FileSystem from 'expo-file-system/legacy';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import { createVideoPlayer } from 'expo-video';
 
 /** Senza Supabase l'app gira in demo: tutto resta sul dispositivo, con un pubblico simulato. */
 export const isDemo = !isSupabaseConfigured;
@@ -68,7 +71,7 @@ export function issueNumber(day: string): number {
 type PostJson = {
   id: string;
   author: { id: string; username: string; display_name: string };
-  media: { kind: 'image' | 'video'; url: string; width: number; height: number; duration_ms?: number }[];
+  media: { kind: 'image' | 'video'; url: string; width: number; height: number; duration_ms?: number; poster?: string }[];
   caption: string;
   created_at: string;
   like_count: number;
@@ -87,7 +90,7 @@ function fromJson(p: PostJson): Post {
   return {
     id: p.id,
     author: { id: p.author.id, username: p.author.username, displayName: p.author.display_name },
-    media: p.media.map((m) => ({ kind: m.kind, src: m.url, width: m.width, height: m.height, durationMs: m.duration_ms })),
+    media: p.media.map((m) => ({ kind: m.kind, src: m.url, width: m.width, height: m.height, durationMs: m.duration_ms, poster: m.poster })),
     caption: p.caption,
     createdAt: p.created_at,
     likeCount: p.like_count,
@@ -151,14 +154,106 @@ function storagePath(url: string): string | null {
   return i >= 0 ? decodeURIComponent(url.slice(i + marker.length).split('?')[0]) : null;
 }
 
-async function upload(userId: string, item: NewPost['media'][number], index: number): Promise<MediaItem> {
-  const buffer = await (await fetch(item.uri)).arrayBuffer();
+/** Lato lungo massimo delle foto pubblicate: nitide su ogni telefono, ma leggere da caricare e da guardare. */
+const PHOTO_MAX = 1440;
+
+/** Foto: JPEG ridimensionato. Su errore resta l'originale. */
+async function preparePhoto(item: NewPost['media'][number]): Promise<NewPost['media'][number]> {
+  const big = Math.max(item.width, item.height) > PHOTO_MAX;
+  const jpeg = item.mimeType === 'image/jpeg';
+  if (!big && jpeg) return item;
+  try {
+    const ctx = ImageManipulator.manipulate(item.uri);
+    if (big) ctx.resize(item.width >= item.height ? { width: PHOTO_MAX } : { height: PHOTO_MAX });
+    const out = await (await ctx.renderAsync()).saveAsync({ format: SaveFormat.JPEG, compress: 0.85 });
+    return { ...item, uri: out.uri, width: out.width, height: out.height, mimeType: 'image/jpeg' };
+  } catch {
+    return item;
+  }
+}
+
+/** Video: un fotogramma come JPEG (per miniature e per l'attesa del primo fotogramma). Facoltativo. */
+async function videoPoster(uri: string): Promise<string | null> {
+  if (Platform.OS === 'web') return null;
+  const player = createVideoPlayer(uri);
+  try {
+    const [thumb] = await player.generateThumbnailsAsync([0.4], { maxWidth: 720, maxHeight: 720 });
+    if (!thumb) return null;
+    const out = await (await ImageManipulator.manipulate(thumb).renderAsync()).saveAsync({ format: SaveFormat.JPEG, compress: 0.7 });
+    return out.uri;
+  } catch {
+    return null;
+  } finally {
+    player.release();
+  }
+}
+
+/**
+ * Carica un file nel bucket media. Sul telefono lo legge a pezzi dal disco (un video da 100 MB non passa
+ * tutto in memoria) e dice a che punto è; sul web usa il client normale.
+ */
+async function putFile(path: string, uri: string, contentType: string, onFraction?: (f: number) => void): Promise<void> {
+  if (Platform.OS === 'web') {
+    const blob = await (await fetch(uri)).blob();
+    const { error } = await db().storage.from('media').upload(path, blob, { contentType });
+    if (error) throw new Error(error.message);
+    onFraction?.(1);
+    return;
+  }
+  const { data } = await db().auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error('Sessione scaduta: riapri l’app.');
+  const task = FileSystem.createUploadTask(
+    `${supabaseUrl}/storage/v1/object/media/${path}`,
+    uri,
+    {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: { Authorization: `Bearer ${token}`, apikey: supabaseAnonKey, 'Content-Type': contentType, 'x-upsert': 'false', 'cache-control': '31536000' },
+    },
+    (p) => onFraction?.(p.totalBytesExpectedToSend > 0 ? p.totalBytesSent / p.totalBytesExpectedToSend : 0),
+  );
+  const res = await task.uploadAsync();
+  if (!res || res.status >= 300) {
+    let message = `errore ${res?.status ?? 'di rete'}`;
+    try {
+      const body = JSON.parse(res?.body ?? '{}') as { message?: string; error?: string };
+      message = body.message ?? body.error ?? message;
+    } catch {
+      // risposta non JSON
+    }
+    throw new Error(/row-level security|policy/i.test(message) ? 'Hai caricato troppi file oggi: riprova domani.' : message);
+  }
+  onFraction?.(1);
+}
+
+async function upload(userId: string, raw: NewPost['media'][number], index: number, onFraction?: (f: number) => void): Promise<MediaItem> {
+  const item = raw.kind === 'image' ? await preparePhoto(raw) : raw;
   const contentType = item.mimeType ?? (item.kind === 'video' ? 'video/mp4' : 'image/jpeg');
-  const path = `${userId}/${Date.now()}-${index}.${EXT[contentType] ?? (item.kind === 'video' ? 'mp4' : 'jpg')}`;
-  const { error } = await db().storage.from('media').upload(path, buffer, { contentType });
-  if (error) throw new Error(error.message);
-  const url = db().storage.from('media').getPublicUrl(path).data.publicUrl;
-  return { kind: item.kind, src: url, width: Math.round(item.width), height: Math.round(item.height), durationMs: item.durationMs != null ? Math.round(item.durationMs) : undefined };
+  const base = `${userId}/${Date.now()}-${index}`;
+  const path = `${base}.${EXT[contentType] ?? (item.kind === 'video' ? 'mp4' : 'jpg')}`;
+  await putFile(path, item.uri, contentType, onFraction);
+  const publicUrl = (p: string) => db().storage.from('media').getPublicUrl(p).data.publicUrl;
+  let poster: string | undefined;
+  if (item.kind === 'video') {
+    const still = await videoPoster(item.uri);
+    if (still) {
+      try {
+        await putFile(`${base}-poster.jpg`, still, 'image/jpeg');
+        poster = publicUrl(`${base}-poster.jpg`);
+      } catch {
+        // senza anteprima il video si vede lo stesso
+      }
+    }
+  }
+  return {
+    kind: item.kind,
+    src: publicUrl(path),
+    width: Math.round(item.width),
+    height: Math.round(item.height),
+    durationMs: item.durationMs != null ? Math.round(item.durationMs) : undefined,
+    poster,
+  };
 }
 
 // ===========================================================================
@@ -871,7 +966,10 @@ export async function getForYou(limit = 6, excludeIds: string[] = []): Promise<F
   return withDemo((demo) => {
     if (!demo.me) return [];
     crowdTick(demo, 10);
-    const batch = serveBatch(demo.state, demo.me.id, limit, Math.random, DEFAULT_ARENA_CONFIG, new Set(excludeIds));
+    // L'app manda gli id dei post già in lista: il motore ragiona per candidature.
+    const shown = new Set(excludeIds);
+    const exclude = new Set(demo.state.entries.filter((e) => shown.has(e.postId)).map((e) => e.id));
+    const batch = serveBatch(demo.state, demo.me.id, limit, Math.random, DEFAULT_ARENA_CONFIG, exclude);
     // Come sul server: dentro la pagina vengono prima i post più vicini ai tuoi gusti (con un po' di caso).
     const cards: FeedCard[] = batch
       .filter((e) => visible(demo, e.postId))
@@ -1197,7 +1295,8 @@ export type PublishResult = { post: Post; entry: MyEntry | null; contestError: s
  * Pubblica un post e, se richiesto, lo candida. Una volta creato il post non lancia più errori:
  * se la candidatura non riesce lo dice in `contestError`, così l'utente non ripubblica due volte.
  */
-export async function publish(input: NewPost): Promise<PublishResult> {
+/** onProgress: da 0 a 1 mentre si caricano i file (per la barra della schermata di pubblicazione). */
+export async function publish(input: NewPost, onProgress?: (fraction: number) => void): Promise<PublishResult> {
   if (!input.media.length) throw new Error('Scegli almeno una foto o un video.');
   if (input.media.length > 10) throw new Error('Al massimo 10 elementi per post.');
   if (input.caption.length > 300) throw new Error('La didascalia può avere al massimo 300 caratteri.');
@@ -1205,14 +1304,19 @@ export async function publish(input: NewPost): Promise<PublishResult> {
     const me = await uid();
     const media: MediaItem[] = [];
     try {
-      for (const [i, m] of input.media.entries()) media.push(await upload(me, m, i));
+      const n = input.media.length;
+      for (const [i, m] of input.media.entries()) media.push(await upload(me, m, i, (f) => onProgress?.((i + f) / n)));
     } catch (e) {
       await removeUploads(media);
       throw new Error(`Caricamento non riuscito: ${(e as Error).message}`);
     }
     const { data, error } = await db()
       .from('posts')
-      .insert({ author_id: me, caption: input.caption.trim(), media: media.map((m) => ({ kind: m.kind, url: m.src, width: m.width, height: m.height, duration_ms: m.durationMs })) })
+      .insert({
+        author_id: me,
+        caption: input.caption.trim(),
+        media: media.map((m) => ({ kind: m.kind, url: m.src, width: m.width, height: m.height, duration_ms: m.durationMs, ...(m.poster ? { poster: m.poster } : {}) })),
+      })
       .select('id')
       .single();
     if (error) {
@@ -1281,7 +1385,7 @@ export async function publish(input: NewPost): Promise<PublishResult> {
 }
 
 async function removeUploads(media: MediaItem[]) {
-  const paths = media.map((m) => storagePath(m.src)).filter(Boolean) as string[];
+  const paths = media.flatMap((m) => [storagePath(m.src), m.poster ? storagePath(m.poster) : null]).filter(Boolean) as string[];
   if (paths.length) await db().storage.from('media').remove(paths).catch(() => undefined);
 }
 

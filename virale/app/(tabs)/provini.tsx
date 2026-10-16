@@ -101,8 +101,10 @@ export default function ProviniTab() {
       else if (mode === 'esplora') next = await getExplore(8, shown.map((x) => x.id));
       else next = await getForYou(6, shown.map((x) => x.id));
       if (id === request.current) {
+        // Contano solo i post nuovi: una pagina fatta di post già in lista non deve bloccare lo scorrimento.
+        const fresh = reset ? next : next.filter((n) => !shown.some((p) => p.id === n.id));
         // Seguiti e In gara finiscono (In gara: visti tutti i candidati di adesso); Esplora no.
-        if (mode !== 'esplora' && !next.length) {
+        if (mode !== 'esplora' && !fresh.length) {
           exhausted.current = true;
           setEnded(true);
         }

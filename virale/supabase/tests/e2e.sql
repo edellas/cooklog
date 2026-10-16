@@ -555,6 +555,22 @@ update arena_views set last_served_at = now() - interval '11 minutes', served_at
  where viewer_id = '00000000-0000-0000-0000-0000000000e4';
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e4', false);
+-- Già nella lista sullo schermo: non torna nella stessa lista anche se sono passati 10 minuti.
+do $$ declare n int; begin
+  select count(*) into n from feed_for_you(10, array['30000000-0000-0000-0000-000000000001'::uuid]) f
+   where f.post ->> 'id' like '30000000%';
+  if n <> 2 then raise exception 'esclusione della lista: tornati %', n; end if;
+  if exists (select 1 from feed_for_you(10, array['30000000-0000-0000-0000-000000000001'::uuid]) f
+              where f.post ->> 'id' = '30000000-0000-0000-0000-000000000001') then
+    raise exception 'post già nella lista ripetuto';
+  end if;
+  raise notice 'ok, niente doppioni nella stessa lista';
+end $$;
+reset role;
+update arena_views set last_served_at = now() - interval '11 minutes', served_at = served_at
+ where viewer_id = '00000000-0000-0000-0000-0000000000e4';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e4', false);
 do $$ declare n int; e uuid; begin
   create temp table served on commit drop as select * from feed_for_you(10) f where f.post ->> 'id' like '30000000%';
   select count(*) into n from served;
