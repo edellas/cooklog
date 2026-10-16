@@ -257,13 +257,16 @@ select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004
 select admin_set_settings(1439, 10) ->> 'reveal_minutes' as nuovo_orario;
 reset role;
 do $$ begin
-  -- Con la copertina alle 23:59 la gara di oggi è iniziata ieri alle 23:59: fino ad allora vale il giorno prima.
-  if extract(hour from now() at time zone 'Europe/Rome') * 60 + extract(minute from now() at time zone 'Europe/Rome') < 1439
-     and arena_today() <> (now() at time zone 'Europe/Rome')::date - 1 then
-    raise exception 'giorno di gara non spostato dall''orario: %', arena_today();
+  -- Ieri è già chiuso: spostare l'orario più avanti non riapre un giorno chiuso, la gara di oggi si allunga
+  -- fino alle 23:59 di domani.
+  if arena_today() <> (now() at time zone 'Europe/Rome')::date then
+    raise exception 'il giorno di gara è tornato indietro: %', arena_today();
+  end if;
+  if (get_settings() ->> 'closes_at')::timestamptz <> ((arena_today() + 1)::timestamp + interval '23 hours 59 minutes') at time zone 'Europe/Rome' then
+    raise exception 'fine della gara sbagliata: %', get_settings() ->> 'closes_at';
   end if;
   if cover_day() <> arena_today() then raise exception 'copertina e gara su giorni diversi'; end if;
-  raise notice 'ok, il giorno di gara va da un orario di copertina all''altro';
+  raise notice 'ok, il giorno di gara non torna mai su un giorno chiuso';
 end $$;
 update arena_config set reveal_minutes = 0;
 select cover_day() = arena_today() as dopo_la_rivelazione_si_vede_oggi;
@@ -665,3 +668,34 @@ do $$ begin
   if (select c ->> 'featured_on' from get_today_cover() c)::date is distinct from arena_today() then raise exception 'copertina appena uscita non visibile'; end if;
   raise notice 'ok, la copertina appena scelta è visibile subito';
 end $$;
+
+-- Doppioni: stessa persona con nomi dichiarati parziali e un altro documento → revisione.
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000f1'), ('00000000-0000-0000-0000-0000000000f2');
+insert into profiles (id, username, display_name) values ('00000000-0000-0000-0000-0000000000f1', 'luig', 'Luig V.'), ('00000000-0000-0000-0000-0000000000f2', 'luigi2', 'Luigi V.');
+insert into identity_checks (user_id, deadline) select id, now() + interval '7 days' from profiles where username in ('luig', 'luigi2');
+insert into profile_private (id, first_name, last_name, birth_date) values
+  ('00000000-0000-0000-0000-0000000000f1', 'Luig', 'Verd', '1991-02-02'), ('00000000-0000-0000-0000-0000000000f2', 'Luigi', 'Verdi', '1991-02-02');
+set role service_role;
+select identity_provider_start('00000000-0000-0000-0000-0000000000f1', 'lv-1');
+select identity_provider_start('00000000-0000-0000-0000-0000000000f2', 'lv-2');
+do $$ begin
+  if identity_provider_result('00000000-0000-0000-0000-0000000000f1', 'lv-1', 'Approved', '1991-02-02', 'Luigi', 'Verdi', 'AAA11111') <> 'approved' then raise exception 'primo'; end if;
+  if identity_provider_result('00000000-0000-0000-0000-0000000000f2', 'lv-2', 'Approved', '1991-02-02', 'Luigi', 'Verdi', 'BBB22222') <> 'review' then raise exception 'doppione con nomi parziali approvato'; end if;
+  raise notice 'ok, doppione riconosciuto anche con nomi dichiarati parziali';
+end $$;
+reset role;
+
+-- Togliere e rimettere un mi piace a raffica viene fermato.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e4', false);
+do $$ declare i int; begin
+  for i in 1..400 loop
+    insert into post_likes (post_id, user_id) values ('30000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000e4');
+    delete from post_likes where post_id = '30000000-0000-0000-0000-000000000003' and user_id = '00000000-0000-0000-0000-0000000000e4';
+  end loop;
+  raise exception 'NON DOVEVA PASSARE';
+exception when others then
+  if sqlerrm not like '%Troppi mi piace%' then raise; end if;
+  raise notice 'ok, mi piace a raffica fermati anche togliendoli';
+end $$;
+reset role;

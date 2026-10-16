@@ -244,6 +244,13 @@ returns text language sql immutable as $$
   select substring(p_url from '/storage/v1/object/public/media/(.+)$');
 $$;
 
+-- Tutti i file di un post (foto, video e l'immagine di anteprima dei video), come percorsi nel bucket media.
+create or replace function public.media_paths(p_media jsonb)
+returns setof text language sql immutable as $$
+  select public.media_path(u) from jsonb_array_elements(p_media) m, lateral (values (m->>'url'), (m->>'poster')) v(u)
+   where public.media_path(u) is not null;
+$$;
+
 /** Vero se uno dei due ha bloccato l'altro: in quel caso non si vedono più a vicenda. */
 -- Chi chiama può chiedere solo dei blocchi che lo riguardano: i blocchi altrui sono privati.
 create or replace function public.is_blocked_pair(a uuid, b uuid)
@@ -475,6 +482,12 @@ returns date language sql stable security definer set search_path = public, pg_t
            ((now() at time zone c.time_zone) - make_interval(mins => c.reveal_minutes))::date,
            coalesce((select max(d.contest_day) + 1 from public.arena_closed_days d), '-infinity'::date))
   from public.arena_config c limit 1;
+$$;
+
+-- La data di calendario a Roma: per l'età (un compleanno vale da mezzanotte, non dall'orario della gara).
+create or replace function public.rome_today()
+returns date language sql stable security definer set search_path = public, pg_temp as $$
+  select (now() at time zone c.time_zone)::date from public.arena_config c limit 1;
 $$;
 
 -- La copertina visibile adesso è quella uscita alla fine della gara precedente: stessa data della gara in corso.
@@ -983,8 +996,7 @@ begin
   select 'documenti', x from identity_checks i, unnest(array[i.document_path, i.selfie_path]) x where i.user_id = v_uid and x is not null
   on conflict do nothing;
   insert into storage_purge (bucket, path)
-  select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
-  where p.author_id = v_uid and public.media_path(m->>'url') is not null
+  select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = v_uid
   on conflict do nothing;
   -- Anche i file caricati e mai usati in un post: tutta la cartella dell'utente (solo su Supabase).
   if to_regclass('storage.objects') is not null then
@@ -1060,8 +1072,7 @@ begin
     update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where post_id = p_post_id;
     -- Un contenuto rimosso non deve restare raggiungibile dal suo indirizzo pubblico: i file vanno in pulizia.
     insert into storage_purge (bucket, path)
-    select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
-     where p.id = p_post_id and public.media_path(m->>'url') is not null
+    select 'media', x from posts p, public.media_paths(p.media) x where p.id = p_post_id
     on conflict do nothing;
     -- Era la copertina appena scelta (o in attesa di uscire)? Si toglie e si sceglie il secondo classificato.
     select contest_day into v_day from daily_viral where post_id = p_post_id and featured_on >= public.cover_day();
@@ -1079,8 +1090,7 @@ begin
     update profiles set banned_at = now() where id = v_author;
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = v_author;
     insert into storage_purge (bucket, path)
-    select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
-     where p.author_id = v_author and public.media_path(m->>'url') is not null
+    select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = v_author
     on conflict do nothing;
     update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where author_id = v_author and contest_day = public.arena_today();
   end if;
@@ -1498,10 +1508,10 @@ begin
   end if;
   if exists (select 1 from banned_usernames where username = v_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
   if length(v_first) not between 1 and 60 or length(v_last) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
-  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.arena_today() then
+  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.rome_today() then
     raise exception 'Data di nascita non valida.';
   end if;
-  if p_birth_date > (public.arena_today() - make_interval(years => public.min_age_years()))::date then
+  if p_birth_date > (public.rome_today() - make_interval(years => public.min_age_years()))::date then
     raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
   end if;
 
@@ -1518,7 +1528,10 @@ create or replace function public.get_settings()
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('reveal_minutes', c.reveal_minutes, 'id_grace_days', c.id_grace_days,
                             'submission_cutoff_hour', c.submission_cutoff_hour, 'time_zone', c.time_zone,
-                            'id_provider', c.id_provider)
+                            'id_provider', c.id_provider,
+                            -- Gara in corso e quando finisce (è anche quando esce la prossima copertina).
+                            'contest_day', public.arena_today(),
+                            'closes_at', ((public.arena_today() + 1)::timestamp + make_interval(mins => c.reveal_minutes)) at time zone c.time_zone)
   from arena_config c limit 1;
 $$;
 
@@ -1544,8 +1557,8 @@ declare
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
   if length(trim(p_first_name)) not between 1 and 60 or length(trim(p_last_name)) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
-  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.arena_today() then raise exception 'Data di nascita non valida.'; end if;
-  if p_birth_date > (public.arena_today() - make_interval(years => public.min_age_years()))::date then
+  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.rome_today() then raise exception 'Data di nascita non valida.'; end if;
+  if p_birth_date > (public.rome_today() - make_interval(years => public.min_age_years()))::date then
     raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
   end if;
   insert into profile_private (id, first_name, last_name, birth_date) values (v_uid, trim(p_first_name), trim(p_last_name), p_birth_date)
@@ -1654,8 +1667,7 @@ begin
     insert into banned_usernames (username, reason) select username, 'età' from profiles where id = p_user_id on conflict (username) do nothing;
     update profiles set banned_at = now() where id = p_user_id;
     insert into storage_purge (bucket, path)
-    select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
-    where p.author_id = p_user_id and public.media_path(m->>'url') is not null
+    select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = p_user_id
     on conflict do nothing;
     delete from posts where author_id = p_user_id;
     delete from profile_private where id = p_user_id;
@@ -1853,7 +1865,8 @@ create or replace function public.my_status()
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'identity', (select jsonb_build_object('status', i.status, 'deadline', i.deadline, 'reason', i.reject_reason,
-                                           'can_act', public.can_act(auth.uid()))
+                                           'can_act', public.can_act(auth.uid()),
+                                           'submitted_at', i.submitted_at, 'reviewed_at', i.reviewed_at)
                    from identity_checks i where i.user_id = auth.uid()),
     'is_moderator', public.is_staff(auth.uid()),
     'is_admin', public.is_admin(auth.uid()),
@@ -1899,18 +1912,20 @@ declare
   v_item jsonb;
 begin
   if exists (
-    select 1 from jsonb_array_elements(new.media) m
-    where coalesce(m->>'url', '') !~ ('^https://[a-z0-9-]+\.supabase\.co/storage/v1/object/public/media/' || new.author_id::text || '/[^/?#]+$')
-       -- Un altro progetto Supabase andrebbe bene alla regola sopra: il file deve stare nel nostro.
-       or (v_host is not null and substring(m->>'url' from '^https://([^/]+)/') is distinct from v_host)
+    -- Ogni indirizzo del post: il file e, per i video, l'immagine di anteprima ("poster").
+    select 1 from jsonb_array_elements(new.media) m, lateral (values (m->>'url', true), (m->>'poster', m ? 'poster')) v(u, required)
+    where v.required and (
+          coalesce(v.u, '') !~ ('^https://[a-z0-9-]+\.supabase\.co/storage/v1/object/public/media/' || new.author_id::text || '/[^/?#]+$')
+          -- Un altro progetto Supabase andrebbe bene alla regola sopra: il file deve stare nel nostro.
+          or (v_host is not null and substring(v.u from '^https://([^/]+)/') is distinct from v_host))
   ) then
     raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
   end if;
   -- E il file deve esistere davvero nel bucket (su Supabase; nei test locali lo Storage non c'è).
   if to_regclass('storage.objects') is not null then
-    for v_item in select value from jsonb_array_elements(new.media) loop
+    for v_item in select to_jsonb(x) from public.media_paths(new.media) x loop
       execute 'select exists (select 1 from storage.objects where bucket_id = $1 and name = $2)' into v_exists
-        using 'media', public.media_path(v_item->>'url');
+        using 'media', v_item #>> '{}';
       if not v_exists then
         raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
       end if;
@@ -2311,11 +2326,11 @@ begin
   if p_status <> 'Approved' then return 'ignored'; end if;
 
   update identity_checks set method = 'didit' where user_id = p_user_id;
-  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > current_date then
+  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.rome_today() then
     perform public.identity_apply(p_user_id, 'reject', 'Non riesco a leggere la data di nascita: riprova con un altro documento', null);
     return 'rejected';
   end if;
-  v_age := extract(year from age(public.arena_today(), p_birth_date))::int;
+  v_age := extract(year from age(public.rome_today(), p_birth_date))::int;
   if v_age < public.min_age_years() then
     perform public.identity_apply(p_user_id, 'underage', null, null);
     return 'underage';
@@ -2336,7 +2351,10 @@ begin
     end if;
   end if;
   -- Stessa persona o stesso documento già usati per un altro account verificato: decide una persona.
-  v_dup := public.identity_duplicate(p_user_id, public.person_key(p_first_name, p_last_name, p_birth_date), public.doc_key(p_document_number));
+  -- Si confrontano sia i nomi letti sul documento sia quelli dichiarati (che possono essere parziali).
+  v_dup := coalesce(
+    public.identity_duplicate(p_user_id, public.person_key(p_first_name, p_last_name, p_birth_date), public.doc_key(p_document_number)),
+    public.identity_duplicate(p_user_id, (select public.person_key(v.first_name, v.last_name, p_birth_date) from profile_private v where v.id = p_user_id), null));
   if v_dup is not null then
     update identity_checks
        set status = 'pending', method = 'didit', submitted_at = now(), reject_reason = null,
@@ -2352,6 +2370,9 @@ begin
   values (p_user_id, left(coalesce(nullif(trim(p_first_name), ''), '-'), 60), left(coalesce(nullif(trim(p_last_name), ''), '-'), 60), p_birth_date)
   on conflict (id) do update set birth_date = excluded.birth_date;
   perform public.identity_apply(p_user_id, 'approve', null, null);
+  -- L'impronta salvata è quella dei nomi sul documento (fa fede il documento, non come uno si è iscritto).
+  update identity_checks set person_key = public.person_key(p_first_name, p_last_name, p_birth_date)
+   where user_id = p_user_id and p_first_name is not null and p_last_name is not null;
   return 'approved';
 end;
 $$;
@@ -2384,27 +2405,39 @@ create trigger trg_follows_now before insert on public.follows for each row exec
 -- a raffica. Valori larghi per una persona vera, stretti per un programma.
 create index if not exists idx_comments_user_time on public.comments (user_id, created_at desc);
 create index if not exists idx_reports_reporter_time on public.reports (reporter_id, created_at desc);
+-- Ogni azione lascia una traccia (anche se poi viene tolta): togliere e rimettere un mi piace a raffica conta.
+create table if not exists public.rate_events (
+  user_id uuid not null,
+  kind text not null,
+  at timestamptz not null default now()
+);
+create index if not exists idx_rate_events on public.rate_events (user_id, kind, at desc);
+alter table public.rate_events enable row level security;
+revoke all on public.rate_events from anon, authenticated;
+
 create or replace function public.rate_guard()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 declare
+  v_user uuid;
+  v_window interval := case tg_table_name when 'follows' then interval '1 hour' when 'reports' then interval '1 hour'
+                                          when 'comments' then interval '5 minutes' else interval '10 minutes' end;
+  v_max int := case tg_table_name when 'post_likes' then 300 when 'post_saves' then 200 when 'follows' then 150
+                                  when 'comments' then 20 else 30 end;
   v_n int;
 begin
-  if tg_table_name = 'post_likes' then
-    select count(*) into v_n from post_likes where user_id = new.user_id and created_at > now() - interval '10 minutes';
-    if v_n >= 300 then raise exception 'Troppi mi piace in poco tempo: riprova tra qualche minuto.'; end if;
-  elsif tg_table_name = 'post_saves' then
-    select count(*) into v_n from post_saves where user_id = new.user_id and created_at > now() - interval '10 minutes';
-    if v_n >= 200 then raise exception 'Troppi salvataggi in poco tempo: riprova tra qualche minuto.'; end if;
-  elsif tg_table_name = 'follows' then
-    select count(*) into v_n from follows where follower_id = new.follower_id and created_at > now() - interval '1 hour';
-    if v_n >= 150 then raise exception 'Hai iniziato a seguire troppe persone in poco tempo: riprova più tardi.'; end if;
-  elsif tg_table_name = 'comments' then
-    select count(*) into v_n from comments where user_id = new.user_id and created_at > now() - interval '5 minutes';
-    if v_n >= 20 then raise exception 'Troppi commenti in poco tempo: riprova tra qualche minuto.'; end if;
-  elsif tg_table_name = 'reports' then
-    select count(*) into v_n from reports where reporter_id = new.reporter_id and created_at > now() - interval '1 hour';
-    if v_n >= 30 then raise exception 'Troppe segnalazioni in poco tempo: riprova più tardi.'; end if;
+  if tg_table_name = 'follows' then v_user := new.follower_id;
+  elsif tg_table_name = 'reports' then v_user := new.reporter_id;
+  else v_user := new.user_id; end if;
+  select count(*) into v_n from rate_events where user_id = v_user and kind = tg_table_name and at > now() - v_window;
+  if v_n >= v_max then
+    raise exception '%', case tg_table_name
+      when 'post_likes' then 'Troppi mi piace in poco tempo: riprova tra qualche minuto.'
+      when 'post_saves' then 'Troppi salvataggi in poco tempo: riprova tra qualche minuto.'
+      when 'follows' then 'Hai iniziato a seguire troppe persone in poco tempo: riprova più tardi.'
+      when 'comments' then 'Troppi commenti in poco tempo: riprova tra qualche minuto.'
+      else 'Troppe segnalazioni in poco tempo: riprova più tardi.' end;
   end if;
+  insert into rate_events (user_id, kind) values (v_user, tg_table_name);
   return new;
 end;
 $$;
@@ -2428,8 +2461,7 @@ create or replace function public.purge_post_media()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   insert into storage_purge (bucket, path)
-  select 'media', public.media_path(m->>'url') from jsonb_array_elements(old.media) m
-   where public.media_path(m->>'url') is not null
+  select 'media', x from public.media_paths(old.media) x
   on conflict do nothing;
   return null;
 end;
@@ -2441,10 +2473,12 @@ create trigger trg_posts_purge_media after delete on public.posts for each row e
 -- si sostituisce il file di un post pubblicato, così il contenuto non cambia dopo la moderazione.)
 create or replace function public.media_in_use(p_path text)
 returns boolean language sql stable security definer set search_path = public, pg_temp as $$
-  select exists (
-    select 1 from posts p, jsonb_array_elements(p.media) m
-     where p.author_id::text = split_part(p_path, '/', 1) and public.media_path(m->>'url') = p_path
-  );
+  select split_part(p_path, '/', 1) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     and exists (
+       select 1 from posts p, jsonb_array_elements(p.media) m
+        where p.author_id = split_part(p_path, '/', 1)::uuid
+          and (public.media_path(m->>'url') = p_path or public.media_path(m->>'poster') = p_path)
+     );
 $$;
 
 -- Il nome di accesso è legato al nome utente: un account non può prendersi altri nomi cambiando email.
@@ -2468,12 +2502,24 @@ exception when insufficient_privilege then
   raise notice 'Non ho i permessi per il controllo sul nome di accesso (auth.users): salto.';
 end $$;
 
--- Database esistenti: i giorni che hanno già una copertina risultano chiusi.
-insert into public.arena_closed_days (contest_day) select contest_day from public.daily_viral on conflict do nothing;
+-- Prima volta con la gara che chiude all'orario della copertina (database che usavano la mezzanotte):
+-- se ieri non ha avuto una copertina la si sceglie adesso, e tutti i giorni di calendario passati risultano chiusi.
+do $$
+declare
+  v_today date := public.rome_today();
+begin
+  if not exists (select 1 from public.arena_closed_days) then
+    if exists (select 1 from public.arena_entries where contest_day = v_today - 1)
+       and not exists (select 1 from public.daily_viral where contest_day = v_today - 1) then
+      perform public.arena_close_day(v_today - 1);
+    end if;
+    insert into public.arena_closed_days (contest_day)
+    select d::date from generate_series(
+      least(coalesce((select min(contest_day) from public.arena_entries), v_today), v_today - 1), v_today - 1, interval '1 day') d
+    on conflict do nothing;
+  end if;
+end $$;
 
--- Database esistenti: le viste già registrate oggi da chi poteva votare contano come "contate".
-update public.arena_views v set counted = true
- where v.recorded_at is not null and not v.counted and v.contest_day >= public.arena_today() - 1 and public.can_vote(v.viewer_id);
 
 -- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
 revoke execute on all functions in schema public from public, anon, authenticated;

@@ -10,13 +10,20 @@ on conflict (id) do update
       file_size_limit = excluded.file_size_limit,
       allowed_mime_types = excluded.allowed_mime_types;
 
--- Quanti file ha già chi carica, in un bucket (per i limiti qui sotto).
+-- Quanti file ha già chi carica, in un bucket (per i limiti qui sotto): in tutto, e nelle ultime 24 ore.
 create or replace function public.my_object_count(p_bucket text)
 returns bigint language sql stable security definer set search_path = storage, public, pg_temp as $$
   select count(*) from storage.objects where bucket_id = p_bucket and (storage.foldername(name))[1] = auth.uid()::text;
 $$;
+create or replace function public.my_recent_object_count(p_bucket text)
+returns bigint language sql stable security definer set search_path = storage, public, pg_temp as $$
+  select count(*) from storage.objects
+   where bucket_id = p_bucket and (storage.foldername(name))[1] = auth.uid()::text and created_at > now() - interval '24 hours';
+$$;
 revoke execute on function public.my_object_count(text) from public, anon;
 grant execute on function public.my_object_count(text) to authenticated;
+revoke execute on function public.my_recent_object_count(text) from public, anon;
+grant execute on function public.my_recent_object_count(text) to authenticated;
 
 -- 2) Ognuno scrive, elenca e cancella solo nella propria cartella (<id utente>/...).
 --    Leggere i file è pubblico (bucket pubblico), serve per mostrarli nell'app.
@@ -24,7 +31,8 @@ grant execute on function public.my_object_count(text) to authenticated;
 drop policy if exists "media upload own folder" on storage.objects;
 create policy "media upload own folder" on storage.objects for insert to authenticated
   with check (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text
-              and public.can_act(auth.uid()) and public.my_object_count('media') < 300);
+              -- Un tetto giornaliero (non per sempre): pubblicare tanto va bene, usare l'app come hosting no.
+              and public.can_act(auth.uid()) and public.my_recent_object_count('media') < 200);
 
 drop policy if exists "media list own folder" on storage.objects;
 create policy "media list own folder" on storage.objects for select to authenticated
@@ -71,14 +79,17 @@ select cron.schedule('arena-close-day', '* * * * *', $$ select public.arena_clos
 select cron.schedule(
   'virale-pulizia',
   '17 3 * * *',
-  $$ delete from public.post_views where day < public.arena_today() - 1;
+  $$ delete from public.post_views where day < (select public.arena_today()) - 1;
+     delete from public.rate_events where at < now() - interval '1 day';
+     delete from cron.job_run_details where end_time < now() - interval '2 days';
      delete from public.notifications where created_at < now() - interval '90 days';
      delete from public.seen_posts where seen_at < now() - interval '30 days';
      delete from public.user_interests where updated_at < now() - interval '120 days';
      -- File caricati da più di un giorno e mai usati in un post (pubblicazione interrotta): in pulizia.
      insert into public.storage_purge (bucket, path)
      select o.bucket_id, o.name from storage.objects o
-      where o.bucket_id = 'media' and o.created_at < now() - interval '1 day' and not public.media_in_use(o.name)
+      where o.bucket_id = 'media' and o.created_at between now() - interval '3 days' and now() - interval '1 day'
+        and not public.media_in_use(o.name)
      on conflict do nothing;
      -- Documenti rimasti senza una verifica in attesa (invio fallito): dopo un giorno, in pulizia.
      insert into public.storage_purge (bucket, path)

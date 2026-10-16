@@ -21,6 +21,9 @@ const DRAFT_KEY = 'virale.verifica.bozza';
 /** Verifica Didit aperta e non ancora conclusa (quando, e lo stato di prima): sopravvive a un riavvio dell'app. */
 const DIDIT_KEY = 'virale.verifica.didit';
 type DiditPending = { at: number; before: string | null };
+/** "Impronta" dello stato della verifica: cambia a ogni esito, anche se è uguale al precedente (rifiutato → rifiutato). */
+const marker = (i: { status: string; reviewedAt?: string | null; submittedAt?: string | null } | null | undefined) =>
+  i ? `${i.status}|${i.reviewedAt ?? ''}|${i.submittedAt ?? ''}` : null;
 
 /** Scadenza con l'ora, sempre in ora italiana: è quella che usa il server. */
 const deadlineIt = (iso: string) => {
@@ -91,20 +94,22 @@ export default function VerifyScreen() {
   const polling = useRef(false);
   const checkResult = useCallback(
     async (rounds = 10) => {
+      // Il controllo si prende subito, prima di qualsiasi attesa: ritorno nell'app e link arrivano insieme.
       if (polling.current) return;
+      polling.current = true;
       const pending = await getJson<DiditPending | null>(DIDIT_KEY, null);
       if (!pending || Date.now() - pending.at > 2 * 3_600_000) {
         if (pending) void removeKey(DIDIT_KEY);
         setWaiting(false);
+        polling.current = false;
         return;
       }
-      polling.current = true;
       setWaiting(true);
       setChecking(true);
       try {
         for (let i = 0; i < rounds && alive.current; i += 1) {
           const now = await getStatus().catch(() => null);
-          if (now?.identity && now.identity.status !== pending.before) {
+          if (now?.identity && marker(now.identity) !== pending.before) {
             await removeKey(DIDIT_KEY);
             if (alive.current) setWaiting(false);
             break;
@@ -152,7 +157,7 @@ export default function VerifyScreen() {
         await refreshStatus();
         return;
       }
-      await setJson<DiditPending>(DIDIT_KEY, { at: Date.now(), before: status?.identity?.status ?? null });
+      await setJson<DiditPending>(DIDIT_KEY, { at: Date.now(), before: marker(status?.identity) });
       setWaiting(true);
       setChecking(false);
       await WebBrowser.openBrowserAsync(url, {
@@ -185,7 +190,8 @@ export default function VerifyScreen() {
         selfie: null,
         pending: null,
       });
-      const res = await ImagePicker.getPendingResultAsync().catch(() => null);
+      // Solo se era questa schermata ad aver aperto la fotocamera (non la pubblicazione di un post).
+      const res = draft.pending ? await ImagePicker.getPendingResultAsync().catch(() => null) : null;
       let restored: string | null = null;
       if (res && 'assets' in res && !res.canceled && res.assets?.[0]) restored = await toJpeg(res.assets[0]);
       if (!restored && !draft.doc && !draft.selfie) return;

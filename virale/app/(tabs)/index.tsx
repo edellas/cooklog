@@ -7,7 +7,7 @@ import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { atTime } from '../../src/design/format';
 import { color } from '../../src/design/tokens';
-import { coverDay, msUntilReveal } from '../../src/engine/engine';
+import { coverDay, msUntil, msUntilReveal } from '../../src/engine/engine';
 import { CoverView } from '../../src/screens/CoverView';
 import { closeDayNowDemo, getTodayCover, isDemo } from '../../src/services/api';
 import { getJson, setJson } from '../../src/services/storage';
@@ -19,7 +19,7 @@ const SEEN_KEY = 'virale.cover.seen';
 
 
 export default function CoverTab() {
-  const { me, version, bump } = useSession();
+  const { me, version, bump, refreshStatus } = useSession();
   const toast = useToast();
   const [cover, setCover] = useState<Cover | null | undefined>(undefined);
   const [failed, setFailed] = useState(false);
@@ -69,12 +69,13 @@ export default function CoverTab() {
   // minuti dopo l'orario si ricontrolla ogni 20 secondi.
   useEffect(() => {
     if (cover === undefined) return;
-    const justClosed = 86_400_000 - msUntilReveal(revealRef.current) < 5 * 60_000;
-    const stale = cover === null || (justClosed && cover.featuredOn < coverDay(revealRef.current));
+    const closesAt = status?.settings.closesAt;
+    const justClosed = 86_400_000 - msUntil(closesAt, msUntilReveal(revealRef.current)) < 10 * 60_000;
+    const stale = cover === null || (justClosed && cover.featuredOn < (status?.settings.contestDay ?? coverDay(revealRef.current)));
     if (!stale) return;
     const id = setInterval(() => setTick((n) => n + 1), cover === null ? 30_000 : 20_000);
     return () => clearInterval(id);
-  }, [cover, tick]);
+  }, [cover, tick, status?.settings.closesAt, status?.settings.contestDay]);
 
   // Riaprendo l'app il giorno dopo (dal multitasking) la copertina si aggiorna da sola.
   useEffect(() => {
@@ -136,7 +137,10 @@ export default function CoverTab() {
       </View>
     );
   }
-  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} onDayEnd={() => setTick((n) => n + 1)} />;
+  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} onDayEnd={() => {
+        setTick((n) => n + 1);
+        void refreshStatus();
+      }} />;
 }
 
 const styles = StyleSheet.create({

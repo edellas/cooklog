@@ -31,10 +31,13 @@ import { atTime } from "../src/design/format";
 import { duration, ease } from "../src/design/motion";
 import { color, radius, space } from "../src/design/tokens";
 import { contestOpen, getMyEntry, publish } from "../src/services/api";
+import { getJson, removeKey, setJson } from "../src/services/storage";
 import { useSession } from "../src/state/session";
 import type { DraftMedia, MediaItem, MyEntry, Post } from "../src/types";
 
 const MAX = 10;
+/** La fotocamera è stata aperta da qui (per recuperare lo scatto se Android chiude l'app nel frattempo). */
+const CAMERA_KEY = "virale.scatta.fotocamera";
 
 export default function CreateScreen() {
   const insets = useSafeAreaInsets();
@@ -132,13 +135,15 @@ export default function CreateScreen() {
 
   // Su Android il sistema può chiudere l'app mentre la fotocamera è aperta (succede con i video lunghi):
   // riaprendola, la foto o il video appena fatti arrivano qui invece di andare persi.
+  // Solo se era questa schermata ad aver aperto la fotocamera (non la verifica dell'età con il documento).
   useEffect(() => {
     if (Platform.OS !== "android") return;
-    ImagePicker.getPendingResultAsync()
-      .then((res) => {
-        if (res && "assets" in res && !res.canceled && res.assets?.length) addAssets(res.assets);
-      })
-      .catch(() => undefined);
+    void (async () => {
+      if (!(await getJson<boolean>(CAMERA_KEY, false))) return;
+      await removeKey(CAMERA_KEY);
+      const res = await ImagePicker.getPendingResultAsync().catch(() => null);
+      if (res && "assets" in res && !res.canceled && res.assets?.length) addAssets(res.assets);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -168,9 +173,11 @@ export default function CreateScreen() {
         preferredAssetRepresentationMode:
           ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
       };
+      if (camera && Platform.OS === "android") await setJson(CAMERA_KEY, true);
       const res = camera
         ? await ImagePicker.launchCameraAsync(opts)
         : await ImagePicker.launchImageLibraryAsync(opts);
+      if (camera && Platform.OS === "android") void removeKey(CAMERA_KEY);
       if (res.canceled) return;
       addAssets(res.assets);
     } catch {

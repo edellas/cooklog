@@ -459,11 +459,20 @@ export function msUntilArenaClose(date: Date = new Date(), timeZone: string = DE
  */
 export function submissionsOpen(date: Date = new Date(), cfg: ArenaConfig = DEFAULT_ARENA_CONFIG, revealMinutes = 0): boolean {
   try {
-    const start = wallTimeToEpoch(coverDay(revealMinutes, date, cfg.timeZone), revealMinutes, cfg.timeZone);
-    return date.getTime() - start < cfg.submissionCutoffHour * 3_600_000;
+    // Ora "da orologio" a Roma, come il server (nei giorni del cambio d'ora conta l'orologio, non le ore passate).
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+    const into = (((get('hour') * 60 + get('minute') - revealMinutes) % 1440) + 1440) % 1440;
+    return into < cfg.submissionCutoffHour * 60;
   } catch {
     return date.getHours() < cfg.submissionCutoffHour;
   }
+}
+
+/** Millisecondi a un istante (ISO) del server, per esempio la fine della gara; mai negativi. */
+export function msUntil(iso: string | undefined, fallbackMs: number, now = Date.now()): number {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? fallbackMs : Math.max(0, t - now);
 }
 
 /** Reazione plausibile di uno spettatore a un contenuto di qualità `quality` (0-1). */

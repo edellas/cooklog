@@ -18,7 +18,7 @@ import { resolveMedia } from '../data/demoMedia';
 import { clock, formatCount, longDate } from '../design/format';
 import { duration, ease } from '../design/motion';
 import { color, font, radius, space } from '../design/tokens';
-import { msUntilReveal } from '../engine/engine';
+import { msUntil, msUntilReveal } from '../engine/engine';
 import { registerShare, toggleLike, toggleSave } from '../services/api';
 import { shareText } from '../services/share';
 import { emitPostChange, onPostChange, withRecentChanges } from '../state/postEvents';
@@ -208,7 +208,7 @@ export function CoverView({
         {isToday ? (
           <View style={styles.band}>
             <Icon name="orologio" size={18} color={color.canvas} strokeWidth={2} />
-            <Countdown onEnd={onDayEnd} revealMinutes={revealMinutes} />
+            <Countdown onEnd={onDayEnd} revealMinutes={revealMinutes} closesAt={status?.settings.closesAt} />
             <Press onPress={() => router.push('/regole' as Href)} accessibilityRole="button">
               <Txt variant="meta" tone={color.canvas} style={styles.link}>
                 Come si sceglie
@@ -229,25 +229,27 @@ export function CoverView({
 }
 
 /** Conto alla rovescia in un componente suo: aggiornarlo ogni secondo non ridisegna la copertina (e il video). */
-function Countdown({ onEnd, revealMinutes }: { onEnd?: () => void; revealMinutes: number }) {
-  const [left, setLeft] = useState(() => msUntilReveal(revealMinutes));
+function Countdown({ onEnd, revealMinutes, closesAt }: { onEnd?: () => void; revealMinutes: number; closesAt?: string }) {
+  const [left, setLeft] = useState(() => msUntil(closesAt, msUntilReveal(revealMinutes)));
   const prev = useRef(left);
   const endRef = useRef(onEnd);
   endRef.current = onEnd;
   useEffect(() => {
     // Se l'amministratore sposta l'orario si riparte da capo: non è un "nuovo giorno".
-    const start = msUntilReveal(revealMinutes);
+    const start = msUntil(closesAt, msUntilReveal(revealMinutes));
     prev.current = start;
     setLeft(start);
     const id = setInterval(() => {
-      const next = msUntilReveal(revealMinutes);
+      const next = msUntil(closesAt, msUntilReveal(revealMinutes));
+      // Arrivati a zero la gara è finita: la copertina nuova esce entro un minuto.
+      if (next === 0 && prev.current > 0) endRef.current?.();
       // Passata la rivelazione il conto risale a 24 ore: è il segnale che c'è una copertina nuova.
       if (next > prev.current + 60_000) endRef.current?.();
       prev.current = next;
       setLeft(next);
     }, 1000);
     return () => clearInterval(id);
-  }, [revealMinutes]);
+  }, [revealMinutes, closesAt]);
   return (
     <Txt variant="label" tone={color.canvas} style={{ flex: 1 }}>
       Prossima copertina tra {clock(left)}

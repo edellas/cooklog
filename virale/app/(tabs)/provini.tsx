@@ -12,7 +12,7 @@ import { Txt } from '../../src/components/Txt';
 import { clock } from '../../src/design/format';
 import { duration, ease } from '../../src/design/motion';
 import { color, font, radius, space } from '../../src/design/tokens';
-import { coverDay, msUntilReveal } from '../../src/engine/engine';
+import { coverDay, msUntil, msUntilReveal } from '../../src/engine/engine';
 import { getExplore, getFollowing, getForYou, recordView } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
@@ -35,7 +35,7 @@ const MODES: { id: Mode; label: string }[] = [
  */
 export default function ProviniTab() {
   const insets = useSafeAreaInsets();
-  const { me, version, status } = useSession();
+  const { me, version, status, refreshStatus } = useSession();
   const reveal = status?.settings.revealMinutes ?? 0;
   const revealRef = useRef(reveal);
   revealRef.current = reveal;
@@ -123,11 +123,13 @@ export default function ProviniTab() {
 
   // All'orario della copertina la gara chiude e ne parte una nuova: i candidati di prima spariscono, il feed
   // si ricarica. Il timer può fermarsi col telefono in standby: si ricontrolla anche riaprendo l'app (sotto).
-  const [day, setDay] = useState(() => coverDay(reveal));
+  // Il giorno di gara lo dice il server (che non torna mai su un giorno chiuso); a fine gara si rilegge.
+  const closesAt = status?.settings.closesAt;
+  const day = status?.settings.contestDay ?? coverDay(reveal);
   useEffect(() => {
-    const id = setTimeout(() => setDay(coverDay(revealRef.current)), msUntilReveal(reveal) + 90_000);
+    const id = setTimeout(() => void refreshStatus(), msUntil(closesAt, msUntilReveal(reveal)) + 70_000);
     return () => clearTimeout(id);
-  }, [day, reveal]);
+  }, [closesAt, reveal, refreshStatus]);
 
   /**
    * Ogni sezione ricorda la sua lista e dove eri: tornando da Esplora a In gara ritrovi i provini che non avevi
@@ -173,10 +175,7 @@ export default function ProviniTab() {
 
   // Mettendo l'app in background la vista corrente si chiude (e conta); riaprendola riprende.
   const focusedRef = useRef(false);
-  const dayRef = useRef(day);
-  useEffect(() => {
-    dayRef.current = day;
-  }, [day]);
+
   useEffect(() => {
     focusedRef.current = focused;
   }, [focused]);
@@ -186,7 +185,6 @@ export default function ProviniTab() {
       // notifica, e chiuderebbe la vista (come uno scorrimento) mentre si sta ancora guardando.
       if (st === 'background') flushRef.current();
       else if (st === 'active') {
-        if (coverDay(revealRef.current) !== dayRef.current) setDay(coverDay(revealRef.current));
         if (focusedRef.current && !current.current) {
           const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
           if (visible) current.current = { card: visible, since: Date.now() };
@@ -271,7 +269,7 @@ export default function ProviniTab() {
             switchMode(m);
           }}
         />
-        {mode === 'gara' ? <ArenaClock reveal={reveal} /> : null}
+        {mode === 'gara' ? <ArenaClock reveal={reveal} closesAt={closesAt} /> : null}
       </View>
 
       <View style={styles.list} onLayout={onLayout}>
@@ -388,13 +386,15 @@ export default function ProviniTab() {
 }
 
 /** Il conto alla rovescia vive da solo: aggiornarlo ogni secondo non ridisegna il feed. */
-function ArenaClock({ reveal }: { reveal: number }) {
-  const [left, setLeft] = useState(() => msUntilReveal(reveal));
+function ArenaClock({ reveal, closesAt }: { reveal: number; closesAt?: string }) {
+  const left0 = () => msUntil(closesAt, msUntilReveal(reveal));
+  const [left, setLeft] = useState(left0);
   useEffect(() => {
-    setLeft(msUntilReveal(reveal));
-    const id = setInterval(() => setLeft(msUntilReveal(reveal)), 1000);
+    const tick = () => setLeft(msUntil(closesAt, msUntilReveal(reveal)));
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [reveal]);
+  }, [reveal, closesAt]);
   return (
     <View style={styles.clock} accessible accessibilityLabel={`La gara chiude tra ${clock(left)}`}>
       <Icon name="orologio" size={16} color={color.giallo} strokeWidth={2} />

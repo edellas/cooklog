@@ -102,11 +102,26 @@ export type RegisterInput = {
 export type IdentityStatus = 'missing' | 'pending' | 'approved' | 'rejected';
 
 /** idProvider: come si verifica l'età, 'manual' (foto all'amministratore) o 'didit' (verifica automatica). */
-export type Settings = { revealMinutes: number; idGraceDays: number; cutoffHour: number; idProvider: 'manual' | 'didit' };
+export type Settings = {
+  revealMinutes: number;
+  idGraceDays: number;
+  cutoffHour: number;
+  idProvider: 'manual' | 'didit';
+  /** Gara in corso (dal server, che non torna mai su un giorno già chiuso) e quando finisce. */
+  contestDay?: string;
+  closesAt?: string;
+};
 
 /** Lo stato dell'utente che serve all'app: verifica dell'età, ruoli, notifiche non lette, impostazioni. */
 export type Status = {
-  identity: { status: IdentityStatus; deadline: string; reason: string | null; canAct: boolean } | null;
+  identity: {
+    status: IdentityStatus;
+    deadline: string;
+    reason: string | null;
+    canAct: boolean;
+    submittedAt?: string | null;
+    reviewedAt?: string | null;
+  } | null;
   isModerator: boolean;
   isAdmin: boolean;
   /** Account chiuso dalla moderazione o perché minore dell'età minima. */

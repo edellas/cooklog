@@ -1479,13 +1479,20 @@ export async function modResolve(postId: string, action: 'dismiss' | 'remove' | 
 // ===========================================================================
 
 type StatusJson = {
-  identity: { status: IdentityStatus; deadline: string; reason: string | null; can_act: boolean } | null;
+  identity: { status: IdentityStatus; deadline: string; reason: string | null; can_act: boolean; submitted_at?: string | null; reviewed_at?: string | null } | null;
   is_moderator: boolean;
   is_admin: boolean;
   banned?: boolean;
   needs_private?: boolean;
   unread: number;
-  settings: { reveal_minutes: number; id_grace_days: number; submission_cutoff_hour: number; id_provider?: 'manual' | 'didit' };
+  settings: {
+    reveal_minutes: number;
+    id_grace_days: number;
+    submission_cutoff_hour: number;
+    id_provider?: 'manual' | 'didit';
+    contest_day?: string;
+    closes_at?: string;
+  };
 };
 
 export async function getStatus(): Promise<Status> {
@@ -1495,7 +1502,16 @@ export async function getStatus(): Promise<Status> {
     return {
       // Account creati con il vecchio "Entra" (anonimi): non hanno password finché non la impostano.
       needsPassword: Boolean(user && (user.is_anonymous || !user.email)),
-      identity: r.identity ? { status: r.identity.status, deadline: r.identity.deadline, reason: r.identity.reason, canAct: r.identity.can_act } : null,
+      identity: r.identity
+        ? {
+            status: r.identity.status,
+            deadline: r.identity.deadline,
+            reason: r.identity.reason,
+            canAct: r.identity.can_act,
+            submittedAt: r.identity.submitted_at ?? null,
+            reviewedAt: r.identity.reviewed_at ?? null,
+          }
+        : null,
       isModerator: r.is_moderator,
       isAdmin: r.is_admin,
       banned: Boolean(r.banned),
@@ -1522,7 +1538,14 @@ export async function getStatus(): Promise<Status> {
 
 /** Le impostazioni pubbliche (orario della copertina), anche prima di accedere. */
 function settingsFrom(r: StatusJson['settings']): Settings {
-  return { revealMinutes: r.reveal_minutes, idGraceDays: r.id_grace_days, cutoffHour: r.submission_cutoff_hour, idProvider: r.id_provider ?? 'manual' };
+  return {
+    revealMinutes: r.reveal_minutes,
+    idGraceDays: r.id_grace_days,
+    cutoffHour: r.submission_cutoff_hour,
+    idProvider: r.id_provider ?? 'manual',
+    contestDay: r.contest_day,
+    closesAt: r.closes_at,
+  };
 }
 
 export async function getSettings(): Promise<Settings> {
