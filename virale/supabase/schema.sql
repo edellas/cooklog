@@ -37,6 +37,9 @@ returns boolean language sql immutable as $$
      and not exists (
        select 1 from jsonb_array_elements(m) x
        where jsonb_typeof(x) <> 'object'
+          -- Solo i campi che l'app conosce, e piccoli: altro verrebbe mandato a chiunque guardi il post.
+          or (x - array['kind', 'url', 'width', 'height', 'duration_ms', 'poster']) <> '{}'::jsonb
+          or length(x::text) > 4096
           -- coalesce: un elemento senza "kind" darebbe NULL e passerebbe il controllo.
           or not coalesce(x->>'kind' in ('image', 'video') and coalesce(x->>'url', '') ~ '^https://', false)
           -- La durata arriva in millisecondi, anche con decimali (iOS): si confronta come numero.
@@ -830,11 +833,16 @@ declare
   v_day date := public.arena_today();
   v_limit int := least(greatest(p_limit, 1), 20);
   v_upper_slots int := ceil(least(greatest(p_limit, 1), 20) * v_cfg.upper_share);
-  -- Quanti dei candidati pescati potrebbero essere scartati perché già nella lista: se ne pescano altrettanti in più.
-  v_extra int := least(coalesce(cardinality(p_exclude), 0), 300);
+  -- Gli ultimi 300 post della lista sullo schermo (quelli prima sono lontani), senza doppioni.
+  v_ex uuid[] := coalesce(p_exclude, '{}'::uuid[]);
+  v_extra int;
   v_ids uuid[];
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if cardinality(v_ex) > 300 then v_ex := v_ex[cardinality(v_ex) - 299:cardinality(v_ex)]; end if;
+  v_ex := array(select distinct x from unnest(v_ex) x);
+  -- Quanti dei candidati pescati potrebbero essere scartati perché già nella lista: se ne pescano altrettanti in più.
+  v_extra := cardinality(v_ex);
 
   with pool as materialized (
     select x.* from (
@@ -843,7 +851,7 @@ begin
       select p.id, p.post_id, p.tier, false from public.arena_pick(v_day, v_uid, 0, 0, v_limit * 4 + v_extra) p
     ) x
     -- Già nella lista sullo schermo (consegnati e tornati dopo 10 minuti): non si ripetono nella stessa lista.
-    where not (x.post_id = any (coalesce(p_exclude, '{}'::uuid[])))
+    where not (x.post_id = any (v_ex))
   ), ranked as (
     -- Solo i gusti personali (niente popolarità): la gara la decidono gli sguardi, non chi è già avanti.
     select r.post_id, r.score from public.rank_posts(v_uid, array(select post_id from pool), true) r
@@ -1893,7 +1901,10 @@ create or replace function public.storage_purge_list(p_limit int default 200)
 returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
   if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
-  return query select jsonb_build_object('bucket', bucket, 'path', path) from storage_purge order by queued_at limit least(greatest(p_limit, 1), 1000);
+  -- Un file che un post usa ancora non si cancella mai, chiunque l'abbia messo in coda.
+  return query select jsonb_build_object('bucket', q.bucket, 'path', q.path) from storage_purge q
+   where not (q.bucket = 'media' and public.media_in_use(q.path))
+   order by q.queued_at limit least(greatest(p_limit, 1), 1000);
 end;
 $$;
 
@@ -1936,6 +1947,13 @@ begin
         raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
       end if;
     end loop;
+  end if;
+  -- Ogni file appartiene a un post solo: un secondo post che lo riusa, eliminato, libererebbe il nome del file
+  -- del primo (già visto e moderato) per un contenuto nuovo. Il trigger gira prima dell'inserimento: chi
+  -- usa già il file è per forza un altro post.
+  if exists (select 1 from public.media_paths(new.media) x where public.media_in_use(x))
+     or (select count(*) <> count(distinct x) from public.media_paths(new.media) x) then
+    raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
   end if;
   return new;
 end;
@@ -2466,8 +2484,9 @@ grant select (user_id, status, deadline, submitted_at, reviewed_at, reject_reaso
 create or replace function public.purge_post_media()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 begin
+  -- Solo i file che nessun altro post usa (il post eliminato non c'è già più).
   insert into storage_purge (bucket, path)
-  select 'media', x from public.media_paths(old.media) x
+  select 'media', x from public.media_paths(old.media) x where not public.media_in_use(x)
   on conflict do nothing;
   return null;
 end;

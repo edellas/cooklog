@@ -346,6 +346,22 @@ do $$ begin
   insert into posts (author_id, media) values (auth.uid(), '[{"kind":"image","url":"https://evil.example/track.gif"}]');
   raise exception 'NON DOVEVA PASSARE';
 exception when check_violation then raise notice 'ok, media da siti esterni rifiutati'; end $$;
+-- Un file già usato da un altro post (anche come anteprima) non si riusa: eliminando il secondo post
+-- si libererebbe il file del primo, già moderato.
+do $$ begin
+  insert into posts (author_id, media) values (auth.uid(), test_media(auth.uid(), 'riuso.jpg'));
+  begin
+    insert into posts (author_id, media) values (auth.uid(), jsonb_build_array(jsonb_build_object('kind', 'video',
+      'url', 'https://proj.supabase.co/storage/v1/object/public/media/' || auth.uid() || '/nuovo.mp4',
+      'poster', 'https://proj.supabase.co/storage/v1/object/public/media/' || auth.uid() || '/riuso.jpg')));
+    raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then raise notice 'ok, file di un altro post non riusabile'; end;
+  begin
+    -- Indirizzo valido: a far rifiutare il post è solo il campo in più.
+    insert into posts (author_id, media) values (auth.uid(), jsonb_set(test_media(auth.uid(), 'campi.jpg'), '{0,extra}', '"x"'));
+    raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then raise notice 'ok, campi sconosciuti nei media rifiutati'; end;
+end $$;
 -- Nessuno può sapere chi è amministratore o se un altro è verificato.
 select is_admin('00000000-0000-0000-0000-000000000004') as io_admin, is_admin('00000000-0000-0000-0000-000000000006') as altro_admin_visibile,
        can_act('00000000-0000-0000-0000-000000000006') as verifica_altrui_visibile;
@@ -715,3 +731,22 @@ exception when others then
   raise notice 'ok, mi piace a raffica fermati anche togliendoli';
 end $$;
 reset role;
+
+-- Un file condiviso da due post (dati vecchi): eliminando uno dei due non finisce fra i file da cancellare.
+reset role;
+set session_replication_role = replica;
+insert into posts (id, author_id, media) values
+  ('10000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-000000000004', test_media('00000000-0000-0000-0000-000000000004', 'condiviso.jpg')),
+  ('10000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-000000000004', test_media('00000000-0000-0000-0000-000000000004', 'condiviso.jpg'));
+set session_replication_role = origin;
+delete from posts where id = '10000000-0000-0000-0000-0000000000f2';
+do $$ begin
+  if exists (select 1 from storage_purge where path = '00000000-0000-0000-0000-000000000004/condiviso.jpg') then
+    raise exception 'file ancora in uso messo fra quelli da cancellare';
+  end if;
+  delete from posts where id = '10000000-0000-0000-0000-0000000000f1';
+  if not exists (select 1 from storage_purge where path = '00000000-0000-0000-0000-000000000004/condiviso.jpg') then
+    raise exception 'file non più usato non messo in coda';
+  end if;
+  raise notice 'ok, si cancellano solo i file che nessun post usa';
+end $$;

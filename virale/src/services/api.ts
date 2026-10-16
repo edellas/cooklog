@@ -214,7 +214,7 @@ async function putFile(path: string, uri: string, contentType: string, onFractio
     {
       httpMethod: 'POST',
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-      headers: { Authorization: `Bearer ${token}`, apikey: supabaseAnonKey, 'Content-Type': contentType, 'x-upsert': 'false', 'cache-control': '31536000' },
+      headers: { Authorization: `Bearer ${token}`, apikey: supabaseAnonKey, 'Content-Type': contentType, 'x-upsert': 'false', 'cache-control': 'max-age=3600' },
     },
     (p) => onFraction?.(p.totalBytesExpectedToSend > 0 ? p.totalBytesSent / p.totalBytesExpectedToSend : 0),
   );
