@@ -1,6 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, FlatList, StyleSheet, View, type LayoutChangeEvent, type ViewToken } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, RefreshControl, StyleSheet, View, type LayoutChangeEvent, type ViewToken } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -13,21 +13,33 @@ import { clock } from '../../src/design/format';
 import { duration, ease } from '../../src/design/motion';
 import { color, font, radius, space } from '../../src/design/tokens';
 import { msUntilArenaClose } from '../../src/engine/engine';
-import { getFollowing, getForYou, recordView } from '../../src/services/api';
+import { getExplore, getFollowing, getForYou, recordView } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
 import type { FeedCard } from '../../src/types';
 
-type Mode = 'perte' | 'seguiti';
+type Mode = 'gara' | 'esplora' | 'seguiti';
+const MODES: { id: Mode; label: string }[] = [
+  { id: 'gara', label: 'In gara' },
+  { id: 'esplora', label: 'Esplora' },
+  { id: 'seguiti', label: 'Seguiti' },
+];
 
 /**
- * I Provini: il feed verticale. "Per te" mostra i post in gara oggi, scelti dal server alla cieca:
- * come guardi è il tuo voto. "Seguiti" mostra chi segui, in ordine di tempo.
+ * Il feed verticale, in tre sezioni.
+ * - "In gara": i post candidati oggi. Il server li pesca a caso, più spesso quelli vicini ai tuoi gusti:
+ *   come guardi è il tuo voto.
+ * - "Esplora": tutti gli altri post (non in gara), ordinati per i tuoi gusti. Non finisce mai.
+ * - "Seguiti": chi segui, dal più recente.
+ * Tirando giù dall'alto si ricarica; arrivati in fondo si carica la pagina dopo.
  */
 export default function ProviniTab() {
   const insets = useSafeAreaInsets();
   const { me, version } = useSession();
-  const [mode, setMode] = useState<Mode>('perte');
+  const [mode, setMode] = useState<Mode>('gara');
+  const [refreshing, setRefreshing] = useState(false);
+  /** Seguiti finisce: quando una pagina torna vuota non si chiede altro fino al prossimo aggiornamento. */
+  const exhausted = useRef(false);
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,35 +66,41 @@ export default function ProviniTab() {
   const flush = useCallback(() => {
     const cur = current.current;
     current.current = null;
-    // Un post rimasto sullo schermo almeno un secondo conta come visualizzazione (anche fuori gara).
-    if (cur && Date.now() - cur.since >= 1000) queueView(cur.card.id);
-    if (!cur?.card.entryId) return;
-    const s = signals.current[cur.card.id] ?? {};
+    if (!cur) return;
+    const dwellMs = Date.now() - cur.since;
     const v = video.current[cur.card.id];
+    // Tutto quello che passa sullo schermo insegna i gusti (anche scorrere via subito); da 1 secondo è
+    // anche una visualizzazione. Sotto un quarto di secondo è solo lo scorrimento veloce: non conta.
+    if (dwellMs >= 250) queueView(cur.card.id, { dwellMs, completed: v?.completed, rewatched: v?.rewatched });
+    if (!cur.card.entryId) return;
+    const s = signals.current[cur.card.id] ?? {};
     delete signals.current[cur.card.id];
     void recordView(cur.card.entryId, { dwellMs: Date.now() - cur.since, completed: v?.completed, rewatched: v?.rewatched, ...s }).catch(() => undefined);
   }, []);
 
   const load = useCallback(async (reset: boolean) => {
-    if (!reset && loadingMore.current) return;
+    if (!reset && (loadingMore.current || exhausted.current)) return;
     const id = ++request.current;
     loadingMore.current = !reset;
+    if (reset) exhausted.current = false;
     try {
-      if (mode === 'seguiti') {
-        const next = await getFollowing();
-        if (id === request.current) setCards(next);
-      } else {
-        const exclude = reset ? [] : cardsRef.current.map((x) => x.id);
-        const next = await getForYou(6, exclude);
-        if (id === request.current) setCards((prev) => (reset ? next : [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]));
+      const shown = reset ? [] : cardsRef.current;
+      let next: FeedCard[];
+      if (mode === 'seguiti') next = await getFollowing(shown.at(-1)?.createdAt);
+      else if (mode === 'esplora') next = await getExplore(8, shown.map((x) => x.id));
+      else next = await getForYou(6, shown.map((x) => x.id));
+      if (id === request.current) {
+        if (mode === 'seguiti' && !next.length) exhausted.current = true;
+        setCards((prev) => (reset ? next : [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]));
+        setError(null);
       }
-      if (id === request.current) setError(null);
     } catch (e) {
       if (id === request.current && reset) setError((e as Error).message);
     } finally {
       if (id === request.current) {
         loadingMore.current = false;
         setLoading(false);
+        setRefreshing(false);
       }
     }
   }, [mode]);
@@ -188,7 +206,7 @@ export default function ProviniTab() {
             setMode(m);
           }}
         />
-        <ArenaClock />
+        {mode === 'gara' ? <ArenaClock /> : null}
       </View>
 
       <View style={styles.list} onLayout={onLayout}>
@@ -219,11 +237,26 @@ export default function ProviniTab() {
         ) : !cards.length ? (
           <View style={styles.center}>
             <Txt variant="title" style={{ textAlign: 'center' }}>
-              {mode === 'seguiti' ? 'Non segui ancora nessuno.' : 'Hai visto tutti i provini di adesso.'}
+              {mode === 'seguiti' ? 'Non segui ancora nessuno.' : mode === 'esplora' ? 'Ancora nessun post da scoprire.' : 'Hai visto tutti i provini di adesso.'}
             </Txt>
             <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-              {mode === 'seguiti' ? 'Tocca “Segui” sotto un post che ti piace: i suoi nuovi post arriveranno qui.' : 'Ne arrivano di nuovi per tutto il giorno.'}
+              {mode === 'seguiti'
+                ? 'Tocca “Segui” sotto un post che ti piace: i suoi nuovi post arriveranno qui.'
+                : mode === 'esplora'
+                  ? 'Appena qualcuno pubblica, lo trovi qui.'
+                  : 'Ne arrivano di nuovi per tutto il giorno.'}
             </Txt>
+            <Press
+              style={styles.retry}
+              onPress={() => {
+                setLoading(true);
+                void load(true);
+              }}
+              accessibilityRole="button">
+              <Txt variant="label" tone={color.canvas}>
+                Aggiorna
+              </Txt>
+            </Press>
           </View>
         ) : height > 0 ? (
           <FlatList
@@ -237,9 +270,20 @@ export default function ProviniTab() {
             viewabilityConfig={{ itemVisiblePercentThreshold: 70 }}
             onViewableItemsChanged={onViewable}
             onEndReachedThreshold={1.5}
-            onEndReached={() => {
-              if (mode === 'perte') void load(false);
-            }}
+            onEndReached={() => void load(false)}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={() => {
+                  setRefreshing(true);
+                  flush();
+                  void load(true);
+                }}
+                tintColor={color.giallo}
+                colors={[color.giallo]}
+                progressBackgroundColor={color.raised}
+              />
+            }
             initialNumToRender={1}
             maxToRenderPerBatch={2}
             windowSize={3}
@@ -274,16 +318,16 @@ function Segmented({ value, onChange }: { value: Mode; onChange: (m: Mode) => vo
   const x = useSharedValue(0);
   useEffect(() => {
     // Interruttore: cambio di stato breve, 180 ms ease-out.
-    x.set(withTiming(value === 'perte' ? 0 : w, { duration: duration.toggle, easing: ease.out }));
+    x.set(withTiming(MODES.findIndex((m) => m.id === value) * w, { duration: duration.toggle, easing: ease.out }));
   }, [value, w, x]);
   const pill = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
   return (
-    <View style={styles.seg} onLayout={(e) => setW((e.nativeEvent.layout.width - 8) / 2)} accessibilityRole="tablist">
+    <View style={styles.seg} onLayout={(e) => setW((e.nativeEvent.layout.width - 8) / MODES.length)} accessibilityRole="tablist">
       {w > 0 ? <Animated.View style={[styles.segPill, { width: w }, pill]} /> : null}
-      {(['perte', 'seguiti'] as Mode[]).map((m) => (
-        <Press key={m} style={styles.segItem} scaleTo={1} onPress={() => onChange(m)} accessibilityRole="tab" accessibilityState={{ selected: value === m }}>
-          <Txt variant="label" tone={value === m ? color.canvas : color.paperDim}>
-            {m === 'perte' ? 'Per te' : 'Seguiti'}
+      {MODES.map((m) => (
+        <Press key={m.id} style={styles.segItem} scaleTo={1} onPress={() => onChange(m.id)} accessibilityRole="tab" accessibilityState={{ selected: value === m.id }}>
+          <Txt variant="label" tone={value === m.id ? color.canvas : color.paperDim} style={{ fontSize: 14 }} numberOfLines={1}>
+            {m.label}
           </Txt>
         </Press>
       ))}
@@ -294,7 +338,7 @@ function Segmented({ value, onChange }: { value: Mode; onChange: (m: Mode) => vo
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.canvas },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space[4], paddingVertical: space[2], gap: space[3] },
-  seg: { flexDirection: 'row', backgroundColor: color.raised, borderRadius: radius.pill, padding: 4, width: 210 },
+  seg: { flex: 1, maxWidth: 300, flexDirection: 'row', backgroundColor: color.raised, borderRadius: radius.pill, padding: 4 },
   segPill: { position: 'absolute', top: 4, left: 4, bottom: 4, backgroundColor: color.paper, borderRadius: radius.pill },
   segItem: { flex: 1, alignItems: 'center', paddingVertical: 8 },
   clock: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: color.raised, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 8 },

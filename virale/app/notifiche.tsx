@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../src/components/Icon';
@@ -61,10 +61,35 @@ export default function NotificationsScreen() {
   const unread = status?.unread ?? 0;
   const [items, setItems] = useState<AppNotification[] | null>(null);
   const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [tick, setTick] = useState(0);
+  const loadingMore = useRef(false);
+  const ended = useRef(false);
+
+  // Più vecchie, a pagine, arrivati in fondo.
+  const loadMore = () => {
+    const last = items?.at(-1)?.createdAt;
+    if (!last || loadingMore.current || ended.current) return;
+    loadingMore.current = true;
+    getNotifications(last)
+      .then((page) => {
+        if (!page.length) ended.current = true;
+        setItems((list) => {
+          const have = new Set((list ?? []).map((n) => n.id));
+          return [...(list ?? []), ...page.filter((n) => !have.has(n.id))];
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        loadingMore.current = false;
+      });
+  };
 
   useFocusEffect(
     useCallback(() => {
+      void tick;
       let alive = true;
+      ended.current = false;
       getNotifications()
         .then(async (list) => {
           if (!alive) return;
@@ -77,11 +102,12 @@ export default function NotificationsScreen() {
             void refreshStatus();
           }
         })
-        .catch(() => alive && setError(true));
+        .catch(() => alive && setError(true))
+        .finally(() => alive && setRefreshing(false));
       return () => {
         alive = false;
       };
-    }, [refreshStatus, unread]),
+    }, [refreshStatus, unread, tick]),
   );
 
   const open = (n: AppNotification) => {
@@ -111,6 +137,20 @@ export default function NotificationsScreen() {
           data={items}
           keyExtractor={(n) => n.id}
           contentContainerStyle={{ padding: space[4], paddingBottom: insets.bottom + space[8], gap: space[2] }}
+          onEndReachedThreshold={0.6}
+          onEndReached={loadMore}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                setTick((n) => n + 1);
+              }}
+              tintColor={color.giallo}
+              colors={[color.giallo]}
+              progressBackgroundColor={color.raised}
+            />
+          }
           ListEmptyComponent={
             <Txt variant="body" tone={color.paperDim} style={styles.empty}>
               Ancora niente. Qui trovi chi ti segue, chi cerchia e commenta i tuoi post, e come va il tuo post in gara.

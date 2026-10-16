@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../../src/components/Icon';
@@ -27,17 +27,41 @@ export default function FollowsScreen() {
   const [rows, setRows] = useState<FollowRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [refreshing, setRefreshing] = useState(false);
+  const [tick, setTick] = useState(0);
+  const loadingMore = useRef(false);
+  const ended = useRef(false);
   useEffect(() => {
+    void tick;
     let alive = true;
-    setRows(null);
+    ended.current = false;
     setError(null);
     listFollows(username, kind)
       .then((r) => alive && setRows(r))
-      .catch((e: Error) => alive && setError(e.message));
+      .catch((e: Error) => alive && setError(e.message))
+      .finally(() => alive && setRefreshing(false));
     return () => {
       alive = false;
     };
-  }, [username, kind]);
+  }, [username, kind, tick]);
+
+  const loadMore = () => {
+    const last = rows?.at(-1)?.cursor;
+    if (!last || loadingMore.current || ended.current) return;
+    loadingMore.current = true;
+    listFollows(username, kind, last)
+      .then((page) => {
+        if (!page.length) ended.current = true;
+        setRows((list) => {
+          const have = new Set((list ?? []).map((r) => r.id));
+          return [...(list ?? []), ...page.filter((r) => !have.has(r.id))];
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        loadingMore.current = false;
+      });
+  };
 
   const follow = (row: FollowRow) => {
     const on = !row.followedByMe;
@@ -62,7 +86,11 @@ export default function FollowsScreen() {
       </View>
       <View style={styles.tabs} accessibilityRole="tablist">
         {(['followers', 'following'] as Kind[]).map((k) => (
-          <Press key={k} style={[styles.tab, kind === k && styles.tabOn]} scaleTo={1} onPress={() => setKind(k)} accessibilityRole="tab" accessibilityState={{ selected: kind === k }}>
+          <Press key={k} style={[styles.tab, kind === k && styles.tabOn]} scaleTo={1} onPress={() => {
+              if (k === kind) return;
+              setRows(null);
+              setKind(k);
+            }} accessibilityRole="tab" accessibilityState={{ selected: kind === k }}>
             <Txt variant="label" tone={kind === k ? color.paper : color.paperFaint}>
               {k === 'followers' ? 'Follower' : 'Seguiti'}
             </Txt>
@@ -80,6 +108,20 @@ export default function FollowsScreen() {
           data={rows}
           keyExtractor={(r) => r.id}
           contentContainerStyle={{ padding: space[4], paddingBottom: insets.bottom + space[8], gap: space[2] }}
+          onEndReachedThreshold={0.6}
+          onEndReached={loadMore}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                setTick((n) => n + 1);
+              }}
+              tintColor={color.giallo}
+              colors={[color.giallo]}
+              progressBackgroundColor={color.raised}
+            />
+          }
           ListEmptyComponent={
             <Txt variant="body" tone={color.paperDim} style={styles.empty}>
               {kind === 'followers' ? 'Ancora nessun follower.' : 'Non segue ancora nessuno.'}

@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Press } from '../../src/components/Press';
@@ -19,17 +19,21 @@ export default function ArchiveTab() {
   const { version } = useSession();
   const [covers, setCovers] = useState<Cover[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [tick, setTick] = useState(0);
 
   useFocusEffect(
     useCallback(() => {
       void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
+      void tick;
       getArchive()
         .then((all) => {
           setCovers(all);
           setFailed(false);
         })
-        .catch(() => setFailed(true));
-    }, [version]),
+        .catch(() => setFailed(true))
+        .finally(() => setRefreshing(false));
+    }, [version, tick]),
   );
 
   return (
@@ -45,6 +49,18 @@ export default function ArchiveTab() {
           data={covers}
           keyExtractor={(c) => `${c.featuredOn}-${c.post.id}`}
           numColumns={2}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                setTick((n) => n + 1);
+              }}
+              tintColor={color.giallo}
+              colors={[color.giallo]}
+              progressBackgroundColor={color.raised}
+            />
+          }
           columnWrapperStyle={{ gap: space[3] }}
           contentContainerStyle={{ paddingHorizontal: space[4], paddingBottom: space[10], gap: space[5] }}
           ListHeaderComponent={

@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View, type NativeScrollEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../components/Icon';
@@ -11,7 +11,7 @@ import { TierLadder } from '../components/TierLadder';
 import { Txt } from '../components/Txt';
 import { formatCount } from '../design/format';
 import { color, font, radius, space } from '../design/tokens';
-import { blockUser, getProfile, isDemo, resetDemo, toggleFollow } from '../services/api';
+import { blockUser, getProfile, getProfilePosts, isDemo, resetDemo, toggleFollow } from '../services/api';
 import { useToast } from '../components/Toast';
 import { emitFollowChange } from '../state/postEvents';
 import { useSession } from '../state/session';
@@ -44,17 +44,54 @@ export function ProfileView({ username, showBack }: { username: string; showBack
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
-      void getProfile(username)
+  const [refreshing, setRefreshing] = useState(false);
+  const reload = useCallback(
+    () =>
+      getProfile(username)
         .then((d) => {
           setData(d);
           setError(null);
+          more.current = { post: false, salvati: false };
         })
-        .catch((e: Error) => setError(e.message));
-    }, [username, version]),
+        .catch((e: Error) => setError(e.message)),
+    [username],
   );
+  useFocusEffect(
+    useCallback(() => {
+      void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
+      void reload();
+    }, [reload, version]),
+  );
+
+  // Griglia a pagine: arrivati quasi in fondo si caricano altri 30 post (o salvati).
+  const loadingMore = useRef(false);
+  /** Per ogni scheda: finita (l'ultima pagina è arrivata vuota). */
+  const more = useRef({ post: false, salvati: false });
+  const loadMore = () => {
+    if (!data || loadingMore.current || more.current[tab]) return;
+    const list = tab === 'post' ? data.posts : data.saved;
+    const total = tab === 'post' ? data.profile.postCount : data.profile.savedCount;
+    const last = list.at(-1)?.cursor;
+    if (!last || list.length >= total) return;
+    loadingMore.current = true;
+    getProfilePosts(username, tab === 'post' ? 'posts' : 'saved', last)
+      .then((page) => {
+        if (!page.length) more.current[tab] = true;
+        setData((d) => {
+          if (!d) return d;
+          const key = tab === 'post' ? 'posts' : 'saved';
+          const have = new Set(d[key].map((x) => x.id));
+          return { ...d, [key]: [...d[key], ...page.filter((x) => !have.has(x.id))] };
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        loadingMore.current = false;
+      });
+  };
+  const onScroll = ({ nativeEvent: e }: { nativeEvent: NativeScrollEvent }) => {
+    if (e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 600) loadMore();
+  };
 
   if (error || !data) {
     return (
@@ -99,7 +136,24 @@ export function ProfileView({ username, showBack }: { username: string; showBack
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={{ paddingTop: insets.top + space[3], paddingBottom: space[12] }}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={{ paddingTop: insets.top + space[3], paddingBottom: space[12] }}
+      onScroll={onScroll}
+      scrollEventThrottle={200}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            void reload().finally(() => setRefreshing(false));
+          }}
+          tintColor={color.giallo}
+          colors={[color.giallo]}
+          progressBackgroundColor={color.raised}
+          progressViewOffset={insets.top}
+        />
+      }>
       <View style={styles.pad}>
         <View style={styles.topRow}>
           {showBack ? (
@@ -245,8 +299,8 @@ export function ProfileView({ username, showBack }: { username: string; showBack
       </View>
 
       <View style={styles.tabs}>
-        <TabButton label={`Post ${posts.length}`} on={tab === 'post'} onPress={() => setTab('post')} />
-        {profile.isMe ? <TabButton label={`Salvati ${saved.length}`} on={tab === 'salvati'} onPress={() => setTab('salvati')} /> : null}
+        <TabButton label={`Post ${profile.postCount}`} on={tab === 'post'} onPress={() => setTab('post')} />
+        {profile.isMe ? <TabButton label={`Salvati ${profile.savedCount}`} on={tab === 'salvati'} onPress={() => setTab('salvati')} /> : null}
       </View>
 
       {grid.length ? (

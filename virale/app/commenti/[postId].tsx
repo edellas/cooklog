@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  RefreshControl,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -51,11 +52,18 @@ export default function CommentsSheet() {
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
+  const [refreshing, setRefreshing] = useState(false);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
+    void tick;
     getComments(postId)
-      .then(setItems)
-      .catch(() => setLoadError(true));
-  }, [postId]);
+      .then((list) => {
+        setItems(list);
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true))
+      .finally(() => setRefreshing(false));
+  }, [postId, tick]);
 
   const send = async () => {
     if (sending) return;
@@ -143,6 +151,18 @@ export default function CommentsSheet() {
         <FlatList
           data={items}
           keyExtractor={(c) => c.id}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                setTick((n) => n + 1);
+              }}
+              tintColor={color.giallo}
+              colors={[color.giallo]}
+              progressBackgroundColor={color.raised}
+            />
+          }
           contentContainerStyle={{
             paddingHorizontal: space[5],
             paddingBottom: space[4],

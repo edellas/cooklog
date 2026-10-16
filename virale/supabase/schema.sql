@@ -180,6 +180,9 @@ create table if not exists public.identity_checks (
   reject_reason text check (length(reject_reason) <= 200)
 );
 create index if not exists idx_identity_pending on public.identity_checks (submitted_at) where status = 'pending';
+-- Verifica automatica (sezione 16): con quale metodo è arrivata la decisione e la sessione aperta presso il fornitore.
+alter table public.identity_checks add column if not exists method text not null default 'manual' check (method in ('manual', 'didit'));
+alter table public.identity_checks add column if not exists provider_session text;
 alter table public.identity_checks enable row level security;
 drop policy if exists "identity own" on public.identity_checks;
 create policy "identity own" on public.identity_checks for select to authenticated using (user_id = auth.uid());
@@ -448,6 +451,8 @@ $$;
 -- Colonne aggiunte dopo la prima versione: prima delle funzioni che le usano (un database vecchio deve aggiornarsi).
 alter table public.arena_config add column if not exists reveal_minutes int not null default 0 check (reveal_minutes between 0 and 1439);
 alter table public.arena_config add column if not exists id_grace_days int not null default 7 check (id_grace_days between 1 and 60);
+-- Come si verifica l'età: 'manual' (foto controllate dall'amministratore) o 'didit' (verifica automatica, sezione 16).
+alter table public.arena_config add column if not exists id_provider text not null default 'manual' check (id_provider in ('manual', 'didit'));
 
 -- Il giorno della copertina visibile adesso: la gara chiude a mezzanotte, ma la nuova copertina compare
 -- all'orario scelto dall'amministratore. Prima di quell'ora resta quella del giorno prima.
@@ -1042,16 +1047,18 @@ begin
                     where f.follower_id = v_pr.id and a.banned_at is null and not public.is_blocked_pair(v_uid, a.id)),
       'covers', (select count(*) from daily_viral where author_id = v_pr.id and featured_on <= public.cover_day()),
       'views', (select coalesce(sum(view_count), 0) from posts where author_id = v_pr.id and (v_pr.id = v_uid or hidden_at is null)),
+      'post_count', (select count(*) from posts where author_id = v_pr.id and (v_pr.id = v_uid or public.can_see(id, v_uid))),
+      'saved_count', case when v_pr.id = v_uid then (select count(*) from post_saves where user_id = v_uid and public.can_see(post_id, v_uid)) else 0 end,
       'followed', exists (select 1 from follows where follower_id = v_uid and followee_id = v_pr.id),
       'is_me', v_pr.id = v_uid,
       'is_moderator', v_pr.id = v_uid and (v_pr.is_moderator or v_pr.is_admin),
       'is_admin', v_pr.id = v_uid and v_pr.is_admin
     ),
-    'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) order by p.created_at desc)
+    'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) || jsonb_build_object('cursor', p.created_at) order by p.created_at desc)
                        from (select id, created_at from posts where author_id = v_pr.id
                              and (v_pr.id = v_uid or public.can_see(id, v_uid)) order by created_at desc limit 30) p), '[]'),
     'saved', case when v_pr.id = v_uid then
-               coalesce((select jsonb_agg(public.post_json(s.post_id, v_uid) order by s.created_at desc)
+               coalesce((select jsonb_agg(public.post_json(s.post_id, v_uid) || jsonb_build_object('cursor', s.created_at) order by s.created_at desc)
                          from (select post_id, created_at from post_saves where user_id = v_uid and public.can_see(post_id, v_uid)
                                order by created_at desc limit 30) s), '[]')
              else '[]'::jsonb end,
@@ -1395,7 +1402,8 @@ $$;
 create or replace function public.get_settings()
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('reveal_minutes', c.reveal_minutes, 'id_grace_days', c.id_grace_days,
-                            'submission_cutoff_hour', c.submission_cutoff_hour, 'time_zone', c.time_zone)
+                            'submission_cutoff_hour', c.submission_cutoff_hour, 'time_zone', c.time_zone,
+                            'id_provider', c.id_provider)
   from arena_config c limit 1;
 $$;
 
@@ -1464,7 +1472,7 @@ begin
   return query
   select jsonb_build_object('user_id', i.user_id, 'username', p.username, 'first_name', v.first_name, 'last_name', v.last_name,
                             'birth_date', v.birth_date, 'document_path', i.document_path, 'selfie_path', i.selfie_path,
-                            'submitted_at', i.submitted_at, 'deadline', i.deadline)
+                            'submitted_at', i.submitted_at, 'deadline', i.deadline, 'method', i.method)
   from identity_checks i join profiles p on p.id = i.user_id left join profile_private v on v.id = i.user_id
   where i.status = 'pending'
   order by i.submitted_at;
@@ -1492,6 +1500,19 @@ begin
   if p_submitted_at is not null and v_row.submitted_at is distinct from p_submitted_at then
     raise exception 'Il documento è cambiato: ricarica la coda.';
   end if;
+  return public.identity_apply(p_user_id, p_decision, p_reason, v_admin);
+end;
+$$;
+
+-- Applica una decisione sulla verifica (dall'amministratore o dalla verifica automatica): cancella le foto,
+-- aggiorna lo stato, chiude l'account se ha meno dell'età minima, avvisa l'utente.
+create or replace function public.identity_apply(p_user_id uuid, p_decision text, p_reason text, p_reviewer uuid)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_row identity_checks;
+begin
+  select * into v_row from identity_checks where user_id = p_user_id for update;
+  if not found then raise exception 'Utente senza verifica.'; end if;
   -- Le foto vanno cancellate in ogni caso: se l'app dell'amministratore non ci riesce subito, restano in coda.
   insert into storage_purge (bucket, path)
   select 'documenti', x from unnest(array[v_row.document_path, v_row.selfie_path]) x where x is not null
@@ -1502,7 +1523,7 @@ begin
          reject_reason = case when p_decision = 'approve' then null
                               when p_decision = 'underage' then 'Hai meno di ' || public.min_age_years() || ' anni.'
                               else left(coalesce(nullif(trim(p_reason), ''), 'Documento non leggibile o non corrispondente.'), 200) end,
-         reviewed_at = now(), reviewed_by = v_admin, document_path = null, selfie_path = null
+         reviewed_at = now(), reviewed_by = p_reviewer, document_path = null, selfie_path = null
    where user_id = p_user_id;
   if p_decision = 'underage' then
     -- Minore dell'età minima: account chiuso, contenuti e dati personali eliminati; resta solo il nome utente
@@ -2039,6 +2060,81 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 16) Verifica automatica dell'età con Didit (didit.me)
+-- ---------------------------------------------------------------------------
+-- L'app chiede una sessione alla funzione "verifica-eta" (supabase/functions/verifica-eta), che la apre su Didit.
+-- L'utente fotografa il documento e fa un breve video-selfie nel browser; Didit confronta volto e documento e
+-- legge la data di nascita. Il risultato arriva alla funzione (webhook firmato), che lo rilegge da Didit e lo
+-- passa qui. Queste due funzioni le chiama solo la funzione, con la chiave di servizio: mai l'app.
+
+-- L'amministratore sceglie il metodo dall'app.
+create or replace function public.admin_set_id_provider(p_provider text)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
+  if p_provider not in ('manual', 'didit') then raise exception 'Metodo non valido.'; end if;
+  update arena_config set id_provider = p_provider where id;
+  return public.get_settings();
+end;
+$$;
+
+create or replace function public.identity_provider_start(p_user_id uuid, p_session text)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_session is null or length(p_session) > 100 then raise exception 'Sessione non valida.'; end if;
+  update identity_checks set provider_session = p_session
+   where user_id = p_user_id and status <> 'approved';
+end;
+$$;
+
+-- Esito della verifica automatica. Restituisce cosa è stato deciso ('approved', 'underage', 'rejected',
+-- 'review') oppure 'ignored' se l'esito non riguarda la sessione aperta (vecchio, ripetuto, già verificato).
+create or replace function public.identity_provider_result(p_user_id uuid, p_session text, p_status text,
+                                                           p_birth_date date, p_first_name text default null, p_last_name text default null)
+returns text language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_row identity_checks;
+  v_age int;
+begin
+  select * into v_row from identity_checks where user_id = p_user_id for update;
+  if not found or v_row.provider_session is distinct from p_session or v_row.status = 'approved' then return 'ignored'; end if;
+  if exists (select 1 from profiles where id = p_user_id and banned_at is not null) then return 'ignored'; end if;
+
+  if p_status = 'In Review' then
+    -- Didit ha dubbi: decide una persona dalla console di Didit, poi arriva un nuovo esito.
+    update identity_checks set status = 'pending', method = 'didit', submitted_at = now(), reject_reason = null where user_id = p_user_id;
+    return 'review';
+  end if;
+
+  if p_status = 'Declined' then
+    update identity_checks set method = 'didit' where user_id = p_user_id;
+    perform public.identity_apply(p_user_id, 'reject',
+      'La verifica automatica non è riuscita: riprova con il documento originale, ben illuminato e senza riflessi', null);
+    return 'rejected';
+  end if;
+
+  if p_status <> 'Approved' then return 'ignored'; end if;
+
+  update identity_checks set method = 'didit' where user_id = p_user_id;
+  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > current_date then
+    perform public.identity_apply(p_user_id, 'reject', 'Non riesco a leggere la data di nascita: riprova con un altro documento', null);
+    return 'rejected';
+  end if;
+  v_age := extract(year from age(public.arena_today(), p_birth_date))::int;
+  if v_age < public.min_age_years() then
+    perform public.identity_apply(p_user_id, 'underage', null, null);
+    return 'underage';
+  end if;
+  -- Fa fede il documento: la data di nascita privata diventa quella letta da Didit.
+  insert into profile_private (id, first_name, last_name, birth_date)
+  values (p_user_id, left(coalesce(nullif(trim(p_first_name), ''), '-'), 60), left(coalesce(nullif(trim(p_last_name), ''), '-'), 60), p_birth_date)
+  on conflict (id) do update set birth_date = excluded.birth_date;
+  perform public.identity_apply(p_user_id, 'approve', null, null);
+  return 'approved';
+end;
+$$;
+
 -- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
 revoke execute on all functions in schema public from public, anon, authenticated;
 -- Usate dalle regole RLS e dai controlli delle tabelle: devono restare eseguibili da chi è autenticato.
@@ -2090,6 +2186,13 @@ grant execute on function public.register_views(uuid[]) to authenticated;
 grant execute on function public.list_follows(text, text, int, timestamptz) to authenticated;
 grant execute on function public.feed_explore(int, uuid[]) to authenticated;
 grant execute on function public.track_views(jsonb) to authenticated;
+grant execute on function public.admin_set_id_provider(text) to authenticated;
+-- Solo per la funzione verifica-eta (chiave di servizio).
+revoke all on function public.identity_provider_start(uuid, text) from public, anon, authenticated;
+revoke all on function public.identity_provider_result(uuid, text, text, date, text, text) from public, anon, authenticated;
+revoke all on function public.identity_apply(uuid, text, text, uuid) from public, anon, authenticated;
+grant execute on function public.identity_provider_start(uuid, text) to service_role;
+grant execute on function public.identity_provider_result(uuid, text, text, date, text, text) to service_role;
 grant execute on function public.profile_posts(text, text, timestamptz, int) to authenticated;
 
 -- ---------------------------------------------------------------------------

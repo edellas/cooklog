@@ -34,6 +34,8 @@ export type Post = {
   followingAuthor: boolean;
   /** Se il post è in gara oggi: il suo livello. */
   contest?: { entryId: string; tier: number; status: EntryStatus };
+  /** Segnaposto per caricare la pagina successiva di un elenco (data del post o del salvataggio). */
+  cursor?: string;
 };
 
 export type FeedCard = Post & { entryId?: string };
@@ -53,6 +55,9 @@ export type Profile = Author & {
   covers: number;
   /** Visualizzazioni totali dei suoi post. */
   views: number;
+  /** Quanti post e salvati ha in tutto (la griglia li carica a pagine). */
+  postCount: number;
+  savedCount: number;
   followedByMe: boolean;
   isMe: boolean;
   isModerator: boolean;
@@ -95,7 +100,8 @@ export type RegisterInput = {
 
 export type IdentityStatus = 'missing' | 'pending' | 'approved' | 'rejected';
 
-export type Settings = { revealMinutes: number; idGraceDays: number; cutoffHour: number };
+/** idProvider: come si verifica l'età, 'manual' (foto all'amministratore) o 'didit' (verifica automatica). */
+export type Settings = { revealMinutes: number; idGraceDays: number; cutoffHour: number; idProvider: 'manual' | 'didit' };
 
 /** Lo stato dell'utente che serve all'app: verifica dell'età, ruoli, notifiche non lette, impostazioni. */
 export type Status = {
@@ -124,7 +130,7 @@ export type AppNotification = {
   read: boolean;
 };
 
-export type FollowRow = Author & { followedByMe: boolean; isMe: boolean };
+export type FollowRow = Author & { followedByMe: boolean; isMe: boolean; cursor?: string };
 
 export type IdentityItem = {
   userId: string;
@@ -136,4 +142,6 @@ export type IdentityItem = {
   selfieUrl: string | null;
   submittedAt: string;
   deadline: string;
+  /** 'didit': in revisione su Didit, si decide dalla sua console. */
+  method: 'manual' | 'didit';
 };

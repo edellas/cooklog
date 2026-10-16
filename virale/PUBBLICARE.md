@@ -40,17 +40,21 @@ saranno visibili nella scheda. Nel dubbio chiedi al commercialista.
 
 ## 2. Inserisci i tuoi dati nei documenti legali
 
-Apri `src/legal/docs.ts` e compila `OWNER`:
+Il repository è pubblico: **i tuoi dati non vanno scritti nel codice**. Si mettono nelle variabili
+d'ambiente di Expo, che finiscono solo nell'app compilata (dove la legge vuole che si vedano).
 
-```ts
-export const OWNER = {
-  name: 'Mario Rossi',                    // o la ragione sociale
-  address: 'Via Roma 1, 20100 Milano (MI)',
-  taxId: 'RSSMRA80A01F205X',             // codice fiscale o partita IVA
-  email: 'supporto@virale.app',           // una casella che leggi OGNI giorno
-  website: 'https://edellas.github.io/cooklog', // lo scopri al passo 4: aggiornalo dopo
-} as const;
-```
+Su **expo.dev → il progetto → Environment variables → Add variable**, per gli ambienti
+**preview** e **production**, visibilità **Plain text**:
+
+| Nome | Esempio |
+|---|---|
+| `EXPO_PUBLIC_OWNER_NAME` | Mario Rossi (o la ragione sociale) |
+| `EXPO_PUBLIC_OWNER_ADDRESS` | Via Roma 1, 20100 Milano (MI) |
+| `EXPO_PUBLIC_OWNER_TAX_ID` | codice fiscale o partita IVA |
+| `EXPO_PUBLIC_OWNER_EMAIL` | una casella che leggi OGNI giorno |
+| `EXPO_PUBLIC_OWNER_WEBSITE` | https://tuonome.github.io/cooklog (lo scopri al passo 4) |
+
+Sul computer, per le prove, gli stessi valori vanno in `.env.local` (non finisce su git).
 
 I testi (Termini, Privacy, Linee guida, Eliminazione account) sono completi e coerenti con
 quello che l'app fa davvero, ma **falli leggere a un avvocato** prima del lancio: è un social con
@@ -69,17 +73,38 @@ contenuti degli utenti, aperto dai 14 anni.
      Supabase vuole un'email, quindi l'app ne usa una interna (`nomeutente@utenti.virale.invalid`) che non riceve posta.
    - **Allow anonymous sign-ins**: spento (non serve più).
    - In **Authentication → Policies** (o *Password*): lunghezza minima della password **8**.
-5. Dopo esserti registrato dall'app, diventa amministratore (modera, verifica i documenti, sceglie l'orario della copertina):
+5. Dopo esserti registrato dall'app, diventa amministratore (modera, verifica i documenti, sceglie l'orario
+   della copertina). Questa query rende amministratore **solo** te e toglie il ruolo a chiunque altro:
    ```sql
-   update public.profiles set is_admin = true where username = 'il_tuo_username';
+   update public.profiles
+      set is_admin = (username = 'il_tuo_username'), is_moderator = false
+    where is_admin or is_moderator or username = 'il_tuo_username';
    ```
+   L'amministratore è anche moderatore. Nessuno può darsi un ruolo dall'app: si cambia solo da qui.
 6. **Password dimenticata** di un utente (non c'è email per il recupero): dopo aver verificato che l'account è suo,
    reimpostala dal SQL Editor e comunicagliela, chiedendogli di cambiarla da Impostazioni → Cambia password:
    ```sql
    update auth.users set encrypted_password = crypt('NuovaPassword123', gen_salt('bf'))
    where email = 'nomeutente@utenti.virale.invalid';
    ```
-7. **Project Settings → API** (o *API Keys*): copia
+7. **Verifica automatica dell'età (Didit)** — facoltativa, si fa tutto dal browser del telefono:
+   1. Registrati su **business.didit.me** (gratis, niente carta: 500 verifiche al mese incluse, poi circa 0,30 $ l'una).
+   2. **Workflows** → crea un workflow con *ID Verification*, *Passive Liveness* e *Face Match*.
+      Nelle opzioni dell'ID Verification attiva la **restrizione d'età**: minimo **14** anni. Pubblicalo e copia il suo **ID**.
+   3. **Settings → API keys**: copia la **API key**.
+   4. **Settings → Data retention**: scegli il periodo più breve (l'app cancella comunque ogni sessione appena decisa).
+   5. Su Supabase: **Edge Functions → Deploy a new function → Via Editor**, nome **`verifica-eta`**.
+      Incolla tutto `supabase/functions/verifica-eta/index.ts` e pubblica.
+      Poi nelle impostazioni della funzione **spegni "Verify JWT"** (Didit non ha un account Supabase: la funzione
+      controlla l'utente da sola).
+   6. **Edge Functions → Secrets**: aggiungi `DIDIT_API_KEY` e `DIDIT_WORKFLOW_ID`.
+   7. Su Didit, **Settings → Webhooks**: indirizzo
+      `https://<il-tuo-progetto>.supabase.co/functions/v1/verifica-eta/webhook`, versione **v3**.
+      Copia il **segreto** del webhook e aggiungilo su Supabase come `DIDIT_WEBHOOK_SECRET`.
+   8. Nell'app: **Impostazioni → Copertina e documenti → Come si verifica l'età → Automatica (Didit)**.
+      Prova con il tuo account (o uno nuovo): "Verifica ora".
+   Se qualcosa non va, torna su "Foto all'amministratore": l'app continua a funzionare come prima.
+8. **Project Settings → API** (o *API Keys*): copia
    - **Project URL** (tipo `https://abcd1234.supabase.co`)
    - **anon / publishable key** (la chiave pubblica; **mai** la `service_role`).
 
@@ -103,7 +128,7 @@ GitHub Pages su un repository **privato** richiede un piano a pagamento. In alte
 `npm run export:legal`, poi trascina la cartella `legal-site/` su <https://app.netlify.com/drop>.
 
 Poi:
-- metti l'indirizzo base in `OWNER.website` (passo 2);
+- metti l'indirizzo base in `EXPO_PUBLIC_OWNER_WEBSITE` (passo 2);
 - in `store/scheda-store.md`, `store/revisione.md` e `store/privacy-store.md` sostituisci
   `<sito>`, `<nome del titolare>` e `<OWNER.email>`.
 

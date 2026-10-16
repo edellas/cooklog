@@ -442,3 +442,33 @@ do $$ begin
   if exists (select 1 from user_interests where user_id = '00000000-0000-0000-0000-0000000000b1') then raise exception 'interessi rimasti'; end if;
   raise notice 'ok, account con interessi cancellato del tutto';
 end $$;
+
+-- ---------- Verifica automatica (Didit) ----------
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000c1'), ('00000000-0000-0000-0000-0000000000c2');
+insert into profiles (id, username, display_name) values ('00000000-0000-0000-0000-0000000000c1', 'adulto', 'Adulto A.'), ('00000000-0000-0000-0000-0000000000c2', 'piccolo', 'Piccolo P.');
+insert into identity_checks (user_id, deadline) select id, now() + interval '7 days' from profiles where username in ('adulto', 'piccolo');
+insert into profile_private (id, first_name, last_name, birth_date) values ('00000000-0000-0000-0000-0000000000c1', 'Ada', 'Rossi', '1995-01-01');
+-- L'app non può chiamare le funzioni riservate alla verifica automatica.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000c1', false);
+do $$ begin perform identity_provider_result('00000000-0000-0000-0000-0000000000c1', 's1', 'Approved', '1990-01-01'); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, esito automatico non falsificabile dall''app'; end $$;
+reset role;
+set role service_role;
+select identity_provider_start('00000000-0000-0000-0000-0000000000c1', 'sess-a');
+select identity_provider_start('00000000-0000-0000-0000-0000000000c2', 'sess-b');
+do $$ begin
+  if identity_provider_result('00000000-0000-0000-0000-0000000000c1', 'vecchia', 'Approved', '1990-01-01') <> 'ignored' then raise exception 'sessione vecchia accettata'; end if;
+  if identity_provider_result('00000000-0000-0000-0000-0000000000c1', 'sess-a', 'In Review', null) <> 'review' then raise exception 'revisione'; end if;
+  if identity_provider_result('00000000-0000-0000-0000-0000000000c1', 'sess-a', 'Approved', '1990-03-04', 'ADA', 'ROSSI') <> 'approved' then raise exception 'approvazione'; end if;
+  if identity_provider_result('00000000-0000-0000-0000-0000000000c2', 'sess-b', 'Approved', (current_date - interval '12 years')::date) <> 'underage' then raise exception 'minore'; end if;
+  raise notice 'ok, esiti automatici applicati';
+end $$;
+reset role;
+do $$ begin
+  if (select status from identity_checks where user_id = '00000000-0000-0000-0000-0000000000c1') <> 'approved' then raise exception 'non approvato'; end if;
+  if (select birth_date from profile_private where id = '00000000-0000-0000-0000-0000000000c1') <> '1990-03-04' then raise exception 'data del documento non salvata'; end if;
+  if (select banned_at from profiles where username = 'piccolo') is null then raise exception 'minore non espulso'; end if;
+  if not exists (select 1 from notifications where user_id = '00000000-0000-0000-0000-0000000000c1' and kind = 'identity_ok') then raise exception 'notifica mancante'; end if;
+  raise notice 'ok, verifica automatica: adulto approvato, minore espulso, notifiche inviate';
+end $$;

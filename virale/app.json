@@ -60,7 +60,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#0C1322"
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "scheme": "virale",
     "experiments": {

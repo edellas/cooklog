@@ -19,7 +19,7 @@ export const OWNER = {
 };
 
 /** Data di entrata in vigore dei documenti (aggiornala quando li modifichi). */
-export const LEGAL_UPDATED = '15 ottobre 2026';
+export const LEGAL_UPDATED = '16 ottobre 2026';
 
 /** Età minima: in Italia 14 anni per iscriversi da soli a un servizio online (art. 2-quinquies Codice privacy). */
 export const MIN_AGE = 14;
@@ -47,7 +47,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           `Devi avere almeno ${MIN_AGE} anni. Se hai meno di 18 anni, usa Virale solo con il permesso di un genitore o di chi ne fa le veci.`,
           'Per registrarti indichi il tuo vero nome, cognome e data di nascita, un nome utente e una password. Un account è personale: non puoi crearne più di uno per partecipare alla gara né cederlo ad altri, e sei responsabile di custodire la password.',
-          'Entro il periodo indicato nell’app (di regola 7 giorni) devi confermare la tua età caricando la foto di un documento d’identità e un selfie con il documento. Finché non lo fai, scaduto il periodo, puoi guardare ma non pubblicare, commentare, mettere mi piace, seguire né votare. Se il documento dimostra un’età inferiore al minimo, l’account viene chiuso.',
+          'Entro il periodo indicato nell’app (di regola 7 giorni) devi confermare la tua età con un documento d’identità: con la verifica automatica (documento e breve selfie) oppure caricando la foto del documento e un selfie con il documento. Finché non lo fai, scaduto il periodo, puoi guardare ma non pubblicare, commentare, mettere mi piace, seguire né votare. Se il documento dimostra un’età inferiore al minimo, l’account viene chiuso.',
         ],
       },
       {
@@ -102,9 +102,10 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           'Account: nome utente, password (conservata solo in forma cifrata, non la vediamo), nome visualizzato (il tuo nome e l’iniziale del cognome), eventuale bio, un identificativo tecnico dell’account, data di accettazione dei termini.',
           'Dati privati, che non mostriamo agli altri utenti: nome, cognome e data di nascita.',
-          'Verifica dell’età: la foto del documento d’identità e un selfie con il documento, che servono solo a confermare la tua età. Le vede soltanto un amministratore e le cancelliamo appena presa la decisione; conserviamo solo l’esito, la data e chi ha deciso.',
+          'Verifica dell’età, in uno di due modi. Automatica: tramite Didit inquadri il documento d’identità e fai un breve selfie; Didit controlla che il documento sia autentico e che il volto corrisponda, e ci comunica l’esito con la data di nascita letta dal documento. Con le foto: carichi la foto del documento e un selfie con il documento, che vede soltanto un amministratore. In entrambi i casi le immagini vengono cancellate appena presa la decisione; conserviamo solo l’esito, la data di nascita, la data della verifica e chi ha deciso.',
           'Contenuti: foto e video che pubblichi (con le loro dimensioni e durata), didascalie, commenti.',
-          'Interazioni: mi piace, salvataggi, condivisioni, follow, blocchi, segnalazioni, visualizzazioni dei post, e per i post in gara il tempo di visione, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
+          'Interazioni: mi piace, salvataggi, condivisioni, commenti, follow, blocchi, segnalazioni, visualizzazioni dei post, il tempo per cui un post resta sullo schermo, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
+          'Gusti: dalle interazioni ricaviamo punteggi su autori, hashtag e tipo di contenuto (foto o video) che ti interessano di più, che perdono peso col tempo (si dimezzano ogni 14 giorni). Servono solo a ordinare i post in “In gara” ed “Esplora”: non li mostriamo a nessuno, non li usiamo per la pubblicità e non li cediamo.',
           'Non chiediamo email, numero di telefono, posizione o rubrica. Non usiamo pubblicità né tracciamento tra app di altre aziende.',
         ],
       },
@@ -113,14 +114,15 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           'Fornire il servizio, mostrare i contenuti e far funzionare la gara: esecuzione del contratto (art. 6.1.b GDPR).',
           'Sicurezza, moderazione, prevenzione di abusi e di manipolazioni della gara: legittimo interesse (art. 6.1.f) e obblighi di legge (art. 6.1.c).',
-          `Verifica dell’età: obbligo di legge sull’età minima per i servizi online (art. 2-quinquies del Codice privacy, ${MIN_AGE} anni) e legittimo interesse a proteggere i minori (art. 6.1.c e 6.1.f). Non usiamo riconoscimento facciale automatico: il confronto lo fa una persona.`,
+          `Verifica dell’età: obbligo di legge sull’età minima per i servizi online (art. 2-quinquies del Codice privacy, ${MIN_AGE} anni) e legittimo interesse a proteggere i minori (art. 6.1.c e 6.1.f). Con la verifica automatica, il confronto tra il volto del selfie e la foto del documento lo fa Didit, una sola volta e solo per questo scopo; se preferisci, puoi chiedere che lo faccia una persona caricando le foto.`,
+          'Ordinare i post secondo i tuoi gusti: legittimo interesse a mostrarti contenuti pertinenti (art. 6.1.f). La gara resta aperta a tutti: anche i post lontani dai tuoi gusti ti vengono proposti, solo meno spesso. Puoi sempre guardare “Seguiti”, in semplice ordine di tempo.',
         ],
       },
       {
         heading: 'Chi riceve i dati',
         body: [
           'Ciò che pubblichi è visibile agli altri utenti; la Copertina è visibile a chiunque apra l’app.',
-          'Fornitori che trattano i dati per nostro conto come responsabili del trattamento: Supabase (database, archiviazione dei file e autenticazione). Usiamo server situati nell’Unione Europea.',
+          'Fornitori che trattano i dati per nostro conto come responsabili del trattamento: Supabase (database, archiviazione dei file e autenticazione) e, per la verifica automatica dell’età, Didit (didit.me). Usiamo server situati nell’Unione Europea.',
           'Autorità, quando la legge lo impone.',
         ],
       },
@@ -129,7 +131,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           'Finché l’account esiste. Quando elimini un post o l’account, i dati vengono cancellati dai sistemi attivi subito e dalle copie di sicurezza entro 30 giorni.',
           'I dati tecnici delle singole visualizzazioni della gara vengono cancellati dopo 7 giorni; quelli delle visualizzazioni dei post dopo 2 giorni (resta solo il conteggio).',
-          'Le foto del documento e del selfie vengono cancellate appena l’amministratore decide, e comunque eliminando l’account.',
+          'Le foto del documento e del selfie vengono cancellate appena presa la decisione (anche da Didit, se la verifica è automatica), e comunque eliminando l’account.',
+          'I post già visti, usati per non riproporteli in Esplora, dopo 30 giorni; i punteggi dei gusti non aggiornati da 120 giorni vengono cancellati.',
           'Le segnalazioni e le decisioni di moderazione possono essere conservate fino a 12 mesi per gestire ricorsi e abusi ripetuti.',
         ],
       },

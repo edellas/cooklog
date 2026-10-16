@@ -10,7 +10,7 @@ import { haptic, Press } from '../src/components/Press';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
-import { ageOn, getIdentityQueue, MIN_AGE_YEARS, purgeStorage, reviewIdentity, saveSettings } from '../src/services/api';
+import { ageOn, getIdentityQueue, MIN_AGE_YEARS, purgeStorage, reviewIdentity, saveSettings, setIdProvider } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { IdentityItem } from '../src/types';
@@ -138,6 +138,42 @@ export default function AdminScreen() {
         </Press>
 
         <View style={{ gap: space[3] }}>
+          <Txt variant="title">Come si verifica l’età</Txt>
+          <Txt variant="small" tone={color.paperDim}>
+            Automatica: Didit legge il documento e confronta il volto con un selfie (500 verifiche gratis al mese, poi circa 0,30 $ l’una). Prima va
+            collegata la funzione “verifica-eta” su Supabase (vedi PUBBLICARE.md). Con le foto, decidi tu qui sotto.
+          </Txt>
+          <View style={styles.actions}>
+            {(
+              [
+                ['manual', 'Foto all’amministratore'],
+                ['didit', 'Automatica (Didit)'],
+              ] as const
+            ).map(([id, label]) => {
+              const on = status.settings.idProvider === id;
+              return (
+                <Press
+                  key={id}
+                  style={[styles.btn, on ? styles.ok : styles.no]}
+                  onPress={() => {
+                    if (on) return;
+                    setIdProvider(id)
+                      .then(() => refreshStatus())
+                      .then(() => toast(id === 'didit' ? 'Verifica automatica attiva.' : 'Verifica con le foto attiva.'))
+                      .catch((e: Error) => toast(e.message, 'error'));
+                  }}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: on }}>
+                  <Txt variant="meta" tone={on ? color.canvas : color.paper} style={styles.bold}>
+                    {label}
+                  </Txt>
+                </Press>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={{ gap: space[3] }}>
           <Txt variant="title">Documenti da verificare</Txt>
           <Txt variant="small" tone={color.paperDim}>
             Controlla che nome, cognome e data di nascita coincidano con il documento e che la persona del selfie sia la stessa. Dopo la decisione le foto
@@ -216,6 +252,11 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
       <Txt variant="label">
         @{item.username} · {item.firstName ?? '—'} {item.lastName ?? ''}
       </Txt>
+      {item.method === 'didit' ? (
+        <Txt variant="small" tone={color.giallo}>
+          Verifica automatica in revisione: guarda foto e video nella console di Didit (business.didit.me) e decidi lì. L’esito arriva qui da solo.
+        </Txt>
+      ) : null}
       <Txt variant="small" tone={item.birthDate ? color.paperDim : color.matita}>
         {item.birthDate ? `Nato/a il ${dateIt(item.birthDate)} (${age} anni dichiarati)` : 'Dati personali mancanti: rifiuta e chiedi di completarli.'}
       </Txt>

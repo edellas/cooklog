@@ -1,28 +1,39 @@
 import { AppState } from 'react-native';
 
-import { registerViews } from '../services/api';
+import { trackViews, type ViewItem } from '../services/api';
 
 /**
- * Visualizzazioni a gruppi: invece di una chiamata per ogni post visto, l'app ne manda al massimo una
- * ogni pochi secondi con tutti i post rimasti sullo schermo almeno un secondo.
+ * Cosa è passato sullo schermo, raccolto e mandato a gruppi ogni pochi secondi (una chiamata invece di una
+ * per post). Per lo stesso post si tiene il tempo più lungo e i segnali più forti (finito, rivisto).
  */
-const pending = new Set<string>();
+const pending = new Map<string, ViewItem>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 
-export function queueView(postId: string) {
-  pending.add(postId);
+export function queueView(postId: string, info: { dwellMs?: number; completed?: boolean; rewatched?: boolean } = {}) {
+  const prev = pending.get(postId);
+  pending.set(postId, {
+    postId,
+    // Senza tempo (copertina, post aperto da un link) vale come una visione piena di un secondo.
+    dwellMs: Math.max(prev?.dwellMs ?? 0, info.dwellMs ?? 1000),
+    completed: Boolean(prev?.completed || info.completed),
+    rewatched: Boolean(prev?.rewatched || info.rewatched),
+  });
+  if (pending.size >= 30) {
+    void flushViews();
+    return;
+  }
   if (timer) return;
-  timer = setTimeout(() => void flushViews(), 3000);
+  timer = setTimeout(() => void flushViews(), 4000);
 }
 
 /** Invia subito quelle in sospeso (prima di uscire dall'account o quando l'app va in secondo piano). */
 export async function flushViews(): Promise<void> {
   if (timer) clearTimeout(timer);
   timer = null;
-  const ids = [...pending];
+  const items = [...pending.values()];
   pending.clear();
   const chunks: Promise<void>[] = [];
-  for (let i = 0; i < ids.length; i += 20) chunks.push(registerViews(ids.slice(i, i + 20)).catch(() => undefined));
+  for (let i = 0; i < items.length; i += 30) chunks.push(trackViews(items.slice(i, i + 30)).catch(() => undefined));
   await Promise.all(chunks);
 }
 
