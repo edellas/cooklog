@@ -27,7 +27,7 @@ COME FUNZIONA
 • Se vuoi, candidi il post alla gara del giorno. Uno al giorno a testa.
 • I post in gara arrivano a piccoli gruppi di persone scelte dall'app, non tra i tuoi follower: conta solo come vengono guardati.
 • I migliori salgono di gradino — Provino, Bozza, Impaginato, In macchina, Finale — davanti a un pubblico sempre più grande.
-• A mezzanotte il migliore della finale diventa la Copertina di domani ed entra per sempre nell'Archivio.
+• A fine giornata il migliore della finale diventa la Copertina ed entra per sempre nell'Archivio.
 
 PERCHÉ È DIVERSO
 • Non vince chi ha più follower: vince il post che le persone guardano fino in fondo, rivedono, salvano e condividono.

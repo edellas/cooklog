@@ -37,7 +37,7 @@ App mobile multipiattaforma (iOS, Android e web dallo stesso codice) in Expo SDK
    | Segnalato | −20 |
 
    Il punteggio parte da una media di prudenza di 20 viste, così pochi spettatori fortunati non bastano.
-4. A mezzanotte (Europe/Rome) vince chi è salito più in alto; a parità, il limite inferiore del punteggio più alto.
+4. All'orario della copertina scelto dall'amministratore (ora di Roma, di norma mezzanotte) la gara chiude: vince chi è salito più in alto; a parità, il limite inferiore del punteggio più alto. Senza voti validi vince il post più apprezzato. La copertina esce subito.
 5. **Anti-trucchi**:
    - si vota solo ciò che il server ti ha mostrato, una volta e mai sul proprio post;
    - gli account con meno di 24 ore guardano ma non votano;
@@ -55,7 +55,7 @@ npx expo start        # i = iOS, a = Android, w = web, oppure il QR con Expo Go
 
 Senza configurazione parte in **modalità demo**:
 - creator, foto e video di esempio e un pubblico simulato che continua a guardare mentre usi l'app (anche il tuo post sale di gradino dal vivo);
-- il link "Demo: simula la mezzanotte" sotto la copertina chiude subito la gara.
+- il link "Demo: simula la fine della gara" sotto la copertina chiude subito la gara.
 
 ## Verifiche
 
@@ -89,7 +89,7 @@ npm run lint
 
 La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](PUBBLICARE.md)**. In breve:
 
-1. Crea un progetto **Supabase** in UE ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, permessi sui file, chiusura a mezzanotte con `pg_cron`).
+1. Crea un progetto **Supabase** in UE ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, permessi sui file, chiusura della gara all'orario della copertina con `pg_cron`).
 2. **Authentication → Providers**: Email attivo con *Confirm email* spento (si accede con nome utente e password), accessi anonimi spenti.
 3. Metti `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` nelle variabili d'ambiente EAS (o in `virale/.env.local` per lo sviluppo).
 4. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.

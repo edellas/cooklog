@@ -60,14 +60,16 @@ I testi (Termini, Privacy, Linee guida, Eliminazione account) sono completi e co
 quello che l'app fa davvero, ma **falli leggere a un avvocato** prima del lancio: è un social con
 contenuti degli utenti, aperto dai 14 anni.
 
-## 3. Prepara Supabase (database, file, mezzanotte)
+## 3. Prepara Supabase (database, file, chiusura della gara)
 
 1. **New project** → regione **Central EU (Frankfurt)** (i dati restano in UE, come dice l'informativa).
    Scegli una password del database lunga e salvala.
 2. **SQL Editor → New query**: incolla tutto `supabase/schema.sql` → **Run**.
 3. Nuova query: incolla `supabase/setup-produzione.sql` → **Run**.
    Crea i bucket `media` (foto e video, pubblico) e `documenti` (documenti d'identità, privato),
-   i permessi sui file e la chiusura automatica a mezzanotte.
+   i permessi sui file e la chiusura automatica della gara: ogni minuto si controlla se è arrivato l'orario
+   della copertina (lo scegli nell'app, Impostazioni → Copertina e documenti); a quell'ora la gara chiude e
+   la nuova copertina esce subito.
 4. **Authentication → Sign In / Providers**:
    - **Email**: attivo, ma con **Confirm email** spento. L'app si accede con nome utente e password:
      Supabase vuole un'email, quindi l'app ne usa una interna (`nomeutente@utenti.virale.invalid`) che non riceve posta.
