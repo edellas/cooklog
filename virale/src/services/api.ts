@@ -842,13 +842,14 @@ export async function getArchive(): Promise<Cover[]> {
 }
 
 /**
- * Feed "Per te": prima i Provini (post in gara oggi, scelti dal server alla cieca),
- * poi i post recenti fuori gara così il feed non finisce mai.
+ * "In gara": solo i post in gara oggi (mai i propri), scelti dal server alla cieca e pesati per i tuoi gusti.
+ * Visti tutti, la lista finisce: i post fuori gara stanno in Esplora.
  */
 export async function getForYou(limit = 6, excludeIds: string[] = []): Promise<FeedCard[]> {
   if (!isDemo) {
     const rows = await rpc<{ entry_id: string | null; post: PostJson }[]>('feed_for_you', { p_limit: limit, p_exclude: excludeIds.slice(-300) });
-    return rows.map((r) => ({ ...fromJson(r.post), entryId: r.entry_id ?? undefined }));
+    // Difesa in più: anche con un database non aggiornato, qui finiscono solo le candidature.
+    return rows.filter((r) => r.entry_id).map((r) => ({ ...fromJson(r.post), entryId: r.entry_id ?? undefined }));
   }
   return withDemo((demo) => {
     if (!demo.me) return [];
@@ -860,7 +861,6 @@ export async function getForYou(limit = 6, excludeIds: string[] = []): Promise<F
       .map((e) => ({ e, k: -Math.log(Math.max(Math.random(), 1e-12)) / Math.exp(Math.max(-1, Math.min(1.2, demoScore(demo, demo.posts[e.postId], true)))) }))
       .sort((a, b) => a.k - b.k)
       .map(({ e }) => ({ ...toPost(demo, e.postId), entryId: e.id }));
-    if (cards.length < limit) cards.push(...demoExplore(demo, limit - cards.length, [...excludeIds, ...cards.map((x) => x.id)]));
     return cards;
   }, true);
 }
@@ -884,7 +884,8 @@ export async function getFollowing(before?: string, limit = 12): Promise<Post[]>
 export async function getExplore(limit = 8, excludeIds: string[] = []): Promise<Post[]> {
   if (!isDemo) {
     const rows = await rpc<PostJson[]>('feed_explore', { p_limit: limit, p_exclude: excludeIds.slice(-300) });
-    return rows.map(fromJson);
+    // Esplora è solo fuori gara: un post candidato oggi si vede (alla cieca) in "In gara".
+    return rows.map(fromJson).filter((p) => !p.contest);
   }
   return withDemo((demo) => (demo.me ? demoExplore(demo, limit, excludeIds) : []));
 }
@@ -1547,19 +1548,33 @@ export async function setIdProvider(provider: Settings['idProvider']): Promise<S
  * Verifica automatica: chiede alla funzione "verifica-eta" una sessione Didit e restituisce il link da aprire
  * nel browser. In demo non c'è nessun servizio: si simula l'esito con la data di nascita dichiarata.
  */
+/**
+ * Errore della funzione verifica-eta spiegato: chi configura (l'amministratore) deve capire cosa sistemare
+ * senza aprire i log.
+ */
+async function functionProblem(error: unknown): Promise<string> {
+  const e = error as { name?: string; message?: string; context?: Response };
+  if (e.name === 'FunctionsFetchError') return 'Non riesco a raggiungere Supabase: controlla la connessione e riprova.';
+  if (e.name === 'FunctionsRelayError') return 'Supabase non riesce ad avviare la funzione verifica-eta: riprova tra poco.';
+  const res = e.context;
+  if (!res) return 'Il servizio di verifica non risponde. Riprova tra poco.';
+  let body: { error?: string; message?: string; msg?: string } = {};
+  try {
+    body = (await res.json()) as typeof body;
+  } catch {
+    // risposta senza corpo leggibile
+  }
+  if (body.error) return body.error;
+  const detail = body.message ?? body.msg ?? '';
+  if (res.status === 404) return 'Su Supabase non c’è la funzione “verifica-eta” (controlla che il nome sia esattamente questo e che sia pubblicata).';
+  if (res.status === 401 && /jwt|authorization/i.test(detail)) return 'Su Supabase la funzione “verifica-eta” ha ancora “Verify JWT” acceso: va spento.';
+  return `Il servizio di verifica non risponde (errore ${res.status}${detail ? `: ${detail}` : ''}). Riprova tra poco.`;
+}
+
 export async function startAgeCheck(): Promise<string | null> {
   if (!isDemo) {
     const { data, error } = await db().functions.invoke<{ url?: string; error?: string }>('verifica-eta', { body: {} });
-    if (error) {
-      let message = 'Il servizio di verifica non risponde. Riprova tra poco.';
-      try {
-        const body = (await (error as { context?: Response }).context?.json()) as { error?: string } | undefined;
-        if (body?.error) message = body.error;
-      } catch {
-        // risposta senza corpo leggibile
-      }
-      throw new Error(message);
-    }
+    if (error) throw new Error(await functionProblem(error));
     if (!data?.url) throw new Error(data?.error ?? 'Il servizio di verifica non risponde. Riprova tra poco.');
     return data.url;
   }
@@ -1572,6 +1587,15 @@ export async function startAgeCheck(): Promise<string | null> {
     notifyDemo(demo, ok ? 'identity_ok' : 'identity_ko', null, null, ok ? {} : { reason: acc.identity.reason, final: true });
   }, true);
   return null;
+}
+
+/** Solo amministratori: prova tutto il collegamento con Didit (segreti, chiave, workflow) e dice cosa manca. */
+export async function diagnoseAgeCheck(): Promise<{ ok: boolean; checks: string[] }> {
+  if (isDemo) return { ok: true, checks: ['Demo: nessun servizio esterno da controllare.'] };
+  const { data, error } = await db().functions.invoke<{ ok: boolean; checks: string[]; error?: string }>('verifica-eta', { body: { action: 'diagnosi' } });
+  if (error) return { ok: false, checks: [`✗ ${await functionProblem(error)}`] };
+  if (!data?.checks) return { ok: false, checks: [`✗ ${data?.error ?? 'Risposta inattesa dalla funzione.'}`] };
+  return data;
 }
 
 /** Carica foto del documento e selfie con il documento in mano, nella cartella privata dell'utente. */

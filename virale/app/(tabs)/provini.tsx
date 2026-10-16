@@ -40,6 +40,8 @@ export default function ProviniTab() {
   const [refreshing, setRefreshing] = useState(false);
   /** Seguiti finisce: quando una pagina torna vuota non si chiede altro fino al prossimo aggiornamento. */
   const exhausted = useRef(false);
+  /** Come exhausted, ma per disegnare la pagina finale. */
+  const [ended, setEnded] = useState(false);
   /** Un aggiornamento completo è in corso: niente "pagina dopo" finché non arriva (la scarterebbe). */
   const resetting = useRef(false);
   const [cards, setCards] = useState<FeedCard[]>([]);
@@ -85,7 +87,10 @@ export default function ProviniTab() {
     const id = ++request.current;
     loadingMore.current = !reset;
     if (reset) resetting.current = true;
-    if (reset) exhausted.current = false;
+    if (reset) {
+      exhausted.current = false;
+      setEnded(false);
+    }
     try {
       const shown = reset ? [] : cardsRef.current;
       let next: FeedCard[];
@@ -93,7 +98,11 @@ export default function ProviniTab() {
       else if (mode === 'esplora') next = await getExplore(8, shown.map((x) => x.id));
       else next = await getForYou(6, shown.map((x) => x.id));
       if (id === request.current) {
-        if (mode === 'seguiti' && !next.length) exhausted.current = true;
+        // Seguiti e In gara finiscono (In gara: visti tutti i candidati di adesso); Esplora no.
+        if (mode !== 'esplora' && !next.length) {
+          exhausted.current = true;
+          setEnded(true);
+        }
         setCards((prev) => (reset ? next : [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]));
         setError(null);
       }
@@ -248,8 +257,15 @@ export default function ProviniTab() {
                 ? 'Tocca “Segui” sotto un post che ti piace: i suoi nuovi post arriveranno qui.'
                 : mode === 'esplora'
                   ? 'Appena qualcuno pubblica, lo trovi qui.'
-                  : 'Ne arrivano di nuovi per tutto il giorno.'}
+                  : 'Ogni candidato lo vedi una volta sola, e i tuoi non li vedi: il tuo voto è come guardi. Ne arrivano di nuovi durante il giorno.'}
             </Txt>
+            {mode === 'gara' ? (
+              <Press style={styles.retry} onPress={() => setMode('esplora')} accessibilityRole="button">
+                <Txt variant="label" tone={color.canvas}>
+                  Vai su Esplora
+                </Txt>
+              </Press>
+            ) : null}
             <Press
               style={styles.retry}
               onPress={() => {
@@ -275,6 +291,23 @@ export default function ProviniTab() {
             onViewableItemsChanged={onViewable}
             onEndReachedThreshold={1.5}
             onEndReached={() => void load(false)}
+            ListFooterComponent={
+              ended && mode !== 'esplora' ? (
+                <View style={[styles.center, { height }]}>
+                  <Txt variant="title" style={{ textAlign: 'center' }}>
+                    {mode === 'gara' ? 'Hai visto tutti i provini di adesso.' : 'Sei in pari con chi segui.'}
+                  </Txt>
+                  <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
+                    {mode === 'gara' ? 'Ne arrivano di nuovi durante il giorno: tira giù per controllare.' : 'Intanto scopri qualcosa di nuovo.'}
+                  </Txt>
+                  <Press style={styles.retry} onPress={() => setMode('esplora')} accessibilityRole="button">
+                    <Txt variant="label" tone={color.canvas}>
+                      Vai su Esplora
+                    </Txt>
+                  </Press>
+                </View>
+              ) : null
+            }
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}

@@ -413,7 +413,11 @@ do $$ declare n int; begin
   if n <> 0 then raise exception 'Esplora ripropone un post già nella pagina'; end if;
   raise notice 'ok, Esplora non ripete i post già mostrati';
 end $$;
-select count(*) as provini_senza_errori from feed_for_you(6);
+do $$ declare n_all int; n_entries int; begin
+  select count(*), count(entry_id) into n_all, n_entries from feed_for_you(20);
+  if n_all <> n_entries then raise exception 'In gara mostra post non in gara (% su %)', n_all - n_entries, n_all; end if;
+  raise notice 'ok, In gara mostra solo post in gara';
+end $$;
 -- Pagine: Seguiti, profilo, elenchi.
 insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000b2');
 do $$ declare p1 jsonb[]; p2 jsonb[]; begin

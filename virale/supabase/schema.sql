@@ -760,8 +760,9 @@ returns jsonb language sql stable security definer set search_path = public, pg_
   where p.id = p_post_id;
 $$;
 
--- I Provini ("In gara"): i post in gara oggi, pescati a caso ma con probabilità che cresce con il livello
--- e con l'interesse di chi guarda (sezione 15). Esaurita la gara, si continua con Esplora.
+-- I Provini ("In gara"): SOLO i post in gara oggi (mai i propri), pescati a caso ma con probabilità che cresce
+-- con il livello e con l'interesse di chi guarda (sezione 15). Visti tutti, la lista finisce: i post fuori gara
+-- sono in Esplora. p_exclude resta per compatibilità con le versioni vecchie dell'app.
 create or replace function public.feed_for_you(p_limit int default 6, p_exclude uuid[] default '{}')
 returns table (entry_id uuid, post jsonb)
 language plpgsql security definer set search_path = public, pg_temp as $$
@@ -773,7 +774,6 @@ declare
   v_limit int := least(greatest(p_limit, 1), 20);
   v_upper_slots int := ceil(least(greatest(p_limit, 1), 20) * v_cfg.upper_share);
   v_ids uuid[];
-  v_n int;
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
 
@@ -814,10 +814,6 @@ begin
     order by random();
   end if;
 
-  v_n := coalesce(array_length(v_ids, 1), 0);
-  if v_n < v_limit then
-    return query select null::uuid, x from public.feed_explore(v_limit - v_n, p_exclude) x;
-  end if;
 end;
 $$;
 

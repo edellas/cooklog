@@ -10,7 +10,7 @@ import { haptic, Press } from '../src/components/Press';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
-import { ageOn, getIdentityQueue, MIN_AGE_YEARS, purgeStorage, reviewIdentity, saveSettings, setIdProvider } from '../src/services/api';
+import { ageOn, diagnoseAgeCheck, getIdentityQueue, MIN_AGE_YEARS, purgeStorage, reviewIdentity, saveSettings, setIdProvider } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { IdentityItem } from '../src/types';
@@ -34,6 +34,8 @@ export default function AdminScreen() {
   const [saving, setSaving] = useState(false);
   const [queue, setQueue] = useState<IdentityItem[] | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
+  const [diag, setDiag] = useState<{ ok: boolean; checks: string[] } | null>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
 
   const isAdmin = Boolean(status?.isAdmin);
   const revealNow = reveal ?? status?.settings.revealMinutes ?? 0;
@@ -172,6 +174,30 @@ export default function AdminScreen() {
             })}
           </View>
         </View>
+
+        {status.settings.idProvider === 'didit' ? (
+          <View style={{ gap: space[2] }}>
+            <Press
+              style={[styles.pill, { alignSelf: 'flex-start' }, diagBusy && styles.off]}
+              disabled={diagBusy}
+              onPress={() => {
+                setDiagBusy(true);
+                diagnoseAgeCheck()
+                  .then(setDiag)
+                  .finally(() => setDiagBusy(false));
+              }}
+              accessibilityRole="button">
+              <Txt variant="label">{diagBusy ? 'Controllo…' : 'Prova il collegamento con Didit'}</Txt>
+            </Press>
+            {diag
+              ? diag.checks.map((c) => (
+                  <Txt key={c} variant="small" tone={c.startsWith('✗') ? color.matita : c.startsWith('✓') ? color.verde : color.paperDim} selectable>
+                    {c}
+                  </Txt>
+                ))
+              : null}
+          </View>
+        ) : null}
 
         <View style={{ gap: space[3] }}>
           <Txt variant="title">Documenti da verificare</Txt>
