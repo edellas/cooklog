@@ -7,7 +7,7 @@ export const OWNER = {
   /** Nome e cognome, oppure ragione sociale. È il titolare del trattamento dei dati. */
   name: 'Edoardo Della Seta',
   /** Indirizzo postale completo. */
-  address: '[Via Fonteiana, 148, 00152, Roma]',
+  address: 'Via Fonteiana, 148, 00152, Roma',
   /** Partita IVA o codice fiscale. */
   taxId: 'DLLDRD97R19H501K',
   /** Email per supporto, privacy e segnalazioni urgenti: deve essere letta ogni giorno. */
