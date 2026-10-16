@@ -30,8 +30,12 @@ function text(n: AppNotification): string {
       return 'Il tuo post è la copertina di Virale: lo vede chiunque apra l’app.';
     case 'identity_ok':
       return 'Età verificata: grazie! Le foto del documento sono state cancellate.';
-    case 'identity_ko':
-      return `Documento non accettato: ${(n.data.reason ?? 'riprova con foto più nitide').replace(/[.\s]+$/, '')}. Puoi ricaricarlo.`;
+    case 'identity_ko': {
+      const why = (n.data.reason ?? 'riprova con foto più nitide').replace(/[.\s]+$/, '');
+      const reason = why.charAt(0).toLowerCase() + why.slice(1);
+      if (n.data.final) return `Account chiuso: ${reason}. Virale è aperta dai 14 anni.`;
+      return `Documento non accettato: ${reason}. Puoi ricaricarlo.`;
+    }
     case 'removed':
       return 'Un tuo post è stato rimosso perché viola le linee guida. Se pensi sia un errore, scrivici.';
   }
@@ -53,7 +57,8 @@ export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const goBack = useGoBack('/profilo');
-  const { refreshStatus } = useSession();
+  const { status, refreshStatus } = useSession();
+  const unread = status?.unread ?? 0;
   const [items, setItems] = useState<AppNotification[] | null>(null);
   const [error, setError] = useState(false);
 
@@ -65,19 +70,22 @@ export default function NotificationsScreen() {
           if (!alive) return;
           setItems(list);
           setError(false);
-          if (list.some((n) => !n.read)) {
-            await markNotificationsRead().catch(() => undefined);
-            refreshStatus();
+          // Segno lette solo quelle che ho davvero mostrato: una arrivata un attimo dopo resta nuova.
+          if (list.some((n) => !n.read) || unread > 0) {
+            const newest = list.reduce<string | null>((m, n) => (!m || n.createdAt > m ? n.createdAt : m), null);
+            if (newest) await markNotificationsRead(newest).catch(() => undefined);
+            void refreshStatus();
           }
         })
         .catch(() => alive && setError(true));
       return () => {
         alive = false;
       };
-    }, [refreshStatus]),
+    }, [refreshStatus, unread]),
   );
 
   const open = (n: AppNotification) => {
+    if (n.kind === 'identity_ko' && n.data.final) return;
     if (n.kind === 'identity_ko' || n.kind === 'identity_ok') return router.push('/verifica' as Href);
     if (n.post) return router.push(`/post/${n.post.id}` as Href);
     if (n.actor) return router.push(`/utente/${n.actor.username}` as Href);

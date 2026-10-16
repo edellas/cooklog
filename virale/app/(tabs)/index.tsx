@@ -15,6 +15,9 @@ import type { Cover } from '../../src/types';
 
 const SEEN_KEY = 'virale.cover.seen';
 
+const revealLabel = (min: number) =>
+  min === 0 ? 'a mezzanotte' : `alle ${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+
 export default function CoverTab() {
   const { me, version, bump } = useSession();
   const toast = useToast();
@@ -49,9 +52,11 @@ export default function CoverTab() {
         if (!alive) return;
         loadedDay.current = today;
         setFailed(false);
-        setReveal(Boolean(next) && seen !== today);
+        // "Già vista" si riferisce a quella copertina precisa, non al giorno in cui la si apre.
+        const fresh = Boolean(next) && seen !== next?.featuredOn;
+        setReveal(fresh);
         setCover(next);
-        if (next && seen !== today) void setJson(SEEN_KEY, today);
+        if (next && fresh) void setJson(SEEN_KEY, next.featuredOn);
       })();
       return () => {
         alive = false;
@@ -72,7 +77,7 @@ export default function CoverTab() {
       if (state === 'active' && loadedDay.current && loadedDay.current !== coverDay(revealRef.current)) setTick((n) => n + 1);
     });
     return () => sub.remove();
-  }, [bump]);
+  }, []);
 
   const simulate = async () => {
     const next = await closeDayNowDemo();
@@ -114,7 +119,7 @@ export default function CoverTab() {
           Nessuna copertina da mostrarti oggi.
         </Txt>
         <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-          La prossima esce a mezzanotte: intanto guarda i Provini, o pubblica un post e candidalo.
+          La prossima esce {revealLabel(revealRef.current)}: intanto guarda i Provini, o pubblica un post e candidalo.
         </Txt>
         {isDemo ? (
           <Press onPress={() => void simulate()} accessibilityRole="button" style={{ marginTop: 12 }}>
@@ -126,7 +131,7 @@ export default function CoverTab() {
       </View>
     );
   }
-  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} onDayEnd={bump} />;
+  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} onDayEnd={() => setTick((n) => n + 1)} />;
 }
 
 const styles = StyleSheet.create({

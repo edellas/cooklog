@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -14,7 +15,29 @@ import { completePrivateData, submitIdentity } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 
-const dateIt = (iso: string) => new Date(iso).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+/** Scadenza con l'ora, sempre in ora italiana: è quella che usa il server. */
+const deadlineIt = (iso: string) => {
+  const d = new Date(iso);
+  try {
+    return d.toLocaleString('it-IT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' });
+  } catch {
+    return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+  }
+};
+
+/** JPEG vero (il bucket accetta solo quello) e lato lungo entro 2000 px: leggibile ma non 10 MB. */
+const toJpeg = async (a: ImagePicker.ImagePickerAsset): Promise<string> => {
+  try {
+    const max = 2000;
+    const ctx = ImageManipulator.manipulate(a.uri);
+    if (a.width > max || a.height > max) ctx.resize(a.width >= a.height ? { width: max } : { height: max });
+    const img = await ctx.renderAsync();
+    const out = await img.saveAsync({ format: SaveFormat.JPEG, compress: 0.8 });
+    return out.uri;
+  } catch {
+    return a.uri;
+  }
+};
 
 /**
  * Verifica dell'età. Due foto: il documento (fronte, con data di nascita leggibile) e un selfie con il
@@ -30,9 +53,26 @@ export default function VerifyScreen() {
   const [selfie, setSelfie] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Appena inviato mostriamo subito "in controllo", senza aspettare il prossimo aggiornamento dello stato.
+  const [sent, setSent] = useState(false);
 
   const identity = status?.identity;
-  const state = identity?.status ?? 'missing';
+  const state = sent && identity?.status !== 'approved' ? 'pending' : (identity?.status ?? 'missing');
+
+  // Su Android il sistema può chiudere l'app mentre la fotocamera è aperta: la foto scattata arriva qui.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    ImagePicker.getPendingResultAsync()
+      .then(async (res) => {
+        if (!res || !('assets' in res) || res.canceled || !res.assets?.[0]) return;
+        const uri = await toJpeg(res.assets[0]);
+        setDoc((d) => {
+          if (d) setSelfie(uri);
+          return d ?? uri;
+        });
+      })
+      .catch(() => undefined);
+  }, []);
 
   const pick = async (which: 'doc' | 'selfie', camera: boolean) => {
     setError(null);
@@ -50,7 +90,8 @@ export default function VerifyScreen() {
       };
       const res = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
       if (res.canceled || !res.assets[0]) return;
-      (which === 'doc' ? setDoc : setSelfie)(res.assets[0].uri);
+      const uri = await toJpeg(res.assets[0]);
+      (which === 'doc' ? setDoc : setSelfie)(uri);
     } catch {
       setError('Non riesco ad aprire fotocamera o galleria. Riprova.');
     }
@@ -63,7 +104,8 @@ export default function VerifyScreen() {
       setError(null);
       await submitIdentity(doc, selfie);
       haptic('success');
-      refreshStatus();
+      setSent(true);
+      void refreshStatus();
       toast('Documento inviato: lo controlliamo al più presto.');
       setDoc(null);
       setSelfie(null);
@@ -99,7 +141,9 @@ export default function VerifyScreen() {
           <View style={styles.state}>
             <Icon name="orologio" size={22} color={color.giallo} />
             <Txt variant="body" style={{ flex: 1 }}>
-              Documento ricevuto: lo stiamo controllando. Intanto puoi usare Virale normalmente.
+              {identity.canAct
+                ? 'Documento ricevuto: lo stiamo controllando. Intanto puoi usare Virale normalmente.'
+                : 'Documento ricevuto: lo stiamo controllando. Il tempo per la verifica è passato, quindi finché non abbiamo deciso puoi solo guardare.'}
             </Txt>
           </View>
         ) : (
@@ -109,7 +153,7 @@ export default function VerifyScreen() {
               <Txt variant="body" style={{ flex: 1 }}>
                 {state === 'rejected' ? `Il documento non è stato accettato: ${(identity.reason ?? 'riprova con foto più nitide').replace(/[.\s]+$/, '')}. ` : ''}
                 {identity.canAct
-                  ? `Hai tempo fino al ${dateIt(identity.deadline)} per caricarlo.`
+                  ? `Hai tempo fino al ${deadlineIt(identity.deadline)} per caricarlo.`
                   : 'Il tempo per caricarlo è scaduto: finché non lo verifichiamo puoi solo guardare.'}
               </Txt>
             </View>

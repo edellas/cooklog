@@ -1,6 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, View, type LayoutChangeEvent, type ViewToken } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, StyleSheet, View, type LayoutChangeEvent, type ViewToken } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -87,6 +87,13 @@ export default function ProviniTab() {
     }
   }, [mode]);
 
+  // A mezzanotte la gara chiude e ne parte una nuova: i post di ieri spariscono, il feed si ricarica.
+  const [day, setDay] = useState(0);
+  useEffect(() => {
+    const id = setTimeout(() => setDay((n) => n + 1), msUntilArenaClose() + 90_000);
+    return () => clearTimeout(id);
+  }, [day]);
+
   useEffect(() => {
     flush();
     setLoading(true);
@@ -94,7 +101,23 @@ export default function ProviniTab() {
     setCards([]);
     setActiveId(null);
     void load(true);
-  }, [flush, load, version]);
+  }, [flush, load, version, day]);
+
+  // Mettendo l'app in background la vista corrente si chiude (e conta); riaprendola riprende.
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    focusedRef.current = focused;
+  }, [focused]);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'background' || st === 'inactive') flushRef.current();
+      else if (st === 'active' && focusedRef.current && !current.current) {
+        const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
+        if (visible) current.current = { card: visible, since: Date.now() };
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   // Uscendo dal tab (o aprendo commenti e azioni) la vista corrente si registra e i video si fermano;
   // tornando, la vista del post sullo schermo riprende a contare.

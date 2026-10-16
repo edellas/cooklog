@@ -106,6 +106,8 @@ export type Status = {
   banned: boolean;
   /** Iscritto prima delle password: mancano nome, cognome e data di nascita. */
   needsPrivate: boolean;
+  /** Account creato prima delle password: va impostata per poter uscire e rientrare. */
+  needsPassword: boolean;
   unread: number;
   settings: Settings;
 };
@@ -117,7 +119,7 @@ export type AppNotification = {
   kind: NotificationKind;
   actor: Author | null;
   post: { id: string; media: MediaItem[] } | null;
-  data: { body?: string; tier?: number; featured_on?: string; reason?: string | null };
+  data: { body?: string; tier?: number; featured_on?: string; reason?: string | null; final?: boolean };
   createdAt: string;
   read: boolean;
 };

@@ -204,9 +204,11 @@ type DemoDb = {
   notifications?: AppNotification[];
   /** Post visti oggi (giorno:post): una visualizzazione per persona al giorno. */
   viewed?: string[];
+  /** Chi segue l'utente demo (simulati). */
+  fans?: string[];
 };
 
-type DemoUserState = Pick<DemoDb, 'likes' | 'saves' | 'following' | 'blocked' | 'reported' | 'shared' | 'myBio' | 'notifications' | 'viewed'>;
+type DemoUserState = Pick<DemoDb, 'likes' | 'saves' | 'following' | 'blocked' | 'reported' | 'shared' | 'myBio' | 'notifications' | 'viewed'> & { fans?: string[] };
 
 type DemoAccount = {
   me: Me;
@@ -328,7 +330,9 @@ function crowdTick(demo: DemoDb, viewers: number) {
   const me = demo.people[demo.me.id];
   if (me && fans.length && rng() < 0.12) {
     const fan = fans[Math.floor(rng() * fans.length)];
-    if (!demo.notifications!.some((n) => n.kind === 'follow' && n.actor?.id === fan)) {
+    demo.fans ??= [];
+    if (!demo.fans.includes(fan)) {
+      demo.fans.push(fan);
       me.followers += 1;
       notifyDemo(demo, 'follow', fan, null);
     }
@@ -439,7 +443,9 @@ function toPost(demo: DemoDb, id: string): Post {
 /** Visualizzazioni demo: per i post dei creator una stima dai mi piace; per i tuoi, le viste vere della gara. */
 function postViews(demo: DemoDb, sp: StoredPost): number {
   const entry = demo.state.entries.find((e) => e.postId === sp.id);
-  const base = sp.views ?? (sp.authorId === demo.me?.id ? 0 : sp.likes * 9 + (hash(sp.id) % 400));
+  // I post degli account creati sul dispositivo partono da zero; quelli dei creator demo da una stima.
+  const local = sp.authorId.startsWith('me-');
+  const base = sp.views ?? (local ? 0 : sp.likes * 9 + (hash(sp.id) % 400));
   return base + (sp.authorId === demo.me?.id ? (entry?.stats.views ?? 0) : 0);
 }
 
@@ -518,6 +524,19 @@ async function demoHash(username: string, password: string): Promise<string> {
   return `${h1.toString(16)}${h2.toString(16)}`;
 }
 
+function emptyUserState(): DemoUserState {
+  return { likes: [], saves: [], following: DEMO_FOLLOWING.map((u) => `demo-${u}`), blocked: [], reported: [], shared: [], myBio: '', notifications: [], viewed: [] };
+}
+
+/** Come sul server: scaduto il tempo per il documento si guarda soltanto. */
+function demoAssertCanAct(demo: DemoDb) {
+  const acc = demo.me ? demo.accounts?.[demo.me.username] : undefined;
+  const id = acc?.identity;
+  if (id && id.status !== 'approved' && Date.now() >= Date.parse(id.deadline)) {
+    throw new Error('Serve la verifica dell’età: carica il documento dal profilo.');
+  }
+}
+
 function saveDemoUser(demo: DemoDb) {
   const acc = demo.me ? demo.accounts?.[demo.me.username] : undefined;
   if (!acc) return;
@@ -531,6 +550,7 @@ function saveDemoUser(demo: DemoDb) {
     myBio: demo.myBio,
     notifications: demo.notifications,
     viewed: demo.viewed,
+    fans: demo.fans,
   };
 }
 
@@ -546,6 +566,7 @@ function restoreDemoUser(demo: DemoDb, acc: DemoAccount) {
   demo.myBio = st?.myBio ?? '';
   demo.notifications = st?.notifications ?? [];
   demo.viewed = st?.viewed ?? [];
+  demo.fans = st?.fans ?? [];
 }
 
 export async function usernameAvailable(username: string): Promise<boolean> {
@@ -562,17 +583,22 @@ export async function register(input: RegisterInput): Promise<Me> {
   const username = input.username.trim().toLowerCase();
   if (!isDemo) {
     // Prima si controlla il nome: così non resta un utente di autenticazione "orfano" con un nome già preso.
-    if (!(await rpc<boolean>('username_available', { p_username: username }))) throw new Error('Questo nome utente è già preso.');
+    if (!(await rpc<boolean>('username_available', { p_username: username }))) {
+      throw new Error('Questo nome utente è già preso. Se è tuo, usa "Ho già un account".');
+    }
     let { data, error } = await db().auth.signUp({ email: loginEmail(username), password: input.password });
     if (error && /already registered|already exists/i.test(error.message)) {
       // Una registrazione interrotta (per esempio senza rete) ha lasciato l'utente senza profilo: si riprende.
       const res = await db().auth.signInWithPassword({ email: loginEmail(username), password: input.password });
-      if (res.error) throw new Error('Questo nome utente è già preso.');
-      if (await getMe()) throw new Error('Hai già un account: usa "Accedi".');
+      if (res.error) throw new Error('Questo nome utente è già preso. Se è tuo, usa "Ho già un account".');
+      if (await getMe()) {
+        await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
+        throw new Error('Hai già un account con questo nome: usa "Ho già un account".');
+      }
       data = { user: res.data.user, session: res.data.session };
       error = null;
     }
-    if (error) throw new Error(/password/i.test(error.message) ? 'Password troppo debole: usane una più lunga.' : error.message);
+    if (error) throw new Error(authMessage(error.message));
     if (!data.session) {
       throw new Error('Registrazione non completata: in Supabase va disattivata la conferma via email (Authentication → Sign In / Providers → Email).');
     }
@@ -584,8 +610,11 @@ export async function register(input: RegisterInput): Promise<Me> {
       p_accept_terms: input.acceptedTerms,
     }).catch(async (e: Error) => {
       // Senza profilo l'utente di accesso resterebbe "orfano" e terrebbe occupato il nome: lo si elimina.
+      // Ma solo se il profilo davvero non c'è (un secondo tocco su "Registrati" non deve cancellare il primo).
+      const existing = await getMe().catch(() => null);
+      if (existing) return { id: existing.id, username: existing.username, display_name: existing.displayName };
       await rpc('delete_my_account').catch(() => undefined);
-      await db().auth.signOut().catch(() => undefined);
+      await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
       throw e;
     });
     return { id: row.id, username: row.username, displayName: row.display_name };
@@ -611,10 +640,10 @@ export async function login(username: string, password: string): Promise<Me> {
   if (!u || !password) throw new Error('Scrivi nome utente e password.');
   if (!isDemo) {
     const { error } = await db().auth.signInWithPassword({ email: loginEmail(u), password });
-    if (error) throw new Error(/invalid login|credentials/i.test(error.message) ? 'Nome utente o password sbagliati.' : error.message);
+    if (error) throw new Error(authMessage(error.message));
     const me = await getMe();
     if (!me) {
-      await db().auth.signOut().catch(() => undefined);
+      await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
       throw new Error('La registrazione di questo account non è stata completata: registrati di nuovo con lo stesso nome utente e la stessa password.');
     }
     return me;
@@ -631,7 +660,9 @@ export async function login(username: string, password: string): Promise<Me> {
 
 export async function logout(): Promise<void> {
   if (!isDemo) {
-    await db().auth.signOut();
+    // Solo questo dispositivo; e se non riesce lo si dice, invece di lasciare la sessione salvata.
+    const { error } = await db().auth.signOut({ scope: 'local' });
+    if (error) throw new Error('Non sono riuscito a uscire. Controlla la connessione e riprova.');
     return;
   }
   await withDemo((demo) => {
@@ -640,18 +671,56 @@ export async function logout(): Promise<void> {
   }, true);
 }
 
-export async function changePassword(current: string, next: string): Promise<void> {
-  if (next.length < PASSWORD_MIN || !/[A-Za-z]/.test(next) || !/\d/.test(next)) {
-    throw new Error(`La nuova password deve avere almeno ${PASSWORD_MIN} caratteri, con lettere e numeri.`);
+/** Messaggi di Supabase Auth in italiano, comprensibili. */
+function authMessage(message: string): string {
+  if (/invalid login|credentials/i.test(message)) return 'Nome utente o password sbagliati.';
+  if (/different from the old/i.test(message)) return 'La nuova password deve essere diversa da quella attuale.';
+  if (/weak|leaked|pwned/i.test(message)) return 'Password troppo debole o già comparsa in furti di dati: scegline un\'altra.';
+  if (/at least \d+ characters|too short/i.test(message)) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
+  if (/rate limit|too many/i.test(message)) return 'Troppi tentativi: aspetta qualche minuto e riprova.';
+  if (/network|fetch/i.test(message)) return 'Connessione assente: riprova.';
+  return message;
+}
+
+function passwordProblem(password: string, username: string): string | null {
+  if (password.length < PASSWORD_MIN) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return 'La password deve contenere almeno una lettera e un numero.';
+  if (username && password.toLowerCase().includes(username.toLowerCase())) return 'La password non può contenere il nome utente.';
+  return null;
+}
+
+/**
+ * Per gli account creati con il vecchio "Entra" (senza password): si collegano nome utente e password,
+ * così si può uscire e rientrare. Serve la conferma via email spenta in Supabase.
+ */
+export async function setPassword(password: string): Promise<void> {
+  const me = await getMe();
+  if (!me) throw new Error('Sessione scaduta: riapri l’app.');
+  const problem = passwordProblem(password, me.username);
+  if (problem) throw new Error(problem);
+  if (isDemo) return;
+  const { data, error } = await db().auth.updateUser({ email: loginEmail(me.username), password });
+  if (error) throw new Error(authMessage(error.message));
+  if (data.user?.new_email || !data.user?.email) {
+    throw new Error('Password non collegata: in Supabase va spenta la conferma via email (Authentication → Sign In / Providers → Email).');
   }
+}
+
+export async function changePassword(current: string, next: string): Promise<void> {
+  const meNow = await getMe();
+  const problem = passwordProblem(next, meNow?.username ?? '');
+  if (problem) throw new Error(problem);
+  if (next === current) throw new Error('La nuova password deve essere diversa da quella attuale.');
   if (!isDemo) {
-    const me = await getMe();
+    const me = meNow;
     if (!me) throw new Error('Sessione scaduta: accedi di nuovo.');
     // Si verifica la password attuale prima di cambiarla: un telefono lasciato sbloccato non basta.
     const check = await db().auth.signInWithPassword({ email: loginEmail(me.username), password: current });
     if (check.error) throw new Error('La password attuale non è corretta.');
     const { error } = await db().auth.updateUser({ password: next });
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(authMessage(error.message));
+    // Gli altri dispositivi collegati con la vecchia password vengono disconnessi.
+    await db().auth.signOut({ scope: 'others' }).catch(() => undefined);
     return;
   }
   const meName = (await getMe())?.username ?? '';
@@ -759,6 +828,7 @@ export async function toggleLike(postId: string, on: boolean): Promise<void> {
   }
   await withDemo((demo) => {
     const p = stored(demo, postId);
+    if (on) demoAssertCanAct(demo);
     const has = demo.likes.includes(postId);
     if (on && !has) {
       demo.likes.push(postId);
@@ -836,6 +906,7 @@ export async function addComment(postId: string, body: string): Promise<Comment>
   return withDemo((demo) => {
     stored(demo, postId);
     if (!demo.me) throw new Error('Crea prima il tuo profilo.');
+    demoAssertCanAct(demo);
     const cm = { id: `c-${Date.now()}`, authorId: demo.me.id, body: text, createdAt: new Date().toISOString() };
     demo.comments[postId] = [...(demo.comments[postId] ?? []), cm];
     return { id: cm.id, postId, author: author(demo, cm.authorId), body: text, createdAt: cm.createdAt };
@@ -948,13 +1019,15 @@ export async function getPost(postId: string): Promise<Post> {
 
 export async function toggleFollow(userId: string, on: boolean): Promise<void> {
   if (!isDemo) {
-    const me = await uid();
-    const q = on ? db().from('follows').insert({ follower_id: me, followee_id: userId }) : db().from('follows').delete().match({ follower_id: me, followee_id: userId });
-    const { error } = await q;
-    if (error && error.code !== '23505') throw new Error(error.message);
-    return;
+    return inOrder(`follow:${userId}`, async () => {
+      const me = await uid();
+      const q = on ? db().from('follows').insert({ follower_id: me, followee_id: userId }) : db().from('follows').delete().match({ follower_id: me, followee_id: userId });
+      const { error } = await q;
+      if (error && error.code !== '23505') throw new Error(error.code === '42501' ? 'Serve la verifica dell’età per seguire altre persone.' : error.message);
+    });
   }
   await withDemo((demo) => {
+    if (on) demoAssertCanAct(demo);
     const has = demo.following.includes(userId);
     if (on && !has) demo.following.push(userId);
     if (!on && has) demo.following = demo.following.filter((x) => x !== userId);
@@ -1030,6 +1103,7 @@ export async function publish(input: NewPost): Promise<PublishResult> {
   const media = await Promise.all(input.media.map(persistLocal));
   return withDemo((demo) => {
     if (!demo.me) throw new Error('Crea prima il tuo profilo.');
+    demoAssertCanAct(demo);
     const me = demo.me;
     const id = `my-${Date.now()}`;
     demo.posts[id] = {
@@ -1102,7 +1176,8 @@ export async function closeDayNowDemo(): Promise<Cover | null> {
     // La copertina nuova prende il posto di quella visibile adesso (che dipende dall'orario di rivelazione).
     const shown = coverDay(demo.settings!.revealMinutes);
     const before = demo.covers;
-    demo.covers = demo.covers.map((cv) => ({ ...cv, featuredOn: shiftDay(cv.featuredOn, -1) }));
+    // Scalano solo le copertine già uscite: quella in attesa dell'orario di rivelazione resta dov'è.
+    demo.covers = demo.covers.map((cv) => (cv.featuredOn <= shown ? { ...cv, featuredOn: shiftDay(cv.featuredOn, -1) } : cv));
     const winnerEntry = demo.state.entries;
     const postId = crown(demo, shown);
     if (!postId) demo.covers = before;
@@ -1278,8 +1353,11 @@ type StatusJson = {
 
 export async function getStatus(): Promise<Status> {
   if (!isDemo) {
-    const r = await rpc<StatusJson>('my_status');
+    const [r, session] = await Promise.all([rpc<StatusJson>('my_status'), db().auth.getSession()]);
+    const user = session.data.session?.user;
     return {
+      // Account creati con il vecchio "Entra" (anonimi): non hanno password finché non la impostano.
+      needsPassword: Boolean(user && (user.is_anonymous || !user.email)),
       identity: r.identity ? { status: r.identity.status, deadline: r.identity.deadline, reason: r.identity.reason, canAct: r.identity.can_act } : null,
       isModerator: r.is_moderator,
       isAdmin: r.is_admin,
@@ -1298,7 +1376,8 @@ export async function getStatus(): Promise<Status> {
       isAdmin: Boolean(demo.me),
       banned: false,
       needsPrivate: false,
-      unread: (demo.notifications ?? []).filter((n) => !n.read).length,
+      needsPassword: false,
+      unread: (demo.notifications ?? []).filter((n) => !n.read && (!n.actor || !demo.blocked.includes(n.actor.id))).length,
       settings: demo.settings!,
     };
   });
@@ -1418,7 +1497,13 @@ export async function reviewIdentity(userId: string, decision: 'approve' | 'reje
       deadline: acc.identity.deadline,
       reason: ok ? null : decision === 'underage' ? `Hai meno di ${MIN_AGE_YEARS} anni.` : reason?.trim() || 'Documento non leggibile o non corrispondente.',
     };
-    if (demo.me?.id === userId) notifyDemo(demo, ok ? 'identity_ok' : 'identity_ko', null, null, { reason: acc.identity.reason });
+    const data = { reason: acc.identity.reason, final: decision === 'underage' };
+    if (demo.me?.id === userId) notifyDemo(demo, ok ? 'identity_ok' : 'identity_ko', null, null, data);
+    else {
+      // L'altro account (sullo stesso dispositivo) trova la notifica al prossimo accesso.
+      const item: AppNotification = { id: `n-${Date.now()}`, kind: ok ? 'identity_ok' : 'identity_ko', actor: null, post: null, data, createdAt: new Date().toISOString(), read: false };
+      acc.saved = { ...(acc.saved ?? emptyUserState()), notifications: [item, ...(acc.saved?.notifications ?? [])] };
+    }
   }, true);
 }
 
@@ -1448,13 +1533,13 @@ export async function getNotifications(): Promise<AppNotification[]> {
   return withDemo((demo) => (demo.notifications ?? []).filter((n) => !n.actor || !demo.blocked.includes(n.actor.id)));
 }
 
-export async function markNotificationsRead(): Promise<void> {
+export async function markNotificationsRead(upTo?: string): Promise<void> {
   if (!isDemo) {
-    await rpc('mark_notifications_read');
+    await rpc('mark_notifications_read', { p_up_to: upTo ?? null });
     return;
   }
   await withDemo((demo) => {
-    demo.notifications = (demo.notifications ?? []).map((n) => ({ ...n, read: true }));
+    demo.notifications = (demo.notifications ?? []).map((n) => (!upTo || n.createdAt <= upTo ? { ...n, read: true } : n));
   }, true);
 }
 
@@ -1472,7 +1557,7 @@ export async function registerViews(postIds: string[]): Promise<void> {
       const p = demo.posts[id];
       const key = `${today}:${id}`;
       if (!p || p.authorId === demo.me?.id || demo.viewed!.includes(key)) continue;
-      p.views = postViews(demo, p) + 1;
+      p.views = (p.views ?? (p.authorId.startsWith('me-') ? 0 : p.likes * 9 + (hash(p.id) % 400))) + 1;
       demo.viewed!.push(key);
     }
     demo.viewed = demo.viewed!.filter((k) => k.startsWith(today));
@@ -1499,8 +1584,7 @@ export async function listFollows(username: string, kind: 'followers' | 'followi
       return COMMENTERS.filter((_, i) => (hash(person.id) + i) % 3 === 0).map((n) => row(`demo-${n}`));
     }
     if (isMe) {
-      const fans = (demo.notifications ?? []).filter((n) => n.kind === 'follow' && n.actor).map((n) => n.actor!.id);
-      return [...new Set(fans)].filter((id) => !demo.blocked.includes(id)).map(row);
+      return (demo.fans ?? []).filter((id) => !demo.blocked.includes(id)).map(row);
     }
     const sample = COMMENTERS.filter((_, i) => (hash(person.username) + i) % 2 === 0).map((n) => `demo-${n}`);
     if (demo.following.includes(person.id) && demo.me) sample.unshift(demo.me.id);

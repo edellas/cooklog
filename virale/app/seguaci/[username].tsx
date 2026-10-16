@@ -11,7 +11,6 @@ import { Txt } from '../../src/components/Txt';
 import { color, radius, space } from '../../src/design/tokens';
 import { listFollows, toggleFollow } from '../../src/services/api';
 import { emitFollowChange } from '../../src/state/postEvents';
-import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
 import type { FollowRow } from '../../src/types';
 
@@ -24,7 +23,6 @@ export default function FollowsScreen() {
   const router = useRouter();
   const goBack = useGoBack();
   const toast = useToast();
-  const { bump } = useSession();
   const [kind, setKind] = useState<Kind>(tipo === 'following' ? 'following' : 'followers');
   const [rows, setRows] = useState<FollowRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,9 +44,7 @@ export default function FollowsScreen() {
     haptic('light');
     setRows((list) => (list ?? []).map((x) => (x.id === row.id ? { ...x, followedByMe: on } : x)));
     emitFollowChange(row.id, on);
-    toggleFollow(row.id, on)
-      .then(bump)
-      .catch(() => {
+    toggleFollow(row.id, on).catch(() => {
         setRows((list) => (list ?? []).map((x) => (x.id === row.id ? { ...x, followedByMe: !on } : x)));
         emitFollowChange(row.id, !on);
         toast('Non ci sono riuscito. Riprova.', 'error');

@@ -241,8 +241,9 @@ export default function CommentsSheet() {
             tone={color.paperDim}
             style={{ flex: 1, paddingVertical: space[2] }}
           >
-            Per commentare serve la verifica dell’età: tocca qui per caricare il
-            documento.
+            {status?.identity?.status === 'pending'
+              ? 'Per commentare serve la verifica dell’età: il tuo documento è in controllo.'
+              : 'Per commentare serve la verifica dell’età: tocca qui per caricare il documento.'}
           </Txt>
         </Press>
       ) : (

@@ -1032,8 +1032,11 @@ begin
   return jsonb_build_object(
     'profile', jsonb_build_object(
       'id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio,
-      'followers', (select count(*) from follows where followee_id = v_pr.id),
-      'following', (select count(*) from follows where follower_id = v_pr.id),
+      -- Stesse regole degli elenchi (list_follows): niente account espulsi o bloccati.
+      'followers', (select count(*) from follows f join profiles a on a.id = f.follower_id
+                    where f.followee_id = v_pr.id and a.banned_at is null and not public.is_blocked_pair(v_uid, a.id)),
+      'following', (select count(*) from follows f join profiles a on a.id = f.followee_id
+                    where f.follower_id = v_pr.id and a.banned_at is null and not public.is_blocked_pair(v_uid, a.id)),
       'covers', (select count(*) from daily_viral where author_id = v_pr.id and featured_on <= public.cover_day()),
       'views', (select coalesce(sum(view_count), 0) from posts where author_id = v_pr.id and (v_pr.id = v_uid or hidden_at is null)),
       'followed', exists (select 1 from follows where follower_id = v_uid and followee_id = v_pr.id),
@@ -1511,7 +1514,7 @@ begin
   end if;
   insert into notifications (user_id, kind, data)
   values (p_user_id, case when p_decision = 'approve' then 'identity_ok' else 'identity_ko' end,
-          jsonb_build_object('reason', (select reject_reason from identity_checks where user_id = p_user_id)))
+          jsonb_build_object('reason', (select reject_reason from identity_checks where user_id = p_user_id), 'final', p_decision = 'underage'))
   on conflict (user_id, kind, actor_id, post_id) do update set created_at = now(), read_at = null, data = excluded.data;
   return jsonb_build_object('paths', jsonb_build_array(v_row.document_path, v_row.selfie_path));
 end;
@@ -1622,9 +1625,12 @@ returns setof jsonb language sql stable security definer set search_path = publi
   limit least(greatest(p_limit, 1), 100);
 $$;
 
-create or replace function public.mark_notifications_read()
+-- Segna come lette solo quelle mostrate (fino a p_up_to): una arrivata nel frattempo resta da leggere.
+drop function if exists public.mark_notifications_read();
+create or replace function public.mark_notifications_read(p_up_to timestamptz default null)
 returns void language sql security definer set search_path = public, pg_temp as $$
-  update notifications set read_at = now() where user_id = auth.uid() and read_at is null and created_at <= now();
+  update notifications set read_at = now()
+  where user_id = auth.uid() and read_at is null and created_at <= least(now(), coalesce(p_up_to, now()));
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -1789,7 +1795,7 @@ grant execute on function public.complete_private_data(text, text, date) to auth
 grant execute on function public.storage_purge_list(int) to authenticated;
 grant execute on function public.storage_purge_done(text, text[]) to authenticated;
 grant execute on function public.list_notifications(int) to authenticated;
-grant execute on function public.mark_notifications_read() to authenticated;
+grant execute on function public.mark_notifications_read(timestamptz) to authenticated;
 grant execute on function public.register_views(uuid[]) to authenticated;
 grant execute on function public.list_follows(text, text, int) to authenticated;
 

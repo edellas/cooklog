@@ -1,10 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 
 import { getMe, getStatus } from '../services/api';
-import { forgetRecentChanges } from './postEvents';
-import { flushViews } from './views';
+import { supabase } from '../services/supabase';
 import type { Me, Status } from '../types';
+import { forgetRecentChanges } from './postEvents';
+import { clearViews } from './views';
 
 type Session = {
   me: Me | null | undefined;
@@ -14,7 +15,7 @@ type Session = {
   setMe: (me: Me | null) => void;
   /** Verifica dell'età, ruoli, notifiche non lette, impostazioni. Null finché non arriva. */
   status: Status | null;
-  refreshStatus: () => void;
+  refreshStatus: () => Promise<void>;
   /** Cresce a ogni cambiamento che le altre schermate devono vedere (nuovo post, nuova copertina). */
   version: number;
   bump: () => void;
@@ -24,15 +25,21 @@ const Ctx = createContext<Session | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [me, setMeState] = useState<Me | null | undefined>(undefined);
-  // Cambiando utente (uscita, nuovo accesso) non deve restare nulla del precedente in memoria.
-  const setMe = useCallback((next: Me | null) => {
-    flushViews();
-    forgetRecentChanges();
-    setMeState(next);
-  }, []);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [version, setVersion] = useState(0);
+  /** Cresce a ogni cambio di utente: le risposte arrivate tardi per l'utente precedente si scartano. */
+  const generation = useRef(0);
+
+  // Cambiando utente (uscita, nuovo accesso) non deve restare nulla del precedente in memoria.
+  const setMe = useCallback((next: Me | null) => {
+    generation.current += 1;
+    clearViews();
+    forgetRecentChanges();
+    setStatus(null);
+    setMeState(next);
+  }, []);
+
   const retry = useCallback(() => {
     setError(null);
     getMe()
@@ -41,22 +48,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(retry, [retry]);
 
-  const refreshStatus = useCallback(() => {
-    getStatus()
-      .then(setStatus)
-      .catch(() => undefined);
+  // Sessione chiusa altrove (password cambiata su un altro telefono, token scaduto): si torna al benvenuto.
+  useEffect(() => {
+    if (!supabase) return;
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) setMe(null);
+    });
+    return () => data.subscription.unsubscribe();
+  }, [setMe]);
+
+  const refreshStatus = useCallback(async () => {
+    const gen = generation.current;
+    try {
+      const next = await getStatus();
+      if (gen === generation.current) setStatus(next);
+    } catch {
+      // Si riprova al prossimo giro.
+    }
   }, []);
 
   // Lo stato si aggiorna all'accesso, a ogni cambiamento, ogni minuto e tornando nell'app.
   useEffect(() => {
-    if (!me) {
-      setStatus(null);
-      return;
-    }
-    refreshStatus();
-    const id = setInterval(refreshStatus, 60_000);
+    if (!me) return;
+    void refreshStatus();
+    const id = setInterval(() => void refreshStatus(), 60_000);
     const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') refreshStatus();
+      if (s === 'active') void refreshStatus();
     });
     return () => {
       clearInterval(id);

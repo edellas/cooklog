@@ -241,8 +241,9 @@ export default function CreateScreen() {
                 Per pubblicare serve la verifica dell’età
               </Txt>
               <Txt variant="small" tone={color.paperDim}>
-                Il tempo per caricare il documento è scaduto. Tocca qui per
-                caricarlo: appena verificato potrai pubblicare di nuovo.
+                {status?.identity?.status === 'pending'
+                  ? 'Il tuo documento è arrivato dopo la scadenza: appena lo verifichiamo potrai pubblicare di nuovo.'
+                  : 'Il tempo per caricare il documento è scaduto. Tocca qui per caricarlo: appena verificato potrai pubblicare di nuovo.'}
               </Txt>
             </View>
           </Press>

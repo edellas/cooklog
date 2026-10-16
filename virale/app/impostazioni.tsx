@@ -11,7 +11,8 @@ import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { DOCS, OWNER, type DocSlug } from '../src/legal/docs';
-import { changePassword, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, unblockUser } from '../src/services/api';
+import { changePassword, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, setPassword, unblockUser } from '../src/services/api';
+import { flushViews } from '../src/state/views';
 import { Field } from '../src/components/Field';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
@@ -58,6 +59,7 @@ export default function Settings() {
 
   const exit = async () => {
     try {
+      await flushViews();
       await logout();
       setMe(null);
     } catch (e) {
@@ -118,13 +120,19 @@ export default function Settings() {
             }
             onPress={() => router.push('/verifica' as Href)}
           />
-          <PasswordChange />
-          <Press style={styles.row} onPress={() => void exit()} accessibilityRole="button">
-            <Icon name="esci" size={22} />
-            <Txt variant="label" style={{ flex: 1 }}>
-              Esci
-            </Txt>
-          </Press>
+          {status?.needsPassword ? (
+            <PasswordSet />
+          ) : (
+            <>
+              <PasswordChange />
+              <Press style={styles.row} onPress={() => void exit()} accessibilityRole="button">
+                <Icon name="esci" size={22} />
+                <Txt variant="label" style={{ flex: 1 }}>
+                  Esci
+                </Txt>
+              </Press>
+            </>
+          )}
         </Section>
 
         <Section title="Utenti bloccati">
@@ -184,11 +192,62 @@ export default function Settings() {
   );
 }
 
+/**
+ * Per gli account creati prima delle password: finché non ne imposti una, uscire significherebbe
+ * perdere l'account. Per questo "Esci" compare solo dopo.
+ */
+function PasswordSet() {
+  const toast = useToast();
+  const { refreshStatus } = useSession();
+  const [first, setFirst] = useState('');
+  const [again, setAgain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    if (first !== again) return setError('Le due password non coincidono.');
+    try {
+      setBusy(true);
+      setError(null);
+      await setPassword(first);
+      await refreshStatus();
+      toast('Password impostata: ora puoi uscire e rientrare con nome utente e password.');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={[styles.row, styles.warnBox, { flexDirection: 'column', alignItems: 'stretch', gap: space[3] }]}>
+      <Txt variant="label">Imposta una password</Txt>
+      <Txt variant="small" tone={color.paperDim}>
+        Il tuo account è stato creato prima delle password: impostane una per poter uscire e rientrare. Senza, uscendo perderesti l’account.
+      </Txt>
+      <Field value={first} onChangeText={setFirst} placeholder="Nuova password" secureTextEntry autoCapitalize="none" accessibilityLabel="Nuova password" maxLength={72} />
+      <Field value={again} onChangeText={setAgain} placeholder="Ripeti la password" secureTextEntry autoCapitalize="none" accessibilityLabel="Ripeti la nuova password" maxLength={72} />
+      <Txt variant="meta" tone={color.paperFaint}>
+        Almeno {PASSWORD_MIN} caratteri, con lettere e numeri.
+      </Txt>
+      {error ? (
+        <Txt variant="small" tone={color.matita}>
+          {error}
+        </Txt>
+      ) : null}
+      <Press style={[styles.pill, { backgroundColor: color.giallo, borderColor: color.giallo, alignSelf: 'flex-start' }]} onPress={() => void save()} disabled={busy || !first || !again} accessibilityRole="button">
+        <Txt variant="meta" tone={color.canvas}>
+          {busy ? 'Salvo…' : 'Imposta password'}
+        </Txt>
+      </Press>
+    </View>
+  );
+}
+
 function PasswordChange() {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!open) {
@@ -203,6 +262,7 @@ function PasswordChange() {
     );
   }
   const save = async () => {
+    if (next !== again) return setError('Le due password nuove non coincidono.');
     try {
       setBusy(true);
       setError(null);
@@ -211,6 +271,7 @@ function PasswordChange() {
       setOpen(false);
       setCurrent('');
       setNext('');
+      setAgain('');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -222,13 +283,14 @@ function PasswordChange() {
       <Txt variant="label">Cambia password</Txt>
       <Field value={current} onChangeText={setCurrent} placeholder="Password attuale" secureTextEntry autoCapitalize="none" accessibilityLabel="Password attuale" maxLength={72} />
       <Field value={next} onChangeText={setNext} placeholder={`Nuova password (almeno ${PASSWORD_MIN} caratteri)`} secureTextEntry autoCapitalize="none" accessibilityLabel="Nuova password" maxLength={72} />
+      <Field value={again} onChangeText={setAgain} placeholder="Ripeti la nuova password" secureTextEntry autoCapitalize="none" accessibilityLabel="Ripeti la nuova password" maxLength={72} />
       {error ? (
         <Txt variant="small" tone={color.matita}>
           {error}
         </Txt>
       ) : null}
       <View style={{ flexDirection: 'row', gap: space[2] }}>
-        <Press style={[styles.pill, { backgroundColor: color.giallo, borderColor: color.giallo }]} onPress={() => void save()} disabled={busy || !current || !next} accessibilityRole="button">
+        <Press style={[styles.pill, { backgroundColor: color.giallo, borderColor: color.giallo }]} onPress={() => void save()} disabled={busy || !current || !next || !again} accessibilityRole="button">
           <Txt variant="meta" tone={color.canvas}>
             {busy ? 'Salvo…' : 'Salva'}
           </Txt>
@@ -276,4 +338,5 @@ const styles = StyleSheet.create({
   pill: { borderWidth: 1, borderColor: color.paper, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 6 },
   delete: { borderWidth: 1.5, borderColor: color.matita, borderRadius: radius.control, paddingVertical: 15, alignItems: 'center', minHeight: 52, justifyContent: 'center' },
   deleteConfirm: { backgroundColor: color.matita },
+  warnBox: { borderWidth: 1, borderColor: color.giallo },
 });

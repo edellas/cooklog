@@ -12,6 +12,7 @@ import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { isDemo, logout } from '../src/services/api';
 import { OWNER } from '../src/legal/docs';
+import { flushViews } from '../src/state/views';
 import { FONTS } from '../src/design/fonts';
 import { color } from '../src/design/tokens';
 import { SessionProvider, useSession } from '../src/state/session';
@@ -142,7 +143,8 @@ function Banned() {
       <Press
         style={styles.retry}
         onPress={() => {
-          void logout()
+          void flushViews()
+            .then(logout)
             .catch(() => undefined)
             .then(() => setMe(null));
         }}

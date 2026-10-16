@@ -1,3 +1,5 @@
+import { AppState } from 'react-native';
+
 import { registerViews } from '../services/api';
 
 /**
@@ -10,13 +12,27 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 export function queueView(postId: string) {
   pending.add(postId);
   if (timer) return;
-  timer = setTimeout(flushViews, 3000);
+  timer = setTimeout(() => void flushViews(), 3000);
 }
 
-export function flushViews() {
+/** Invia subito quelle in sospeso (prima di uscire dall'account o quando l'app va in secondo piano). */
+export async function flushViews(): Promise<void> {
   if (timer) clearTimeout(timer);
   timer = null;
   const ids = [...pending];
   pending.clear();
-  for (let i = 0; i < ids.length; i += 20) registerViews(ids.slice(i, i + 20)).catch(() => undefined);
+  const chunks: Promise<void>[] = [];
+  for (let i = 0; i < ids.length; i += 20) chunks.push(registerViews(ids.slice(i, i + 20)).catch(() => undefined));
+  await Promise.all(chunks);
 }
+
+/** Cambiando account le viste in sospeso erano dell'altra persona: si buttano. */
+export function clearViews() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  pending.clear();
+}
+
+AppState.addEventListener('change', (state) => {
+  if (state === 'background') void flushViews();
+});

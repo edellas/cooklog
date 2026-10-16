@@ -232,16 +232,22 @@ export function CoverView({
 function Countdown({ onEnd, revealMinutes }: { onEnd?: () => void; revealMinutes: number }) {
   const [left, setLeft] = useState(() => msUntilReveal(revealMinutes));
   const prev = useRef(left);
+  const endRef = useRef(onEnd);
+  endRef.current = onEnd;
   useEffect(() => {
+    // Se l'amministratore sposta l'orario si riparte da capo: non è un "nuovo giorno".
+    const start = msUntilReveal(revealMinutes);
+    prev.current = start;
+    setLeft(start);
     const id = setInterval(() => {
       const next = msUntilReveal(revealMinutes);
-      // Passata la mezzanotte il conto risale a 24 ore: è il segnale che c'è una copertina nuova.
-      if (next > prev.current + 60_000) onEnd?.();
+      // Passata la rivelazione il conto risale a 24 ore: è il segnale che c'è una copertina nuova.
+      if (next > prev.current + 60_000) endRef.current?.();
       prev.current = next;
       setLeft(next);
     }, 1000);
     return () => clearInterval(id);
-  }, [onEnd, revealMinutes]);
+  }, [revealMinutes]);
   return (
     <Txt variant="label" tone={color.canvas} style={{ flex: 1 }}>
       Prossima copertina tra {clock(left)}
