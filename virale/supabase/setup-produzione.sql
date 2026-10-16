@@ -66,6 +66,8 @@ select cron.schedule(
   $$ select public.arena_close_day(public.arena_today() - 1);
      delete from public.post_views where day < public.arena_today() - 1;
      delete from public.notifications where created_at < now() - interval '90 days';
+     delete from public.seen_posts where seen_at < now() - interval '30 days';
+     delete from public.user_interests where updated_at < now() - interval '120 days';
      -- Utenti di accesso rimasti senza profilo (registrazione interrotta) dopo un giorno: liberano il nome.
      delete from auth.users u where u.created_at < now() - interval '1 day'
        and not exists (select 1 from public.profiles p where p.id = u.id) $$

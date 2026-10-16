@@ -370,3 +370,75 @@ exception when others then if sqlerrm not like '%non è disponibile%' then raise
 do $$ begin perform complete_registration('altro_nome', 'C', 'A', '1990-01-01', true); raise exception 'NON DOVEVA PASSARE';
 exception when others then if sqlerrm not like '%non valido per questo accesso%' then raise; end if; raise notice 'ok, nome utente legato all''accesso'; end $$;
 reset role;
+
+-- ---------- Interessi, Esplora, pagine ----------
+-- b1 guarda; b2 pubblica gatti, b3 pubblica auto.
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000b1'), ('00000000-0000-0000-0000-0000000000b2'), ('00000000-0000-0000-0000-0000000000b3');
+insert into profiles (id, username, display_name) values
+  ('00000000-0000-0000-0000-0000000000b1', 'guarda', 'Guarda G.'), ('00000000-0000-0000-0000-0000000000b2', 'gatti', 'Gatti G.'), ('00000000-0000-0000-0000-0000000000b3', 'auto', 'Auto A.');
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username in ('guarda', 'gatti', 'auto');
+insert into posts (id, author_id, media, caption) values ('20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000b2', test_media('00000000-0000-0000-0000-0000000000b2', '1.jpg'), 'Micio #gatti');
+insert into posts (id, author_id, media, caption) values ('20000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000b2', test_media('00000000-0000-0000-0000-0000000000b2', '2.jpg'), 'Ancora #gatti');
+insert into posts (id, author_id, media, caption) values ('20000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000b2', test_media('00000000-0000-0000-0000-0000000000b2', '3.jpg'), 'Sonno #gatti');
+insert into posts (id, author_id, media, caption) values ('20000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-0000000000b3', test_media('00000000-0000-0000-0000-0000000000b3', '1.jpg'), 'Rombo #auto');
+insert into posts (id, author_id, media, caption) values ('20000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-0000000000b3', test_media('00000000-0000-0000-0000-0000000000b3', '2.jpg'), 'Pista #auto');
+insert into posts (id, author_id, media, caption) values ('20000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-0000000000b3', test_media('00000000-0000-0000-0000-0000000000b3', '3.jpg'), 'Box #auto');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', false);
+insert into post_likes (post_id, user_id) values ('20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000b1');
+select track_views('[{"post_id":"20000000-0000-0000-0000-000000000004","dwell_ms":300},{"post_id":"20000000-0000-0000-0000-000000000005","dwell_ms":400},{"post_id":"20000000-0000-0000-0000-000000000006","dwell_ms":500},{"post_id":"20000000-0000-0000-0000-000000000001","dwell_ms":5000,"completed":true}]');
+reset role;
+do $$ declare a real; b real; t real; v int; begin
+  select score into a from user_interests where user_id = '00000000-0000-0000-0000-0000000000b1' and key = 'a:00000000-0000-0000-0000-0000000000b2';
+  select score into b from user_interests where user_id = '00000000-0000-0000-0000-0000000000b1' and key = 'a:00000000-0000-0000-0000-0000000000b3';
+  select score into t from user_interests where user_id = '00000000-0000-0000-0000-0000000000b1' and key = 't:gatti';
+  select view_count into v from posts where id = '20000000-0000-0000-0000-000000000004';
+  if not (a > 1 and b < 0 and t > 0) then raise exception 'interessi sbagliati: % % %', a, b, t; end if;
+  if v <> 0 then raise exception 'una scorsa di 0,3 s non è una visualizzazione'; end if;
+  if (select view_count from posts where id = '20000000-0000-0000-0000-000000000001') <> 1 then raise exception 'visualizzazione non contata'; end if;
+  raise notice 'ok, gusti imparati da mi piace e da come si guarda';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', false);
+do $$ declare first_author text; ids text[]; begin
+  select array_agg(x ->> 'id'), (array_agg(x -> 'author' ->> 'username'))[1] into ids, first_author from feed_explore(20) x;
+  if first_author <> 'gatti' then raise exception 'in Esplora doveva venire prima chi piace: %', first_author; end if;
+  if exists (select 1 from posts where id::text = any (ids) and author_id = auth.uid()) then raise exception 'propri post in Esplora'; end if;
+  -- I post in gara di oggi (Post 1-3 di user1-3) restano nei Provini.
+  if ids && array['10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002'] then raise exception 'post in gara in Esplora'; end if;
+  raise notice 'ok, Esplora ordinata per gusti, senza propri post né post in gara';
+end $$;
+do $$ declare n int; begin
+  select count(*) into n from feed_explore(5, array['20000000-0000-0000-0000-000000000002'::uuid]) x where x ->> 'id' = '20000000-0000-0000-0000-000000000002';
+  if n <> 0 then raise exception 'Esplora ripropone un post già nella pagina'; end if;
+  raise notice 'ok, Esplora non ripete i post già mostrati';
+end $$;
+select count(*) as provini_senza_errori from feed_for_you(6);
+-- Pagine: Seguiti, profilo, elenchi.
+insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000b2');
+do $$ declare p1 jsonb[]; p2 jsonb[]; begin
+  select array_agg(x) into p1 from feed_following(2) x;
+  select array_agg(x) into p2 from feed_following(2, (p1[2] ->> 'created_at')::timestamptz) x;
+  if array_length(p1, 1) <> 2 or array_length(p2, 1) <> 1 or p2[1] ->> 'id' in (p1[1] ->> 'id', p1[2] ->> 'id') then raise exception 'pagine di Seguiti sbagliate'; end if;
+  select array_agg(x) into p1 from profile_posts('auto', 'posts', null, 2) x;
+  select array_agg(x) into p2 from profile_posts('auto', 'posts', (p1[2] ->> 'cursor')::timestamptz, 2) x;
+  if array_length(p1, 1) <> 2 or array_length(p2, 1) <> 1 then raise exception 'pagine del profilo sbagliate'; end if;
+  raise notice 'ok, Seguiti e profilo a pagine senza doppioni';
+end $$;
+-- Le scelte dell'amministratore passano anche con safeupdate (UPDATE sempre con WHERE).
+reset role;
+do $$ begin
+  if not exists (select 1 from pg_proc where proname = 'admin_set_settings' and prosrc ~* 'update arena_config set [^;]* where') then
+    raise exception 'admin_set_settings senza WHERE';
+  end if;
+  raise notice 'ok, nessun UPDATE senza WHERE nelle impostazioni';
+end $$;
+-- Gli interessi non impediscono di cancellare l'account (i trigger non ricreano righe orfane).
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', false);
+select delete_my_account();
+reset role;
+do $$ begin
+  if exists (select 1 from user_interests where user_id = '00000000-0000-0000-0000-0000000000b1') then raise exception 'interessi rimasti'; end if;
+  raise notice 'ok, account con interessi cancellato del tutto';
+end $$;

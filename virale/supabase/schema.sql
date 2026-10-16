@@ -753,7 +753,8 @@ returns jsonb language sql stable security definer set search_path = public, pg_
   where p.id = p_post_id;
 $$;
 
--- I Provini ("Per te"): prima i post in gara scelti alla cieca, poi post recenti fuori gara.
+-- I Provini ("In gara"): i post in gara oggi, pescati a caso ma con probabilità che cresce con il livello
+-- e con l'interesse di chi guarda (sezione 15). Esaurita la gara, si continua con Esplora.
 create or replace function public.feed_for_you(p_limit int default 6, p_exclude uuid[] default '{}')
 returns table (entry_id uuid, post jsonb)
 language plpgsql security definer set search_path = public, pg_temp as $$
@@ -769,19 +770,30 @@ declare
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
 
-  with upper_pool as (
-    select p.id, p.tier from public.arena_pick(v_day, v_uid, 1, 32767, 200) p
+  with pool as materialized (
+    select p.id, p.post_id, p.tier, true as upper from public.arena_pick(v_day, v_uid, 1, 32767, 200) p
+    union all
+    select p.id, p.post_id, p.tier, false from public.arena_pick(v_day, v_uid, 0, 0, v_limit * 4) p
+  ), ranked as (
+    -- Solo i gusti personali (niente popolarità): la gara la decidono gli sguardi, non chi è già avanti.
+    select r.post_id, r.score from public.rank_posts(v_uid, array(select post_id from pool), true) r
+  ), weighted as materialized (
+    -- Campionamento pesato (Efraimidis–Spirakis): peso = (1 + livello) × e^gusto, con il gusto tra -1 e 1,2.
+    -- Anche i post lontani dai tuoi gusti escono, solo meno spesso: ogni post in gara trova pubblico.
+    select x.id, x.upper,
+           -ln(greatest(random(), 1e-12)) / ((case when x.upper then 1 + x.tier else 1 end)
+             * exp(least(greatest(coalesce(r.score, 0), -1), 1.2))) as k
+    from pool x left join ranked r on r.post_id = x.post_id
   ), upper_pick as (
-    -- Campionamento pesato per livello (Efraimidis–Spirakis), come serveBatch in engine.ts.
-    select id from upper_pool order by -ln(greatest(random(), 1e-12)) / (1 + upper_pool.tier) limit v_upper_slots
+    select id from weighted where upper order by k limit v_upper_slots
   ), lower_pick as (
-    select p.id from public.arena_pick(v_day, v_uid, 0, 0, v_limit) p
+    select id, k from weighted where not upper order by k limit v_limit
   ), merged as (
-    select id, 0 as pri from upper_pick
-    union all select id, 1 from lower_pick
-    union all select id, 2 from upper_pool where id not in (select id from upper_pick)
+    select id, 0 as pri, 0::double precision as k from upper_pick
+    union all select id, 1, k from lower_pick
+    union all select id, 2, k from weighted where upper and id not in (select id from upper_pick)
   )
-  select array_agg(id) into v_ids from (select id from merged order by pri, random() limit v_limit) x;
+  select array_agg(id) into v_ids from (select id from merged order by pri, k limit v_limit) x;
 
   if v_ids is not null then
     insert into arena_views (entry_id, viewer_id, contest_day)
@@ -797,29 +809,20 @@ begin
 
   v_n := coalesce(array_length(v_ids, 1), 0);
   if v_n < v_limit then
-    -- Fuori gara: i post recenti più apprezzati, mai i propri, mai quelli già mostrati.
-    return query
-    select null::uuid, public.post_json(p.id, v_uid)
-    from posts p
-    where p.author_id <> v_uid
-      and public.can_see(p.id, v_uid)
-      and p.created_at > now() - interval '3 days'
-      and not (p.id = any (coalesce(p_exclude, '{}')))
-      -- I post in gara oggi si vedono solo nei Provini, serviti alla cieca: mai nel ripiego.
-      and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
-    order by p.like_count desc, p.created_at desc
-    limit v_limit - v_n;
+    return query select null::uuid, x from public.feed_explore(v_limit - v_n, p_exclude) x;
   end if;
 end;
 $$;
 
--- "Seguiti": i post di chi segui, dal più recente.
-create or replace function public.feed_following(p_limit int default 30)
+-- "Seguiti": i post di chi segui, dal più recente, a pagine (p_before = data dell'ultimo già mostrato).
+drop function if exists public.feed_following(int);
+create or replace function public.feed_following(p_limit int default 20, p_before timestamptz default null)
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select public.post_json(p.id, auth.uid())
   from posts p
   join follows f on f.followee_id = p.author_id and f.follower_id = auth.uid()
   where public.can_see(p.id, auth.uid())
+    and p.created_at < coalesce(p_before, 'infinity')
   order by p.created_at desc
   limit least(greatest(p_limit, 1), 60);
 $$;
@@ -1046,11 +1049,11 @@ begin
     ),
     'posts', coalesce((select jsonb_agg(public.post_json(p.id, v_uid) order by p.created_at desc)
                        from (select id, created_at from posts where author_id = v_pr.id
-                             and (v_pr.id = v_uid or public.can_see(id, v_uid)) order by created_at desc limit 60) p), '[]'),
+                             and (v_pr.id = v_uid or public.can_see(id, v_uid)) order by created_at desc limit 30) p), '[]'),
     'saved', case when v_pr.id = v_uid then
                coalesce((select jsonb_agg(public.post_json(s.post_id, v_uid) order by s.created_at desc)
                          from (select post_id, created_at from post_saves where user_id = v_uid and public.can_see(post_id, v_uid)
-                               order by created_at desc limit 60) s), '[]')
+                               order by created_at desc limit 30) s), '[]')
              else '[]'::jsonb end,
     'entry', (select jsonb_build_object('entry_id', e.id, 'post_id', e.post_id, 'tier', e.tier, 'status', e.status,
                                         'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day)
@@ -1402,7 +1405,8 @@ begin
   if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
   if p_reveal_minutes not between 0 and 1439 then raise exception 'Orario non valido.'; end if;
   if p_id_grace_days not between 1 and 60 then raise exception 'I giorni per il documento vanno da 1 a 60.'; end if;
-  update arena_config set reveal_minutes = p_reveal_minutes, id_grace_days = p_id_grace_days;
+  -- Supabase rifiuta gli UPDATE senza WHERE (estensione safeupdate) anche dentro le funzioni.
+  update arena_config set reveal_minutes = p_reveal_minutes, id_grace_days = p_id_grace_days where id;
   return public.get_settings();
 end;
 $$;
@@ -1607,7 +1611,8 @@ create trigger trg_notify_tier after update of tier on public.arena_entries for 
 drop trigger if exists trg_notify_cover on public.daily_viral;
 create trigger trg_notify_cover after insert on public.daily_viral for each row execute function public.notify_on_change();
 
-create or replace function public.list_notifications(p_limit int default 50)
+drop function if exists public.list_notifications(int);
+create or replace function public.list_notifications(p_limit int default 50, p_before timestamptz default null)
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'id', n.id, 'kind', n.kind, 'data', n.data, 'created_at', n.created_at, 'read', n.read_at is not null,
@@ -1621,6 +1626,7 @@ returns setof jsonb language sql stable security definer set search_path = publi
     and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))
     and (n.post_id is null or p.id is not null)
     and n.created_at <= now()
+    and n.created_at < coalesce(p_before, 'infinity')
   order by n.created_at desc
   limit least(greatest(p_limit, 1), 100);
 $$;
@@ -1668,7 +1674,8 @@ end;
 $$;
 
 -- Chi segue e chi è seguito: elenchi visibili a tutti, senza utenti espulsi o bloccati.
-create or replace function public.list_follows(p_username text, p_kind text, p_limit int default 100)
+drop function if exists public.list_follows(text, text, int);
+create or replace function public.list_follows(p_username text, p_kind text, p_limit int default 100, p_before timestamptz default null)
 returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
@@ -1683,11 +1690,12 @@ begin
   return query
   select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name,
                             'followed', exists (select 1 from follows m where m.follower_id = v_uid and m.followee_id = a.id),
-                            'is_me', a.id = v_uid)
+                            'is_me', a.id = v_uid, 'cursor', f.created_at)
   from follows f
   join profiles a on a.id = case when p_kind = 'followers' then f.follower_id else f.followee_id end
   where (case when p_kind = 'followers' then f.followee_id else f.follower_id end) = v_target.id
     and a.banned_at is null and not public.is_blocked_pair(v_uid, a.id)
+    and f.created_at < coalesce(p_before, 'infinity')
   order by f.created_at desc
   limit least(greatest(p_limit, 1), 500);
 end;
@@ -1749,6 +1757,288 @@ $$;
 drop trigger if exists trg_posts_media_urls on public.posts;
 create trigger trg_posts_media_urls before insert on public.posts for each row execute function public.check_media_urls();
 
+-- ---------------------------------------------------------------------------
+-- 15) Interessi: cosa ti piace guardare, imparato da come guardi (come TikTok)
+-- ---------------------------------------------------------------------------
+-- Ogni persona ha un punteggio per "chiavi": l'autore (a:<id>), gli hashtag della didascalia (t:<tag>)
+-- e il tipo di contenuto (k:video / k:image). I segnali lo spostano: guardare fino in fondo o rivedere
+-- (+), mi piace, commenti, salvataggi, condivisioni, seguire (++), scorrere via subito (−), segnalare (−−).
+-- I punteggi si dimezzano ogni 14 giorni: contano i gusti di adesso, non quelli di mesi fa.
+create table if not exists public.user_interests (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  key text not null check (length(key) <= 80),
+  score real not null default 0,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, key)
+);
+alter table public.user_interests enable row level security;
+revoke all on public.user_interests from anon, authenticated;
+
+-- Post già passati sullo schermo: Esplora non li ripropone per qualche giorno.
+create table if not exists public.seen_posts (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  post_id uuid not null references public.posts(id) on delete cascade,
+  seen_at timestamptz not null default now(),
+  primary key (user_id, post_id)
+);
+create index if not exists idx_seen_posts_at on public.seen_posts (seen_at);
+alter table public.seen_posts enable row level security;
+revoke all on public.seen_posts from anon, authenticated;
+create index if not exists idx_post_likes_user on public.post_likes (user_id, created_at desc);
+
+create or replace function public.interest_decayed(p_score real, p_at timestamptz)
+returns real language sql stable set search_path = public, pg_temp as $$
+  select (p_score * power(0.5, extract(epoch from (now() - p_at)) / (14 * 86400.0)))::real;
+$$;
+
+-- Le chiavi di un post con il loro peso: l'autore conta più di un singolo hashtag.
+create or replace function public.post_interest_keys(p_post_id uuid)
+returns table (key text, weight real) language sql stable security definer set search_path = public, pg_temp as $$
+  with p as (select author_id, caption, media from posts where id = p_post_id),
+  tags as (
+    select distinct lower(m[1]) as t
+    from p, regexp_matches(coalesce(p.caption, ''), '#([[:alnum:]_]{2,40})', 'g') m
+    limit 8
+  )
+  select 'a:' || p.author_id::text, 1.0::real from p
+  union all
+  select 'k:' || coalesce(p.media -> 0 ->> 'kind', 'image'), 0.25::real from p
+  union all
+  select 't:' || tags.t, (0.6 / sqrt(greatest((select count(*) from tags), 1)))::real from tags;
+$$;
+
+create or replace function public.interest_bump_key(p_uid uuid, p_key text, p_delta real)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_uid is null or p_key is null or p_delta = 0 then return; end if;
+  -- Durante la cancellazione di un account i trigger non devono ricreare righe per chi non c'è più.
+  if not exists (select 1 from profiles where id = p_uid) then return; end if;
+  insert into user_interests as ui (user_id, key, score, updated_at)
+  values (p_uid, p_key, greatest(-20, least(50, p_delta)), now())
+  on conflict (user_id, key) do update
+    set score = greatest(-20, least(50, public.interest_decayed(ui.score, ui.updated_at) + excluded.score)),
+        updated_at = now();
+end;
+$$;
+
+create or replace function public.interest_bump(p_uid uuid, p_post_id uuid, p_delta real)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_uid is null or p_post_id is null or p_delta = 0 then return; end if;
+  if not exists (select 1 from profiles where id = p_uid) then return; end if;
+  -- I propri post non insegnano nulla sui propri gusti.
+  if exists (select 1 from posts where id = p_post_id and author_id = p_uid) then return; end if;
+  insert into user_interests as ui (user_id, key, score, updated_at)
+  select p_uid, k.key, greatest(-20, least(50, p_delta * k.weight)), now() from public.post_interest_keys(p_post_id) k
+  on conflict (user_id, key) do update
+    set score = greatest(-20, least(50, public.interest_decayed(ui.score, ui.updated_at) + excluded.score)),
+        updated_at = now();
+end;
+$$;
+
+-- Mi piace, salvataggi, condivisioni, commenti, segnalazioni e follow aggiornano gli interessi dal server:
+-- non dipendono da cosa racconta l'app.
+create or replace function public.interest_on_signal()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if tg_table_name = 'post_likes' then
+    if tg_op = 'INSERT' then perform public.interest_bump(new.user_id, new.post_id, 1.0);
+    else perform public.interest_bump(old.user_id, old.post_id, -1.0); end if;
+  elsif tg_table_name = 'post_saves' then
+    if tg_op = 'INSERT' then perform public.interest_bump(new.user_id, new.post_id, 2.0);
+    else perform public.interest_bump(old.user_id, old.post_id, -1.5); end if;
+  elsif tg_table_name = 'post_shares' then
+    perform public.interest_bump(new.user_id, new.post_id, 2.0);
+  elsif tg_table_name = 'comments' then
+    perform public.interest_bump(new.user_id, new.post_id, 1.5);
+  elsif tg_table_name = 'reports' then
+    perform public.interest_bump(new.reporter_id, new.post_id, -8.0);
+  elsif tg_table_name = 'follows' then
+    if tg_op = 'INSERT' then perform public.interest_bump_key(new.follower_id, 'a:' || new.followee_id::text, 3.0);
+    elsif exists (select 1 from profiles where id = old.followee_id) then
+      perform public.interest_bump_key(old.follower_id, 'a:' || old.followee_id::text, -3.0);
+    end if;
+  end if;
+  return null;
+end;
+$$;
+drop trigger if exists trg_interest_likes on public.post_likes;
+create trigger trg_interest_likes after insert or delete on public.post_likes for each row execute function public.interest_on_signal();
+drop trigger if exists trg_interest_saves on public.post_saves;
+create trigger trg_interest_saves after insert or delete on public.post_saves for each row execute function public.interest_on_signal();
+drop trigger if exists trg_interest_shares on public.post_shares;
+create trigger trg_interest_shares after insert on public.post_shares for each row execute function public.interest_on_signal();
+drop trigger if exists trg_interest_comments on public.comments;
+create trigger trg_interest_comments after insert on public.comments for each row execute function public.interest_on_signal();
+drop trigger if exists trg_interest_reports on public.reports;
+create trigger trg_interest_reports after insert on public.reports for each row execute function public.interest_on_signal();
+drop trigger if exists trg_interest_follows on public.follows;
+create trigger trg_interest_follows after insert or delete on public.follows for each row execute function public.interest_on_signal();
+
+-- Quanto un post fa per te. Somma di:
+--   gusti (autore, hashtag, tipo) · persone con gusti simili ai tuoi che lo hanno apprezzato ·
+--   e, se p_personal_only è falso, quanto piace in proporzione a chi l'ha visto, quanto è recente e se segui l'autore.
+-- Tutti i termini sono schiacciati (tanh) così nessuno domina: un autore adorato non riempie il feed da solo.
+create or replace function public.rank_posts(p_uid uuid, p_ids uuid[], p_personal_only boolean default false)
+returns table (post_id uuid, score real) language sql stable security definer set search_path = public, pg_temp as $$
+  with mine as (
+    select key, public.interest_decayed(score, updated_at) as s from user_interests where user_id = p_uid
+  ), similar_users as (
+    -- Chi ha messo mi piace agli stessi post tuoi negli ultimi 30 giorni (i 50 più vicini).
+    select l2.user_id, count(*)::real as n
+    from post_likes l1
+    join post_likes l2 on l2.post_id = l1.post_id and l2.user_id <> l1.user_id
+    where l1.user_id = p_uid and l1.created_at > now() - interval '30 days'
+    group by l2.user_id
+    order by n desc
+    limit 50
+  ), c as (
+    select p.* from posts p where p.id = any (p_ids)
+  ), taste as (
+    select c.id, coalesce(sum(k.weight * m.s), 0)::real as t
+    from c cross join lateral public.post_interest_keys(c.id) k
+    left join mine m on m.key = k.key
+    group by c.id
+  ), crowd as (
+    select l.post_id, sum(su.n)::real as n
+    from post_likes l join similar_users su on su.user_id = l.user_id
+    where l.post_id = any (p_ids)
+    group by l.post_id
+  )
+  select c.id,
+    (tanh(coalesce(t.t, 0) / 4.0) * 1.2
+     + tanh(coalesce(cr.n, 0) / 3.0) * 0.7
+     + case when p_personal_only then 0 else
+         least((c.like_count + 2 * c.save_count + 2 * c.share_count + c.comment_count + 1.0) / (c.view_count + 8.0), 1.0) * 0.8
+         + exp(-extract(epoch from (now() - c.created_at)) / (3 * 86400.0)) * 0.4
+         + case when exists (select 1 from follows f where f.follower_id = p_uid and f.followee_id = c.author_id) then 0.3 else 0 end
+       end)::real
+  from c
+  left join taste t on t.id = c.id
+  left join crowd cr on cr.post_id = c.id;
+$$;
+
+-- Esplora: tutti i post fuori dalla gara di oggi, ordinati per te. Un po' di caso (esplorazione) fa
+-- scoprire anche cose nuove, e al massimo due post dello stesso autore per pagina.
+-- Finiti quelli nuovi, ripropone i meno recenti: il feed non finisce mai.
+create or replace function public.feed_explore(p_limit int default 8, p_exclude uuid[] default '{}')
+returns setof jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_day date := public.arena_today();
+  v_limit int := least(greatest(p_limit, 1), 20);
+  v_ex uuid[] := (coalesce(p_exclude, '{}'::uuid[]))[1:300];
+  v_pool uuid[];
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+
+  select array_agg(id) into v_pool from (
+    select p.id from posts p
+    where p.author_id <> v_uid
+      and p.created_at > now() - interval '30 days'
+      and not (p.id = any (v_ex))
+      and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
+      and not exists (select 1 from seen_posts s where s.user_id = v_uid and s.post_id = p.id and s.seen_at > now() - interval '3 days')
+      and public.can_see(p.id, v_uid)
+    order by p.created_at desc
+    limit 400
+  ) x;
+
+  if coalesce(array_length(v_pool, 1), 0) < v_limit then
+    select array_agg(id) into v_pool from (
+      select p.id from posts p
+      where p.author_id <> v_uid
+        and not (p.id = any (v_ex))
+        and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
+        and public.can_see(p.id, v_uid)
+      order by random()
+      limit 400
+    ) x;
+  end if;
+  if v_pool is null then return; end if;
+
+  return query
+  with r as (
+    select r.post_id, r.score + random() * 0.6 as s from public.rank_posts(v_uid, v_pool, false) r
+  ), d as (
+    select r.post_id, r.s, row_number() over (partition by p.author_id order by r.s desc) as rn
+    from r join posts p on p.id = r.post_id
+  )
+  select public.post_json(d.post_id, v_uid) from d where d.rn <= 2 order by d.s desc limit v_limit;
+end;
+$$;
+
+-- Cosa è passato sullo schermo e per quanto. Serve a tre cose: le visualizzazioni dei post (da 1 secondo,
+-- una per persona al giorno, solo per chi ha l'età verificata o è nei giorni di tolleranza), i gusti
+-- (scorrere via subito abbassa, guardare fino in fondo alza) e a non riproporre gli stessi post in Esplora.
+create or replace function public.track_views(p_items jsonb)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_day date := public.arena_today();
+  v_act boolean;
+  r record;
+begin
+  if v_uid is null or not public.is_active(v_uid) or p_items is null or jsonb_typeof(p_items) <> 'array' then return; end if;
+  v_act := public.can_act(v_uid);
+  for r in
+    select distinct on (x.post_id) x.post_id,
+           least(greatest(coalesce(x.dwell_ms, 0), 0), 600000) as dwell,
+           coalesce(x.completed, false) as completed,
+           coalesce(x.rewatched, false) as rewatched
+    from (select * from jsonb_to_recordset(p_items) as y(post_id uuid, dwell_ms int, completed boolean, rewatched boolean) limit 30) x
+    join posts p on p.id = x.post_id and p.author_id <> v_uid
+    where public.can_see(x.post_id, v_uid)
+  loop
+    insert into seen_posts (user_id, post_id, seen_at) values (v_uid, r.post_id, now())
+    on conflict (user_id, post_id) do update set seen_at = now();
+    perform public.interest_bump(v_uid, r.post_id,
+      case when r.rewatched then 1.2
+           when r.completed then 0.7
+           when r.dwell >= 6000 then 0.5
+           when r.dwell >= 2500 then 0.2
+           when r.dwell < 1200 then -0.4
+           else 0 end);
+    if v_act and r.dwell >= 1000 then
+      insert into post_views (post_id, viewer_id, day) values (r.post_id, v_uid, v_day) on conflict do nothing;
+      if found then update posts set view_count = view_count + 1 where id = r.post_id; end if;
+    end if;
+  end loop;
+end;
+$$;
+
+-- Griglia del profilo a pagine: i post (o i salvati, solo i propri) più vecchi di p_before.
+create or replace function public.profile_posts(p_username text, p_kind text, p_before timestamptz default null, p_limit int default 30)
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_pr profiles;
+begin
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  select * into v_pr from profiles where username = p_username;
+  if not found or (v_pr.id <> v_uid and (v_pr.banned_at is not null or public.is_blocked_pair(v_uid, v_pr.id))) then
+    raise exception 'Profilo non trovato.';
+  end if;
+  if p_kind = 'saved' then
+    if v_pr.id <> v_uid then return; end if;
+    return query
+    select public.post_json(s.post_id, v_uid) || jsonb_build_object('cursor', s.created_at)
+    from post_saves s
+    where s.user_id = v_uid and public.can_see(s.post_id, v_uid) and s.created_at < coalesce(p_before, 'infinity')
+    order by s.created_at desc
+    limit least(greatest(p_limit, 1), 60);
+  else
+    return query
+    select public.post_json(p.id, v_uid) || jsonb_build_object('cursor', p.created_at)
+    from posts p
+    where p.author_id = v_pr.id and (v_pr.id = v_uid or public.can_see(p.id, v_uid))
+      and p.created_at < coalesce(p_before, 'infinity')
+    order by p.created_at desc
+    limit least(greatest(p_limit, 1), 60);
+  end if;
+end;
+$$;
+
 -- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
 revoke execute on all functions in schema public from public, anon, authenticated;
 -- Usate dalle regole RLS e dai controlli delle tabelle: devono restare eseguibili da chi è autenticato.
@@ -1765,7 +2055,7 @@ revoke all on function public.arena_pick(date, uuid, int, int, int) from public,
 revoke all on function public.bump_post_counter() from public, anon, authenticated;
 grant execute on function public.arena_submit(uuid) to authenticated;
 grant execute on function public.feed_for_you(int, uuid[]) to authenticated;
-grant execute on function public.feed_following(int) to authenticated;
+grant execute on function public.feed_following(int, timestamptz) to authenticated;
 grant execute on function public.arena_record_view(uuid, int, boolean, boolean, boolean, boolean, boolean, boolean, boolean) to authenticated;
 grant execute on function public.arena_my_entry() to authenticated;
 grant execute on function public.get_post(uuid) to authenticated;
@@ -1794,10 +2084,13 @@ grant execute on function public.identity_review(uuid, text, text, timestamptz) 
 grant execute on function public.complete_private_data(text, text, date) to authenticated;
 grant execute on function public.storage_purge_list(int) to authenticated;
 grant execute on function public.storage_purge_done(text, text[]) to authenticated;
-grant execute on function public.list_notifications(int) to authenticated;
+grant execute on function public.list_notifications(int, timestamptz) to authenticated;
 grant execute on function public.mark_notifications_read(timestamptz) to authenticated;
 grant execute on function public.register_views(uuid[]) to authenticated;
-grant execute on function public.list_follows(text, text, int) to authenticated;
+grant execute on function public.list_follows(text, text, int, timestamptz) to authenticated;
+grant execute on function public.feed_explore(int, uuid[]) to authenticated;
+grant execute on function public.track_views(jsonb) to authenticated;
+grant execute on function public.profile_posts(text, text, timestamptz, int) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 8-9) Pianificazione di mezzanotte e Storage: vedi setup-produzione.sql
