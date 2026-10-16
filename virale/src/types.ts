@@ -144,4 +144,6 @@ export type IdentityItem = {
   deadline: string;
   /** 'didit': in revisione su Didit, si decide dalla sua console. */
   method: 'manual' | 'didit';
+  /** Perché la verifica automatica è passata a una persona (es. nome sul documento diverso). */
+  providerNote: string | null;
 };

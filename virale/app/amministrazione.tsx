@@ -254,7 +254,9 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
       </Txt>
       {item.method === 'didit' ? (
         <Txt variant="small" tone={color.giallo}>
-          Verifica automatica in revisione: guarda foto e video nella console di Didit (business.didit.me) e decidi lì. L’esito arriva qui da solo.
+          {item.providerNote
+            ? `Didit ha verificato il documento, ma è di un’altra persona? ${item.providerNote} Controlla foto e video nella console di Didit (business.didit.me) e poi decidi qui.`
+            : 'Verifica automatica in revisione: guarda foto e video nella console di Didit (business.didit.me) e decidi lì. L’esito arriva qui da solo.'}
         </Txt>
       ) : null}
       <Txt variant="small" tone={item.birthDate ? color.paperDim : color.matita}>

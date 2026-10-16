@@ -183,6 +183,8 @@ create index if not exists idx_identity_pending on public.identity_checks (submi
 -- Verifica automatica (sezione 16): con quale metodo è arrivata la decisione e la sessione aperta presso il fornitore.
 alter table public.identity_checks add column if not exists method text not null default 'manual' check (method in ('manual', 'didit'));
 alter table public.identity_checks add column if not exists provider_session text;
+-- Perché la verifica automatica è passata a una persona (es. nome sul documento diverso da quello dichiarato).
+alter table public.identity_checks add column if not exists provider_note text check (length(provider_note) <= 300);
 alter table public.identity_checks enable row level security;
 drop policy if exists "identity own" on public.identity_checks;
 create policy "identity own" on public.identity_checks for select to authenticated using (user_id = auth.uid());
@@ -1458,8 +1460,9 @@ begin
   if v_row.status = 'rejected' and v_row.reviewed_at > now() - interval '10 minutes' then
     raise exception 'Aspetta qualche minuto prima di ricaricarlo.';
   end if;
+  -- Le foto chiudono un'eventuale verifica automatica rimasta a metà: il suo esito tardivo non le scavalca.
   update identity_checks set status = 'pending', document_path = p_document_path, selfie_path = p_selfie_path,
-                             submitted_at = now(), reject_reason = null
+                             submitted_at = now(), reject_reason = null, method = 'manual', provider_session = null, provider_note = null
    where user_id = v_uid;
 end;
 $$;
@@ -1472,7 +1475,8 @@ begin
   return query
   select jsonb_build_object('user_id', i.user_id, 'username', p.username, 'first_name', v.first_name, 'last_name', v.last_name,
                             'birth_date', v.birth_date, 'document_path', i.document_path, 'selfie_path', i.selfie_path,
-                            'submitted_at', i.submitted_at, 'deadline', i.deadline, 'method', i.method)
+                            'submitted_at', i.submitted_at, 'deadline', i.deadline, 'method', i.method,
+                            'provider_note', i.provider_note)
   from identity_checks i join profiles p on p.id = i.user_id left join profile_private v on v.id = i.user_id
   where i.status = 'pending'
   order by i.submitted_at;
@@ -1633,7 +1637,8 @@ drop trigger if exists trg_notify_cover on public.daily_viral;
 create trigger trg_notify_cover after insert on public.daily_viral for each row execute function public.notify_on_change();
 
 drop function if exists public.list_notifications(int);
-create or replace function public.list_notifications(p_limit int default 50, p_before timestamptz default null)
+drop function if exists public.list_notifications(int, timestamptz);
+create or replace function public.list_notifications(p_limit int default 50, p_before timestamptz default null, p_before_id bigint default null)
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'id', n.id, 'kind', n.kind, 'data', n.data, 'created_at', n.created_at, 'read', n.read_at is not null,
@@ -1647,8 +1652,9 @@ returns setof jsonb language sql stable security definer set search_path = publi
     and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))
     and (n.post_id is null or p.id is not null)
     and n.created_at <= now()
-    and n.created_at < coalesce(p_before, 'infinity')
-  order by n.created_at desc
+    -- Pagine per (data, id): notifiche nate nella stessa transazione hanno la stessa data.
+    and (n.created_at, n.id) < (coalesce(p_before, 'infinity'), coalesce(p_before_id, 9223372036854775807))
+  order by n.created_at desc, n.id desc
   limit least(greatest(p_limit, 1), 100);
 $$;
 
@@ -1805,7 +1811,11 @@ create table if not exists public.seen_posts (
 create index if not exists idx_seen_posts_at on public.seen_posts (seen_at);
 alter table public.seen_posts enable row level security;
 revoke all on public.seen_posts from anon, authenticated;
-create index if not exists idx_post_likes_user on public.post_likes (user_id, created_at desc);
+create index if not exists idx_post_likes_user_time on public.post_likes (user_id, created_at desc);
+create index if not exists idx_post_likes_post_time on public.post_likes (post_id, created_at desc);
+create index if not exists idx_follows_followee_time on public.follows (followee_id, created_at desc);
+create index if not exists idx_follows_follower_time on public.follows (follower_id, created_at desc);
+create index if not exists idx_notifications_user_time_id on public.notifications (user_id, created_at desc, id desc);
 
 create or replace function public.interest_decayed(p_score real, p_at timestamptz)
 returns real language sql stable set search_path = public, pg_temp as $$
@@ -1906,10 +1916,12 @@ returns table (post_id uuid, score real) language sql stable security definer se
     select key, public.interest_decayed(score, updated_at) as s from user_interests where user_id = p_uid
   ), similar_users as (
     -- Chi ha messo mi piace agli stessi post tuoi negli ultimi 30 giorni (i 50 più vicini).
+    -- Con limiti: i tuoi ultimi 100 mi piace e, per ciascun post, gli ultimi 200 che l'hanno apprezzato.
     select l2.user_id, count(*)::real as n
-    from post_likes l1
-    join post_likes l2 on l2.post_id = l1.post_id and l2.user_id <> l1.user_id
-    where l1.user_id = p_uid and l1.created_at > now() - interval '30 days'
+    from (select post_id from post_likes where user_id = p_uid and created_at > now() - interval '30 days'
+          order by created_at desc limit 100) l1
+    cross join lateral (select user_id from post_likes where post_id = l1.post_id and user_id <> p_uid
+                        order by created_at desc limit 200) l2
     group by l2.user_id
     order by n desc
     limit 50
@@ -1948,10 +1960,12 @@ declare
   v_uid uuid := auth.uid();
   v_day date := public.arena_today();
   v_limit int := least(greatest(p_limit, 1), 20);
-  v_ex uuid[] := (coalesce(p_exclude, '{}'::uuid[]))[1:300];
+  v_ex uuid[] := coalesce(p_exclude, '{}'::uuid[]);
   v_pool uuid[];
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  -- Contano gli ultimi 300 mostrati (i più vecchi possono tornare).
+  if cardinality(v_ex) > 300 then v_ex := v_ex[cardinality(v_ex) - 299:cardinality(v_ex)]; end if;
 
   select array_agg(id) into v_pool from (
     select p.id from posts p
@@ -1966,15 +1980,19 @@ begin
   ) x;
 
   if coalesce(array_length(v_pool, 1), 0) < v_limit then
+    -- Visti tutti quelli nuovi: si ripesca a caso tra i 3000 più recenti (indice per data, niente scansione completa).
     select array_agg(id) into v_pool from (
-      select p.id from posts p
-      where p.author_id <> v_uid
-        and not (p.id = any (v_ex))
-        and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
-        and public.can_see(p.id, v_uid)
+      select r.id from (
+        select p.id from posts p
+        where p.author_id <> v_uid
+          and not (p.id = any (v_ex))
+          and not exists (select 1 from arena_entries e where e.post_id = p.id and e.contest_day = v_day)
+        order by p.created_at desc
+        limit 3000
+      ) r
       order by random()
-      limit 400
-    ) x;
+      limit 600
+    ) x where public.can_see(x.id, v_uid);
   end if;
   if v_pool is null then return; end if;
 
@@ -2004,7 +2022,7 @@ begin
   v_act := public.can_act(v_uid);
   for r in
     select distinct on (x.post_id) x.post_id,
-           least(greatest(coalesce(x.dwell_ms, 0), 0), 600000) as dwell,
+           case when x.dwell_ms is null then null else least(greatest(x.dwell_ms, 0), 600000) end as dwell,
            coalesce(x.completed, false) as completed,
            coalesce(x.rewatched, false) as rewatched
     from (select * from jsonb_to_recordset(p_items) as y(post_id uuid, dwell_ms int, completed boolean, rewatched boolean) limit 30) x
@@ -2013,14 +2031,16 @@ begin
   loop
     insert into seen_posts (user_id, post_id, seen_at) values (v_uid, r.post_id, now())
     on conflict (user_id, post_id) do update set seen_at = now();
+    -- Senza tempo (post aperto da un link, copertina): conta la visualizzazione, i gusti non cambiano.
     perform public.interest_bump(v_uid, r.post_id,
-      case when r.rewatched then 1.2
+      case when r.dwell is null then 0
+           when r.rewatched then 1.2
            when r.completed then 0.7
            when r.dwell >= 6000 then 0.5
            when r.dwell >= 2500 then 0.2
            when r.dwell < 1200 then -0.4
            else 0 end);
-    if v_act and r.dwell >= 1000 then
+    if v_act and (r.dwell is null or r.dwell >= 1000) then
       insert into post_views (post_id, viewer_id, day) values (r.post_id, v_uid, v_day) on conflict do nothing;
       if found then update posts set view_count = view_count + 1 where id = r.post_id; end if;
     end if;
@@ -2079,6 +2099,12 @@ begin
 end;
 $$;
 
+-- Nome confrontabile: minuscolo, senza accenti, apostrofi, trattini e spazi doppi.
+create or replace function public.name_norm(p text)
+returns text language sql immutable as $$
+  select trim(regexp_replace(translate(lower(coalesce(p, '')), 'àáâäãèéêëìíîïòóôöõùúûüçñ''’-', 'aaaaaeeeeiiiiooooouuuucn   '), '\s+', ' ', 'g'));
+$$;
+
 create or replace function public.identity_provider_start(p_user_id uuid, p_session text)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
@@ -2095,15 +2121,20 @@ create or replace function public.identity_provider_result(p_user_id uuid, p_ses
 returns text language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_row identity_checks;
+  v_priv profile_private;
+  v_doc text;
   v_age int;
 begin
   select * into v_row from identity_checks where user_id = p_user_id for update;
   if not found or v_row.provider_session is distinct from p_session or v_row.status = 'approved' then return 'ignored'; end if;
   if exists (select 1 from profiles where id = p_user_id and banned_at is not null) then return 'ignored'; end if;
+  -- Nel frattempo ha mandato le foto all'amministratore: solo un'approvazione automatica le scavalca.
+  if v_row.status = 'pending' and v_row.document_path is not null and p_status <> 'Approved' then return 'ignored'; end if;
 
   if p_status = 'In Review' then
     -- Didit ha dubbi: decide una persona dalla console di Didit, poi arriva un nuovo esito.
-    update identity_checks set status = 'pending', method = 'didit', submitted_at = now(), reject_reason = null where user_id = p_user_id;
+    update identity_checks set status = 'pending', method = 'didit', submitted_at = now(), reject_reason = null, provider_note = null
+     where user_id = p_user_id;
     return 'review';
   end if;
 
@@ -2125,6 +2156,21 @@ begin
   if v_age < public.min_age_years() then
     perform public.identity_apply(p_user_id, 'underage', null, null);
     return 'underage';
+  end if;
+  -- Didit garantisce che documento e volto coincidono, non che siano di chi si è iscritto: se il nome sul
+  -- documento non è quello dichiarato (es. un fratello maggiore), decide una persona.
+  select * into v_priv from profile_private where id = p_user_id;
+  if found then
+    v_doc := public.name_norm(coalesce(p_first_name, '') || ' ' || coalesce(p_last_name, ''));
+    if position(public.name_norm(v_priv.first_name) in v_doc) = 0 or position(public.name_norm(v_priv.last_name) in v_doc) = 0 then
+      update identity_checks
+         set status = 'pending', method = 'didit', submitted_at = now(), reject_reason = null,
+             provider_note = left('Nome sul documento: ' || coalesce(p_first_name, '?') || ' ' || coalesce(p_last_name, '?')
+                                  || ', nato/a il ' || to_char(p_birth_date, 'DD/MM/YYYY') || '. Dichiarato: '
+                                  || v_priv.first_name || ' ' || v_priv.last_name || '.', 300)
+       where user_id = p_user_id;
+      return 'review';
+    end if;
   end if;
   -- Fa fede il documento: la data di nascita privata diventa quella letta da Didit.
   insert into profile_private (id, first_name, last_name, birth_date)
@@ -2180,7 +2226,7 @@ grant execute on function public.identity_review(uuid, text, text, timestamptz) 
 grant execute on function public.complete_private_data(text, text, date) to authenticated;
 grant execute on function public.storage_purge_list(int) to authenticated;
 grant execute on function public.storage_purge_done(text, text[]) to authenticated;
-grant execute on function public.list_notifications(int, timestamptz) to authenticated;
+grant execute on function public.list_notifications(int, timestamptz, bigint) to authenticated;
 grant execute on function public.mark_notifications_read(timestamptz) to authenticated;
 grant execute on function public.register_views(uuid[]) to authenticated;
 grant execute on function public.list_follows(text, text, int, timestamptz) to authenticated;

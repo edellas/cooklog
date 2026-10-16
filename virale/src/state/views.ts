@@ -11,10 +11,11 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 
 export function queueView(postId: string, info: { dwellMs?: number; completed?: boolean; rewatched?: boolean } = {}) {
   const prev = pending.get(postId);
+  const times = [prev?.dwellMs, info.dwellMs].filter((x): x is number => x !== undefined);
   pending.set(postId, {
     postId,
-    // Senza tempo (copertina, post aperto da un link) vale come una visione piena di un secondo.
-    dwellMs: Math.max(prev?.dwellMs ?? 0, info.dwellMs ?? 1000),
+    // Senza tempo (copertina, post aperto da un link): conta la vista, i gusti restano com'erano.
+    dwellMs: times.length ? Math.max(...times) : undefined,
     completed: Boolean(prev?.completed || info.completed),
     rewatched: Boolean(prev?.rewatched || info.rewatched),
   });

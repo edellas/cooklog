@@ -40,6 +40,8 @@ export default function ProviniTab() {
   const [refreshing, setRefreshing] = useState(false);
   /** Seguiti finisce: quando una pagina torna vuota non si chiede altro fino al prossimo aggiornamento. */
   const exhausted = useRef(false);
+  /** Un aggiornamento completo è in corso: niente "pagina dopo" finché non arriva (la scarterebbe). */
+  const resetting = useRef(false);
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,9 +81,10 @@ export default function ProviniTab() {
   }, []);
 
   const load = useCallback(async (reset: boolean) => {
-    if (!reset && (loadingMore.current || exhausted.current)) return;
+    if (!reset && (loadingMore.current || resetting.current || exhausted.current)) return;
     const id = ++request.current;
     loadingMore.current = !reset;
+    if (reset) resetting.current = true;
     if (reset) exhausted.current = false;
     try {
       const shown = reset ? [] : cardsRef.current;
@@ -99,6 +102,7 @@ export default function ProviniTab() {
     } finally {
       if (id === request.current) {
         loadingMore.current = false;
+        resetting.current = false;
         setLoading(false);
         setRefreshing(false);
       }

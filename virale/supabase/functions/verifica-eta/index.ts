@@ -83,7 +83,10 @@ async function webhook(req: Request): Promise<Response> {
   if (!ts || Math.abs(Date.now() / 1000 - ts) > 300) return json({ error: 'Richiesta scaduta.' }, 401);
   if (!signature || !safeEqual(signature, await hmacHex(env('DIDIT_WEBHOOK_SECRET'), raw))) return json({ error: 'Firma non valida.' }, 401);
 
-  const event = JSON.parse(raw) as { session_id?: string; status?: string; vendor_data?: string };
+  const event = JSON.parse(raw) as { session_id?: string; status?: string; vendor_data?: string; timestamp?: number; created_at?: number | string };
+  // L'orario nell'intestazione non è firmato: se c'è, vale quello dentro il corpo (che è firmato).
+  const signedAt = typeof event.timestamp === 'number' ? event.timestamp : typeof event.created_at === 'number' ? event.created_at : null;
+  if (signedAt !== null && Math.abs(Date.now() / 1000 - signedAt) > 300) return json({ error: 'Richiesta scaduta.' }, 401);
   if (!event.session_id || !event.vendor_data) return json({ ok: true });
   if (!['Approved', 'Declined', 'In Review'].includes(event.status ?? '')) return json({ ok: true });
 
@@ -98,19 +101,22 @@ async function webhook(req: Request): Promise<Response> {
   };
   if (decision.vendor_data && decision.vendor_data !== event.vendor_data) return json({ ok: true });
   const doc = decision.id_verifications?.[0] ?? decision.id_verification;
+  // Una data illeggibile non deve far fallire la chiamata (Didit ripeterebbe l'avviso all'infinito).
+  const birth = /^\d{4}-\d{2}-\d{2}$/.test(doc?.date_of_birth ?? '') ? doc!.date_of_birth! : null;
 
   const { data: outcome, error } = await admin.rpc('identity_provider_result', {
     p_user_id: event.vendor_data,
     p_session: event.session_id,
     p_status: decision.status,
-    p_birth_date: doc?.date_of_birth ?? null,
+    p_birth_date: birth,
     p_first_name: doc?.first_name ?? null,
     p_last_name: doc?.last_name ?? null,
   });
   if (error) throw error;
 
   // Decisione presa: su Didit non serve più nulla, si cancellano sessione, foto e video.
-  if (decision.status === 'Approved' || decision.status === 'Declined') {
+  // Se invece decide una persona ('review'), la sessione resta finché l'amministratore non l'ha vista.
+  if (['approved', 'rejected', 'underage'].includes(String(outcome))) {
     await fetch(`${DIDIT}/session/${encodeURIComponent(event.session_id)}/delete/`, { method: 'DELETE', headers: { 'x-api-key': env('DIDIT_API_KEY') } }).catch(() => undefined);
   }
   return json({ ok: true, outcome });

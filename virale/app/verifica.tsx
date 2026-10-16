@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -12,7 +12,7 @@ import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { Field } from '../src/components/Field';
-import { completePrivateData, startAgeCheck, submitIdentity } from '../src/services/api';
+import { completePrivateData, getStatus, startAgeCheck, submitIdentity } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 
@@ -68,21 +68,34 @@ export default function VerifyScreen() {
   const [checking, setChecking] = useState(false);
 
   // Verifica automatica: si apre Didit nel browser; tornati nell'app l'esito arriva dal server in pochi secondi.
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   const runAuto = async () => {
     setError(null);
     try {
       setChecking(true);
+      const before = status?.identity?.status;
       const url = await startAgeCheck();
-      if (url) await WebBrowser.openAuthSessionAsync(url, 'virale://verifica');
-      for (let i = 0; i < 15; i += 1) {
-        await refreshStatus();
-        if (i === 0 && !url) break;
-        await new Promise((r) => setTimeout(r, 3000));
+      let finished = true;
+      if (url) finished = (await WebBrowser.openAuthSessionAsync(url, 'virale://verifica')).type === 'success';
+      // L'esito arriva al server qualche secondo dopo: si controlla finché cambia (al massimo ~45 s, o ~9 s se
+      // il browser è stato chiuso prima della fine).
+      const rounds = !url ? 1 : finished ? 15 : 3;
+      for (let i = 0; i < rounds && alive.current; i += 1) {
+        const now = await getStatus().catch(() => null);
+        if (now?.identity && now.identity.status !== before) break;
+        if (i < rounds - 1) await new Promise((r) => setTimeout(r, 3000));
       }
+      if (alive.current) await refreshStatus();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setChecking(false);
+      if (alive.current) setChecking(false);
     }
   };
 

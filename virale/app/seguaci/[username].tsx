@@ -45,12 +45,20 @@ export default function FollowsScreen() {
     };
   }, [username, kind, tick]);
 
+  // Una pagina arrivata dopo aver cambiato scheda (o aggiornato) non va aggiunta all'elenco nuovo.
+  const generation = useRef(0);
+  useEffect(() => {
+    generation.current += 1;
+    loadingMore.current = false;
+  }, [username, kind, tick]);
   const loadMore = () => {
     const last = rows?.at(-1)?.cursor;
     if (!last || loadingMore.current || ended.current) return;
     loadingMore.current = true;
+    const gen = generation.current;
     listFollows(username, kind, last)
       .then((page) => {
+        if (gen !== generation.current) return;
         if (!page.length) ended.current = true;
         setRows((list) => {
           const have = new Set((list ?? []).map((r) => r.id));

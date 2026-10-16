@@ -68,10 +68,10 @@ export default function NotificationsScreen() {
 
   // Più vecchie, a pagine, arrivati in fondo.
   const loadMore = () => {
-    const last = items?.at(-1)?.createdAt;
-    if (!last || loadingMore.current || ended.current) return;
+    const lastItem = items?.at(-1);
+    if (!lastItem || loadingMore.current || ended.current) return;
     loadingMore.current = true;
-    getNotifications(last)
+    getNotifications({ createdAt: lastItem.createdAt, id: lastItem.id })
       .then((page) => {
         if (!page.length) ended.current = true;
         setItems((list) => {

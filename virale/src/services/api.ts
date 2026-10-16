@@ -847,7 +847,7 @@ export async function getArchive(): Promise<Cover[]> {
  */
 export async function getForYou(limit = 6, excludeIds: string[] = []): Promise<FeedCard[]> {
   if (!isDemo) {
-    const rows = await rpc<{ entry_id: string | null; post: PostJson }[]>('feed_for_you', { p_limit: limit, p_exclude: excludeIds });
+    const rows = await rpc<{ entry_id: string | null; post: PostJson }[]>('feed_for_you', { p_limit: limit, p_exclude: excludeIds.slice(-300) });
     return rows.map((r) => ({ ...fromJson(r.post), entryId: r.entry_id ?? undefined }));
   }
   return withDemo((demo) => {
@@ -1615,7 +1615,7 @@ export async function submitIdentity(documentUri: string, selfieUri: string): Pr
 export async function getIdentityQueue(): Promise<IdentityItem[]> {
   if (!isDemo) {
     const rows = await rpc<
-      { user_id: string; username: string; first_name: string; last_name: string; birth_date: string; document_path: string; selfie_path: string; submitted_at: string; deadline: string; method?: 'manual' | 'didit' }[]
+      { user_id: string; username: string; first_name: string; last_name: string; birth_date: string; document_path: string; selfie_path: string; submitted_at: string; deadline: string; method?: 'manual' | 'didit'; provider_note?: string | null }[]
     >('identity_queue');
     const paths = rows.flatMap((r) => [r.document_path, r.selfie_path]).filter(Boolean);
     const signed = paths.length ? (await db().storage.from('documenti').createSignedUrls(paths, 600)).data ?? [] : [];
@@ -1631,6 +1631,7 @@ export async function getIdentityQueue(): Promise<IdentityItem[]> {
       submittedAt: r.submitted_at,
       deadline: r.deadline,
       method: r.method ?? 'manual',
+      providerNote: r.provider_note ?? null,
     }));
   }
   return withDemo((demo) =>
@@ -1647,6 +1648,7 @@ export async function getIdentityQueue(): Promise<IdentityItem[]> {
         submittedAt: a.identity.submittedAt ?? '',
         deadline: a.identity.deadline,
         method: 'manual' as const,
+        providerNote: null,
       })),
   );
 }
@@ -1688,9 +1690,9 @@ type NotificationJson = {
   post: { id: string; media: PostJson['media'] } | null;
 };
 
-export async function getNotifications(before?: string): Promise<AppNotification[]> {
+export async function getNotifications(before?: { createdAt: string; id: string }): Promise<AppNotification[]> {
   if (!isDemo) {
-    const rows = await rpc<NotificationJson[]>('list_notifications', { p_limit: 40, p_before: before ?? null });
+    const rows = await rpc<NotificationJson[]>('list_notifications', { p_limit: 40, p_before: before?.createdAt ?? null, p_before_id: before ? Number(before.id) : null });
     return rows.map((n) => ({
       id: String(n.id),
       kind: n.kind,
@@ -1702,7 +1704,7 @@ export async function getNotifications(before?: string): Promise<AppNotification
     }));
   }
   return withDemo((demo) =>
-    (demo.notifications ?? []).filter((n) => (!n.actor || !demo.blocked.includes(n.actor.id)) && (!before || n.createdAt < before)).slice(0, 40),
+    (demo.notifications ?? []).filter((n) => (!n.actor || !demo.blocked.includes(n.actor.id)) && (!before || n.createdAt < before.createdAt)).slice(0, 40),
   );
 }
 
@@ -1716,7 +1718,8 @@ export async function markNotificationsRead(upTo?: string): Promise<void> {
   }, true);
 }
 
-export type ViewItem = { postId: string; dwellMs: number; completed?: boolean; rewatched?: boolean };
+/** dwellMs assente: post aperto da un link o dalla copertina, conta la vista ma non cambia i gusti. */
+export type ViewItem = { postId: string; dwellMs?: number; completed?: boolean; rewatched?: boolean };
 
 /**
  * Cosa è passato sullo schermo e per quanto: conta le visualizzazioni (da 1 secondo, una per persona al giorno)
@@ -1727,7 +1730,12 @@ export async function trackViews(items: ViewItem[]): Promise<void> {
   if (!list.length) return;
   if (!isDemo) {
     await rpc('track_views', {
-      p_items: list.map((v) => ({ post_id: v.postId, dwell_ms: Math.round(v.dwellMs), completed: Boolean(v.completed), rewatched: Boolean(v.rewatched) })),
+      p_items: list.map((v) => ({
+        post_id: v.postId,
+        dwell_ms: v.dwellMs === undefined ? null : Math.round(v.dwellMs),
+        completed: Boolean(v.completed),
+        rewatched: Boolean(v.rewatched),
+      })),
     });
     return;
   }
@@ -1739,9 +1747,10 @@ export async function trackViews(items: ViewItem[]): Promise<void> {
       const p = demo.posts[v.postId];
       if (!p || p.authorId === demo.me?.id) continue;
       demo.seen[p.id] = now;
-      bumpInterest(demo, p.id, v.rewatched ? 1.2 : v.completed ? 0.7 : v.dwellMs >= 6000 ? 0.5 : v.dwellMs >= 2500 ? 0.2 : v.dwellMs < 1200 ? -0.4 : 0);
+      const d = v.dwellMs;
+      if (d !== undefined) bumpInterest(demo, p.id, v.rewatched ? 1.2 : v.completed ? 0.7 : d >= 6000 ? 0.5 : d >= 2500 ? 0.2 : d < 1200 ? -0.4 : 0);
       const key = `${today}:${p.id}`;
-      if (v.dwellMs < 1000 || demo.viewed!.includes(key)) continue;
+      if ((d !== undefined && d < 1000) || demo.viewed!.includes(key)) continue;
       p.views = (p.views ?? (p.authorId.startsWith('me-') ? 0 : p.likes * 9 + (hash(p.id) % 400))) + 1;
       demo.viewed!.push(key);
     }
