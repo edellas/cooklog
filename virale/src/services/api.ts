@@ -50,11 +50,11 @@ export const TIERS = DEFAULT_ARENA_CONFIG.tierThresholds;
 export const TIER_NAMES = ['Provino', 'Bozza', 'Impaginato', 'In macchina', 'Finale'] as const;
 
 /**
- * Le candidature chiudono alle 20 (ora di Roma). In demo restano aperte, perché la mezzanotte
- * si può simulare in qualsiasi momento.
+ * Le candidature chiudono 4 ore prima della fine della gara (che finisce all'orario della copertina).
+ * In demo restano aperte, perché la fine della gara si può simulare in qualsiasi momento.
  */
-export function contestOpen(now = new Date()): boolean {
-  return isDemo || submissionsOpen(now);
+export function contestOpen(revealMinutes = 0, now = new Date()): boolean {
+  return isDemo || submissionsOpen(now, DEFAULT_ARENA_CONFIG, revealMinutes);
 }
 
 export function issueNumber(day: string): number {
@@ -382,13 +382,14 @@ function crown(demo: DemoDb, featuredOn: string): string | null {
 }
 
 async function load(): Promise<DemoDb> {
-  const today = arenaDay();
   let demo = await getJson<DemoDb | null>(KEY, null);
   if (!demo) demo = freshDb();
   demo.blocked ??= [];
   demo.reported ??= [];
   demo.accounts ??= {};
   demo.settings ??= { ...DEFAULT_SETTINGS };
+  // Come sul server: il giorno di gara va da un orario di copertina al successivo.
+  const today = coverDay(demo.settings.revealMinutes);
   demo.notifications ??= [];
   demo.viewed ??= [];
   // Un profilo demo di prima delle password non ha un account con cui rientrare: si riparte dalla registrazione.
@@ -651,13 +652,12 @@ function demoScore(demo: DemoDb, p: StoredPost, personalOnly: boolean): number {
   return score;
 }
 
-/** Esplora in demo: post fuori gara, ordinati per gusti con un po' di caso, al massimo 2 per autore. */
+/** Esplora in demo: tutti i post (anche in gara), ordinati per gusti con un po' di caso, al massimo 2 per autore. */
 function demoExplore(demo: DemoDb, limit: number, exclude: string[]): Post[] {
   const meId = demo.me?.id;
-  const inContest = new Set(demo.state.entries.map((e) => e.postId));
   const ex = new Set(exclude);
   const now = Date.now();
-  const base = Object.values(demo.posts).filter((p) => p.authorId !== meId && !inContest.has(p.id) && !ex.has(p.id) && visible(demo, p.id));
+  const base = Object.values(demo.posts).filter((p) => p.authorId !== meId && !ex.has(p.id) && visible(demo, p.id));
   let pool = base.filter((p) => !(demo.seen?.[p.id] && now - demo.seen[p.id] < 3 * 86400000));
   if (pool.length < limit) pool = base;
   const ranked = pool.map((p) => ({ p, s: demoScore(demo, p, false) + Math.random() * 0.6 })).sort((a, b) => b.s - a.s);
@@ -841,7 +841,9 @@ export async function getTodayCover(): Promise<Cover | null> {
     return row ? { featuredOn: row.featured_on, issue: issueNumber(row.featured_on), totalEntries: row.total_entries, totalViews: Number(row.total_views), post: fromJson(row.post) } : null;
   }
   return withDemo((demo) => {
-    const cv = demo.covers.find((x) => x.featuredOn === coverDay(demo.settings!.revealMinutes) && visible(demo, x.postId));
+    // La più recente già uscita (se l'ultima gara non ha avuto candidati resta quella di prima).
+    const day = coverDay(demo.settings!.revealMinutes);
+    const cv = demo.covers.filter((x) => x.featuredOn <= day && visible(demo, x.postId)).sort((a, b) => b.featuredOn.localeCompare(a.featuredOn))[0];
     return cv ? toCover(demo, cv) : null;
   });
 }
@@ -895,12 +897,14 @@ export async function getFollowing(before?: string, limit = 12): Promise<Post[]>
   );
 }
 
-/** Esplora: tutti i post fuori dalla gara di oggi, ordinati per i tuoi gusti. Non finisce mai. */
+/**
+ * Esplora: tutti i post di tutti (anche quelli in gara e di chi non segui), ordinati per i tuoi gusti.
+ * Non finisce mai. Guardare qui un post in gara non è un voto: si vota solo in "In gara".
+ */
 export async function getExplore(limit = 8, excludeIds: string[] = []): Promise<Post[]> {
   if (!isDemo) {
     const rows = await rpc<PostJson[]>('feed_explore', { p_limit: limit, p_exclude: excludeIds.slice(-300) });
-    // Esplora è solo fuori gara: un post candidato oggi si vede (alla cieca) in "In gara".
-    return rows.map(fromJson).filter((p) => !p.contest);
+    return rows.map(fromJson);
   }
   return withDemo((demo) => (demo.me ? demoExplore(demo, limit, excludeIds) : []));
 }
@@ -1263,7 +1267,7 @@ export async function publish(input: NewPost): Promise<PublishResult> {
     let entry: MyEntry | null = null;
     if (input.joinContest) {
       try {
-        if (recentWinners(demo, shiftDay(arenaDay(), 1)).includes(me.id)) throw new Error('Sei stato in copertina da poco: potrai ricandidarti tra qualche giorno.');
+        if (recentWinners(demo, shiftDay(coverDay(demo.settings!.revealMinutes), 1)).includes(me.id)) throw new Error('Sei stato in copertina da poco: potrai ricandidarti tra qualche giorno.');
         const e = submitEntry(demo.state, { id: `e-${demo.state.day}-${id}`, postId: id, authorId: me.id });
         // Qualità nascosta estratta come per tutti gli altri: nessun favoritismo.
         demo.quality[e.id] = Math.random() ** 1.3;
@@ -1313,7 +1317,7 @@ export async function closeDayNowDemo(): Promise<Cover | null> {
   return withDemo((demo) => {
     const rng = seededRng(Date.now() >>> 0);
     simulateCrowd(demo.state, { quality: (id) => demo.quality[id] ?? 0.3, viewers: 160, viewsPerViewer: 7, viewerPrefix: `crowd-close-${Date.now()}-`, forgetViewers: true }, rng);
-    const today = arenaDay();
+    const today = coverDay(demo.settings!.revealMinutes);
     // La copertina nuova prende il posto di quella visibile adesso (che dipende dall'orario di rivelazione).
     const shown = coverDay(demo.settings!.revealMinutes);
     const before = demo.covers;

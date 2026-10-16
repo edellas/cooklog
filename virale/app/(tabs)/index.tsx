@@ -5,8 +5,9 @@ import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 import { haptic, Press } from '../../src/components/Press';
 import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
+import { atTime } from '../../src/design/format';
 import { color } from '../../src/design/tokens';
-import { coverDay } from '../../src/engine/engine';
+import { coverDay, msUntilReveal } from '../../src/engine/engine';
 import { CoverView } from '../../src/screens/CoverView';
 import { closeDayNowDemo, getTodayCover, isDemo } from '../../src/services/api';
 import { getJson, setJson } from '../../src/services/storage';
@@ -15,8 +16,7 @@ import type { Cover } from '../../src/types';
 
 const SEEN_KEY = 'virale.cover.seen';
 
-const revealLabel = (min: number) =>
-  min === 0 ? 'a mezzanotte' : `alle ${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+
 
 export default function CoverTab() {
   const { me, version, bump } = useSession();
@@ -64,12 +64,17 @@ export default function CoverTab() {
     }, [me, version, tick]),
   );
 
-  // A mezzanotte la copertina nuova arriva un minuto dopo (la sceglie il server): finché non c'è si riprova ogni 30 s.
+  // All'orario della copertina la nuova arriva entro un minuto (la sceglie il server): finché non c'è si riprova ogni 30 s.
+  // Anche se si vede ancora la copertina precedente (quella nuova non è ancora stata scelta), nei primi
+  // minuti dopo l'orario si ricontrolla ogni 20 secondi.
   useEffect(() => {
-    if (cover !== null) return;
-    const id = setInterval(() => setTick((n) => n + 1), 30_000);
+    if (cover === undefined) return;
+    const justClosed = 86_400_000 - msUntilReveal(revealRef.current) < 5 * 60_000;
+    const stale = cover === null || (justClosed && cover.featuredOn < coverDay(revealRef.current));
+    if (!stale) return;
+    const id = setInterval(() => setTick((n) => n + 1), cover === null ? 30_000 : 20_000);
     return () => clearInterval(id);
-  }, [cover]);
+  }, [cover, tick]);
 
   // Riaprendo l'app il giorno dopo (dal multitasking) la copertina si aggiorna da sola.
   useEffect(() => {
@@ -119,12 +124,12 @@ export default function CoverTab() {
           Nessuna copertina da mostrarti oggi.
         </Txt>
         <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-          La prossima esce {revealLabel(revealRef.current)}: intanto guarda i Provini, o pubblica un post e candidalo.
+          La prossima esce {atTime(revealRef.current)}: intanto guarda i Provini, o pubblica un post e candidalo.
         </Txt>
         {isDemo ? (
           <Press onPress={() => void simulate()} accessibilityRole="button" style={{ marginTop: 12 }}>
             <Txt variant="meta" tone={color.paperFaint} style={{ textDecorationLine: 'underline' }}>
-              Demo: simula la mezzanotte
+              Demo: simula la fine della gara
             </Txt>
           </Press>
         ) : null}

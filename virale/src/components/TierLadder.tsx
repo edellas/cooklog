@@ -2,17 +2,19 @@ import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 
+import { atTime } from '../design/format';
 import { ease } from '../design/motion';
 import { color, radius } from '../design/tokens';
 import { TIER_NAMES, TIERS } from '../services/api';
+import { useSession } from '../state/session';
 import type { MyEntry } from '../types';
 import { Txt } from './Txt';
 
-export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>): string {
+export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>, revealMinutes = 0): string {
   const n = entry.views.toLocaleString('it-IT');
   if (entry.status === 'disqualified') return 'Fuori gara: troppe segnalazioni.';
-  if (entry.status === 'finalist') return `In finale con ${n} viste. A mezzanotte si decide.`;
-  if (entry.status === 'parked') return `Fermo a “${TIER_NAMES[entry.tier]}” con ${n} viste. Domani si riparte.`;
+  if (entry.status === 'finalist') return `In finale con ${n} viste. Si decide ${atTime(revealMinutes)}.`;
+  if (entry.status === 'parked') return `Fermo a “${TIER_NAMES[entry.tier]}” con ${n} viste. Alla prossima gara si riparte.`;
   return `${n} di ${TIERS[entry.tier].toLocaleString('it-IT')} viste per passare a “${TIER_NAMES[entry.tier + 1]}”.`;
 }
 
@@ -23,6 +25,7 @@ export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>)
  */
 export function TierLadder({ entry, compact }: { entry: Pick<MyEntry, 'tier' | 'status' | 'views'>; compact?: boolean }) {
   const reduced = useReducedMotion();
+  const revealMinutes = useSession().status?.settings.revealMinutes ?? 0;
   const reached = entry.status === 'finalist' ? TIER_NAMES.length - 1 : entry.tier;
   const floor = TIERS[entry.tier - 1] ?? 0;
   const ceil = TIERS[entry.tier] ?? 1;
@@ -61,7 +64,7 @@ export function TierLadder({ entry, compact }: { entry: Pick<MyEntry, 'tier' | '
         </Txt>
       )}
       <Txt variant="small" tone={color.paperDim}>
-        {describeEntry(entry)}
+        {describeEntry(entry, revealMinutes)}
       </Txt>
     </View>
   );

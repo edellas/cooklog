@@ -36,3 +36,14 @@ export function clock(ms: number): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
 }
+
+/** Minuti dalla mezzanotte come orario "14:55". */
+export function clockTime(minutes: number): string {
+  const m = ((minutes % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+/** L'orario della copertina detto a parole: "a mezzanotte" o "alle 14:55". */
+export function atTime(minutes: number): string {
+  return minutes % 1440 === 0 ? 'a mezzanotte' : `alle ${clockTime(minutes)}`;
+}

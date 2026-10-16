@@ -19,6 +19,8 @@ const DIDIT = 'https://verification.didit.me/v3';
 const env = (k: string) => (Deno.env.get(k) ?? '').trim();
 const SELF = `${env('SUPABASE_URL')}/functions/v1/verifica-eta`;
 const APP_RETURN = 'virale://verifica';
+// Su Android Chrome apre l'app in modo affidabile con un indirizzo "intent://" (e se l'app manca non mostra errori).
+const ANDROID_RETURN = 'intent://verifica#Intent;scheme=virale;package=app.virale.mobile;end';
 
 /** Chiave di servizio: quella classica o, nei progetti con le chiavi nuove, la prima di SUPABASE_SECRET_KEYS. */
 function serviceKey(): string {
@@ -51,7 +53,10 @@ Deno.serve(async (req) => {
   const route = new URL(req.url).pathname.replace(/\/+$/, '').split('/').pop();
   try {
     if (route === 'webhook' && req.method === 'POST') return await webhook(req);
-    if (route === 'ritorno') return Response.redirect(APP_RETURN, 302);
+    if (route === 'ritorno') {
+      const android = /android/i.test(req.headers.get('user-agent') ?? '');
+      return new Response(null, { status: 302, headers: { Location: android ? ANDROID_RETURN : APP_RETURN } });
+    }
     if (route === 'stato') return await stato();
     if (route === 'verifica-eta' && req.method === 'POST') return await start(req);
     return json({ error: 'Indirizzo non valido.' }, 404);

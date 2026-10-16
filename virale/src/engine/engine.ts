@@ -418,8 +418,9 @@ export function wallTimeToEpoch(day: string, minutes: number, timeZone: string =
 }
 
 /**
- * Il giorno della copertina visibile adesso: la gara chiude a mezzanotte, ma la nuova copertina
- * compare all'orario scelto dall'amministratore (`revealMinutes` dopo la mezzanotte).
+ * Il giorno di gara in corso (e della copertina visibile): va da un orario di copertina al successivo.
+ * All'orario scelto dall'amministratore (`revealMinutes` dopo la mezzanotte, ora di Roma) la gara chiude
+ * e la nuova copertina esce. Con 0 è il giorno di calendario. Stessa regola di arena_today() sul server.
  */
 export function coverDay(revealMinutes: number, date: Date = new Date(), timeZone: string = DEFAULT_ARENA_CONFIG.timeZone): string {
   const today = arenaDay(date, timeZone);
@@ -452,13 +453,14 @@ export function msUntilArenaClose(date: Date = new Date(), timeZone: string = DE
   }
 }
 
-/** Le candidature della giornata sono aperte fino all'ora di chiusura (le 20 a Roma). */
-export function submissionsOpen(date: Date = new Date(), cfg: ArenaConfig = DEFAULT_ARENA_CONFIG): boolean {
+/**
+ * Le candidature sono aperte per le prime `submissionCutoffHour` ore della gara (di norma 20 su 24): con la
+ * copertina a mezzanotte chiudono alle 20, con la copertina alle 15 chiudono alle 11. Come arena_submit.
+ */
+export function submissionsOpen(date: Date = new Date(), cfg: ArenaConfig = DEFAULT_ARENA_CONFIG, revealMinutes = 0): boolean {
   try {
-    const hour = Number(
-      new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, hour: '2-digit', hourCycle: 'h23' }).formatToParts(date).find((p) => p.type === 'hour')?.value ?? 0,
-    );
-    return hour < cfg.submissionCutoffHour;
+    const start = wallTimeToEpoch(coverDay(revealMinutes, date, cfg.timeZone), revealMinutes, cfg.timeZone);
+    return date.getTime() - start < cfg.submissionCutoffHour * 3_600_000;
   } catch {
     return date.getHours() < cfg.submissionCutoffHour;
   }

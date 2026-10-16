@@ -27,6 +27,7 @@ import { Thumb } from "../src/components/Thumb";
 import { TierLadder } from "../src/components/TierLadder";
 import { Txt } from "../src/components/Txt";
 import { useGoBack } from "../src/state/useGoBack";
+import { atTime } from "../src/design/format";
 import { duration, ease } from "../src/design/motion";
 import { color, radius, space } from "../src/design/tokens";
 import { contestOpen, getMyEntry, publish } from "../src/services/api";
@@ -54,7 +55,8 @@ export default function CreateScreen() {
     entry: MyEntry | null;
     contestError: string | null;
   } | null>(null);
-  const [closed] = useState(() => !contestOpen());
+  const reveal = status?.settings.revealMinutes ?? 0;
+  const closed = !contestOpen(reveal);
   const [confirmClose, setConfirmClose] = useState(false);
   const goBack = useGoBack();
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -434,13 +436,13 @@ export default function CreateScreen() {
               }}
             >
               <View style={{ flex: 1, gap: 4 }}>
-                <Txt variant="label">Candidalo per la copertina di domani</Txt>
+                <Txt variant="label">Candidalo per la prossima copertina</Txt>
                 <Txt variant="small" tone={color.paperDim}>
                   {alreadyIn
                     ? "Oggi hai già un post in gara: se ne candida uno al giorno."
                     : closed
-                      ? "Le candidature di oggi hanno chiuso alle 20:00. Riaprono a mezzanotte."
-                      : "Entra nei Provini. Se vince, domani lo vede chiunque apra Virale."}
+                      ? `Le candidature di questa gara hanno chiuso ${atTime(reveal + (status?.settings.cutoffHour ?? 20) * 60)}. Riaprono ${atTime(reveal)}, quando esce la nuova copertina.`
+                      : `Entra nei Provini. Se vince, ${atTime(reveal)} diventa la copertina che vede chiunque apra Virale.`}
                 </Txt>
               </View>
               <Toggle on={join && canJoin} />

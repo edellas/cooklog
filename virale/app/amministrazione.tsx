@@ -113,7 +113,8 @@ export default function AdminScreen() {
         <View style={{ gap: space[3] }}>
           <Txt variant="title">Orario della copertina</Txt>
           <Txt variant="small" tone={color.paperDim}>
-            La gara chiude sempre a mezzanotte. La nuova copertina compare a quest’ora (ora italiana): fino ad allora resta quella di prima.
+            A quest’ora (ora italiana) la gara chiude, si sceglie il vincitore e la nuova copertina esce subito, per tutti. Le candidature chiudono 4
+            ore prima. Se l’orario che scegli per oggi è già passato, la gara chiude adesso.
           </Txt>
           <View style={styles.stepRow}>
             <Stepper label="Ore" value={Math.floor(revealNow / 60)} min={0} max={23} onChange={(h) => setReveal(h * 60 + (revealNow % 60))} />

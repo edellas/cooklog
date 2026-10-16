@@ -187,6 +187,15 @@ describe('date', () => {
     assert.equal(submissionsOpen(new Date('2026-07-01T18:00:00Z')), false); // 20:00 a Roma
     assert.equal(submissionsOpen(new Date('2026-12-01T18:30:00Z')), true); // 19:30 a Roma (ora solare)
   });
+
+  it('con la copertina alle 15 la gara va dalle 15 alle 15 e le candidature chiudono alle 11', () => {
+    const r = 15 * 60;
+    assert.equal(coverDay(r, new Date('2026-07-01T12:59:00Z')), '2026-06-30'); // 14:59 a Roma: gara di ieri
+    assert.equal(coverDay(r, new Date('2026-07-01T13:00:00Z')), '2026-07-01'); // 15:00 a Roma: nuova gara
+    assert.equal(submissionsOpen(new Date('2026-07-01T08:59:00Z'), undefined, r), true); // 10:59
+    assert.equal(submissionsOpen(new Date('2026-07-01T09:00:00Z'), undefined, r), false); // 11:00
+    assert.equal(submissionsOpen(new Date('2026-07-01T13:00:00Z'), undefined, r), true); // 15:00, riaperte
+  });
 });
 
 describe('simulazione', () => {

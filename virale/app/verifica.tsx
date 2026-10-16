@@ -2,8 +2,8 @@ import { Image } from 'expo-image';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../src/components/Icon';
@@ -18,6 +18,9 @@ import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 
 const DRAFT_KEY = 'virale.verifica.bozza';
+/** Verifica Didit aperta e non ancora conclusa (quando, e lo stato di prima): sopravvive a un riavvio dell'app. */
+const DIDIT_KEY = 'virale.verifica.didit';
+type DiditPending = { at: number; before: string | null };
 
 /** Scadenza con l'ora, sempre in ora italiana: è quella che usa il server. */
 const deadlineIt = (iso: string) => {
@@ -69,8 +72,9 @@ export default function VerifyScreen() {
   /** Con la verifica automatica attiva, le foto all'amministratore restano come alternativa. */
   const [manual, setManual] = useState(false);
   const [checking, setChecking] = useState(false);
+  /** Didit è aperto (o è stato aperto): si aspetta l'esito, che arriva al server dopo la verifica. */
+  const [waiting, setWaiting] = useState(false);
 
-  // Verifica automatica: si apre Didit nel browser; tornati nell'app l'esito arriva dal server in pochi secondi.
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -78,27 +82,93 @@ export default function VerifyScreen() {
     },
     [],
   );
+
+  /**
+   * Controlla se l'esito è arrivato: qualche tentativo a 3 secondi l'uno dall'altro (il server lo riceve da
+   * Didit pochi secondi dopo la fine). Se cambia lo stato, la verifica è conclusa (approvata, rifiutata o in
+   * revisione da una persona).
+   */
+  const polling = useRef(false);
+  const checkResult = useCallback(
+    async (rounds = 10) => {
+      if (polling.current) return;
+      const pending = await getJson<DiditPending | null>(DIDIT_KEY, null);
+      if (!pending || Date.now() - pending.at > 2 * 3_600_000) {
+        if (pending) void removeKey(DIDIT_KEY);
+        setWaiting(false);
+        return;
+      }
+      polling.current = true;
+      setWaiting(true);
+      setChecking(true);
+      try {
+        for (let i = 0; i < rounds && alive.current; i += 1) {
+          const now = await getStatus().catch(() => null);
+          if (now?.identity && now.identity.status !== pending.before) {
+            await removeKey(DIDIT_KEY);
+            if (alive.current) setWaiting(false);
+            break;
+          }
+          if (i < rounds - 1) await new Promise((r) => setTimeout(r, 3000));
+        }
+        if (alive.current) await refreshStatus();
+      } finally {
+        polling.current = false;
+        if (alive.current) setChecking(false);
+      }
+    },
+    [refreshStatus],
+  );
+
+  // Tornando nell'app (dal browser, o dal link con cui Didit rimanda qui) si controlla l'esito.
+  useEffect(() => {
+    void checkResult(3);
+    const app = AppState.addEventListener('change', (st) => {
+      if (st === 'active') void checkResult();
+    });
+    const link = Linking.addEventListener('url', ({ url }) => {
+      if (!url.includes('verifica')) return;
+      // Su iPhone il browser di Didit è sopra l'app: lo si chiude.
+      if (Platform.OS === 'ios') WebBrowser.dismissBrowser();
+      void checkResult();
+    });
+    return () => {
+      app.remove();
+      link.remove();
+    };
+  }, [checkResult]);
+
+  /**
+   * Verifica automatica: si apre Didit in una scheda del browser che resta aperta finché non hai finito
+   * (anche quando apri la fotocamera per il documento); alla fine Didit rimanda qui e l'esito si controlla.
+   */
   const runAuto = async () => {
     setError(null);
     try {
       setChecking(true);
-      const before = status?.identity?.status;
       const url = await startAgeCheck();
-      let finished = true;
-      if (url) finished = (await WebBrowser.openAuthSessionAsync(url, 'virale://verifica')).type === 'success';
-      // L'esito arriva al server qualche secondo dopo: si controlla finché cambia (al massimo ~45 s, o ~9 s se
-      // il browser è stato chiuso prima della fine).
-      const rounds = !url ? 1 : finished ? 15 : 3;
-      for (let i = 0; i < rounds && alive.current; i += 1) {
-        const now = await getStatus().catch(() => null);
-        if (now?.identity && now.identity.status !== before) break;
-        if (i < rounds - 1) await new Promise((r) => setTimeout(r, 3000));
+      if (!url) {
+        // Demo: nessun servizio esterno, l'esito è già pronto.
+        await refreshStatus();
+        return;
       }
-      if (alive.current) await refreshStatus();
+      await setJson<DiditPending>(DIDIT_KEY, { at: Date.now(), before: status?.identity?.status ?? null });
+      setWaiting(true);
+      setChecking(false);
+      await WebBrowser.openBrowserAsync(url, {
+        // Android: la scheda sta nello stesso "task" dell'app, così tornando dalla fotocamera si riprende Didit
+        // (e non l'app, che chiuderebbe la verifica a metà).
+        createTask: false,
+        showTitle: true,
+        enableBarCollapsing: false,
+        dismissButtonStyle: 'close',
+      });
+      // Su iPhone e sul web si arriva qui quando il browser viene chiuso; su Android subito (si aspetta il ritorno).
+      if (Platform.OS !== 'android') void checkResult();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      if (alive.current) setChecking(false);
+      if (alive.current && !polling.current) setChecking(false);
     }
   };
 
@@ -231,14 +301,24 @@ export default function VerifyScreen() {
                     <ActivityIndicator color={color.canvas} />
                   ) : (
                     <Txt variant="label" tone={color.canvas}>
-                      Verifica ora
+                      {waiting ? 'Riprendi la verifica' : 'Verifica ora'}
                     </Txt>
                   )}
                 </Press>
-                {checking ? (
-                  <Txt variant="meta" tone={color.paperFaint}>
-                    Aspetto l’esito…
-                  </Txt>
+                {waiting ? (
+                  <View style={{ gap: space[2] }}>
+                    <Txt variant="small" tone={color.paperDim}>
+                      {checking
+                        ? 'Controllo l’esito…'
+                        : 'Hai finito su Didit? L’esito arriva in qualche secondo. Se avevi chiuso a metà, tocca “Riprendi la verifica”.'}
+                    </Txt>
+                    {!checking ? (
+                      <Press style={styles.pill} onPress={() => void checkResult()} accessibilityRole="button">
+                        <Icon name="orologio" size={18} />
+                        <Txt variant="meta">Controlla l’esito</Txt>
+                      </Press>
+                    ) : null}
+                  </View>
                 ) : null}
                 {!manual ? (
                   <Press onPress={() => setManual(true)} accessibilityRole="button">
