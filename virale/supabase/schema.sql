@@ -185,6 +185,12 @@ alter table public.identity_checks add column if not exists method text not null
 alter table public.identity_checks add column if not exists provider_session text;
 -- Perché la verifica automatica è passata a una persona (es. nome sul documento diverso da quello dichiarato).
 alter table public.identity_checks add column if not exists provider_note text check (length(provider_note) <= 300);
+-- Impronte (hash, mai i dati in chiaro) di chi è stato verificato: la stessa persona o lo stesso documento non
+-- verificano un secondo account senza che lo veda un amministratore.
+alter table public.identity_checks add column if not exists person_key text;
+alter table public.identity_checks add column if not exists doc_key text;
+create index if not exists idx_identity_person_key on public.identity_checks (person_key) where status = 'approved';
+create index if not exists idx_identity_doc_key on public.identity_checks (doc_key) where status = 'approved';
 alter table public.identity_checks enable row level security;
 drop policy if exists "identity own" on public.identity_checks;
 create policy "identity own" on public.identity_checks for select to authenticated using (user_id = auth.uid());
@@ -538,6 +544,11 @@ create table if not exists public.arena_views (
   primary key (entry_id, viewer_id)
 );
 create index if not exists idx_arena_views_viewer on public.arena_views (viewer_id, contest_day);
+-- Ultima volta che il post è stato consegnato (served_at resta la prima): un candidato consegnato ma mai
+-- guardato (app chiusa, feed aggiornato) torna disponibile dopo 10 minuti, invece di sparire per sempre.
+alter table public.arena_views add column if not exists last_served_at timestamptz not null default now();
+-- La vista è stata contata nella gara (chi guardava poteva votare): solo allora contano i segnali arrivati dopo.
+alter table public.arena_views add column if not exists counted boolean not null default false;
 create index if not exists idx_arena_views_day on public.arena_views (contest_day);
 
 create table if not exists public.arena_tier_results (
@@ -554,17 +565,24 @@ create index if not exists idx_arena_tier_results_cohort on public.arena_tier_re
 create table if not exists public.daily_viral (
   featured_on date primary key,
   contest_day date not null unique,
-  entry_id uuid not null references public.arena_entries(id) on delete cascade,
-  -- Se il vincitore elimina il post la riga resta (senza post): la giornata non viene riassegnata
+  entry_id uuid references public.arena_entries(id) on delete set null,
+  -- Se il vincitore elimina il post (o l'account) la riga resta: la giornata non viene riassegnata
   -- e la pausa di 30 giorni del vincitore vale comunque.
   post_id uuid references public.posts(id) on delete set null,
-  author_id uuid not null references public.profiles(id) on delete cascade,
+  author_id uuid references public.profiles(id) on delete set null,
   final_score numeric not null,
   total_entries int not null,
   total_views bigint not null,
   created_at timestamptz not null default now()
 );
 create index if not exists idx_daily_viral_author on public.daily_viral (author_id, featured_on desc);
+-- Database già esistenti: le colonne erano "not null ... on delete cascade" (la riga spariva e il giorno si riassegnava).
+alter table public.daily_viral alter column entry_id drop not null;
+alter table public.daily_viral alter column author_id drop not null;
+alter table public.daily_viral drop constraint if exists daily_viral_entry_id_fkey;
+alter table public.daily_viral add constraint daily_viral_entry_id_fkey foreign key (entry_id) references public.arena_entries(id) on delete set null;
+alter table public.daily_viral drop constraint if exists daily_viral_author_id_fkey;
+alter table public.daily_viral add constraint daily_viral_author_id_fkey foreign key (author_id) references public.profiles(id) on delete set null;
 create index if not exists idx_daily_viral_post on public.daily_viral (post_id);
 create index if not exists idx_daily_viral_entry on public.daily_viral (entry_id);
 
@@ -667,10 +685,15 @@ begin
   if not exists (select 1 from posts where id = p_post_id and author_id = v_uid) then
     raise exception 'Puoi candidare solo un tuo post.';
   end if;
+  -- Un post partecipa una volta sola: niente seconda occasione per un post già in gara un altro giorno.
+  if exists (select 1 from arena_entries where post_id = p_post_id and contest_day < v_day) then
+    raise exception 'Questo post ha già partecipato: candidane uno nuovo.';
+  end if;
   if exists (
     select 1 from daily_viral
-    -- Stessa finestra di arena_close_day: il post di oggi uscirebbe domani (v_day + 1).
-    where author_id = v_uid and featured_on > v_day + 1 - v_cfg.winner_cooldown_days
+    -- Stessa finestra di arena_close_day: il post di oggi uscirebbe domani (v_day + 1). Si guardano solo le
+    -- copertine già rivelate: rispondere "hai già vinto" prima dell'orario svelerebbe il risultato.
+    where author_id = v_uid and featured_on > v_day + 1 - v_cfg.winner_cooldown_days and featured_on <= public.cover_day()
   ) then
     raise exception 'Hai già vinto di recente: potrai ripartecipare tra qualche giorno.';
   end if;
@@ -702,13 +725,15 @@ begin
       (select e.* from arena_entries e
         where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier = 0 and e.rand_key >= v_start
           and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
-          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer
+                            and (v.recorded_at is not null or v.last_served_at > now() - interval '10 minutes'))
         order by e.rand_key limit p_n)
       union all
       (select e.* from arena_entries e
         where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier = 0 and e.rand_key < v_start
           and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
-          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer
+                            and (v.recorded_at is not null or v.last_served_at > now() - interval '10 minutes'))
         order by e.rand_key limit p_n)
     )
     select * from candidates limit p_n;
@@ -719,14 +744,16 @@ begin
         where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier >= 1 and e.rand_key >= v_start
           and e.tier between p_min_tier and p_max_tier
           and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
-          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer
+                            and (v.recorded_at is not null or v.last_served_at > now() - interval '10 minutes'))
         order by e.rand_key limit p_n)
       union all
       (select e.* from arena_entries e
         where e.contest_day = p_day and e.status in ('active', 'finalist') and e.tier >= 1 and e.rand_key < v_start
           and e.tier between p_min_tier and p_max_tier
           and e.author_id <> p_viewer and public.can_see(e.post_id, p_viewer)
-          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer)
+          and not exists (select 1 from arena_views v where v.entry_id = e.id and v.viewer_id = p_viewer
+                            and (v.recorded_at is not null or v.last_served_at > now() - interval '10 minutes'))
         order by e.rand_key limit p_n)
     )
     select * from candidates limit p_n;
@@ -751,8 +778,11 @@ returns jsonb language sql stable security definer set search_path = public, pg_
     'liked', exists (select 1 from post_likes l where l.post_id = p.id and l.user_id = p_viewer),
     'saved', exists (select 1 from post_saves v where v.post_id = p.id and v.user_id = p_viewer),
     'following', exists (select 1 from follows f where f.follower_id = p_viewer and f.followee_id = p.author_id),
+    -- Livello e stato della candidatura li vede solo l'autore: chi guarda (e vota) sa solo che è in gara.
     'contest', (
-      select jsonb_build_object('entry_id', e.id, 'tier', e.tier, 'status', e.status)
+      select case when p.author_id = p_viewer then jsonb_build_object('entry_id', e.id, 'tier', e.tier, 'status', e.status)
+                  when e.status in ('active', 'finalist') then jsonb_build_object('entry_id', null, 'tier', null, 'status', 'active')
+             end
       from arena_entries e where e.post_id = p.id and e.contest_day = public.arena_today()
     )
   )
@@ -805,7 +835,7 @@ begin
   if v_ids is not null then
     insert into arena_views (entry_id, viewer_id, contest_day)
     select unnest(v_ids), v_uid, v_day
-    on conflict do nothing;
+    on conflict (entry_id, viewer_id) do update set last_served_at = now() where arena_views.recorded_at is null;
 
     return query
     select e.id, public.post_json(e.post_id, v_uid)
@@ -874,22 +904,27 @@ begin
   returning true into v_new;
   if v_new is null then return; end if;
 
-  -- Per nascondere subito un post contano solo account con più di 24 ore: tre account appena creati
-  -- non possono far sparire il primo in classifica a pochi minuti dalla mezzanotte.
+  -- Per nascondere subito un post contano solo account verificati con più di 24 ore che il post l'hanno
+  -- avuto davanti: se è in gara, servito a caso nei Provini (non si può scegliere chi colpire); altrimenti
+  -- passato sullo schermo. E più un post è visto, più segnalazioni servono (1 ogni 100 viste, minimo 3).
+  select e.id into v_entry from arena_entries e
+   where e.post_id = p_post_id and e.contest_day = public.arena_today() and e.status in ('active', 'finalist');
   select count(distinct r.reporter_id) into v_open
     from reports r join profiles pr on pr.id = r.reporter_id
    where r.post_id = p_post_id and r.status = 'open' and pr.created_at <= now() - v_cfg.min_viewer_account_age
-     and pr.banned_at is null and exists (select 1 from identity_checks i where i.user_id = pr.id and i.status = 'approved');
-  if v_open >= 3 then
+     and pr.banned_at is null and exists (select 1 from identity_checks i where i.user_id = pr.id and i.status = 'approved')
+     and case when v_entry is not null
+              then exists (select 1 from arena_views v where v.entry_id = v_entry and v.viewer_id = pr.id and v.counted)
+              else exists (select 1 from seen_posts sp where sp.user_id = pr.id and sp.post_id = p_post_id) end;
+  if v_open >= greatest(3, ceil(coalesce(case when v_entry is not null then (public.arena_entry_totals(v_entry)).views
+                                               else (select view_count from posts where id = p_post_id) end, 0) / 100.0)) then
     -- Solo nascosto, non squalificato: se il moderatore dà ragione al post, torna in gara da dove era.
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'segnalazioni') where id = p_post_id;
   end if;
 
   -- La segnalazione pesa nella gara solo se è vera (c'è la riga in reports) e viene da chi il post l'ha visto nei Provini.
-  select e.id into v_entry from arena_entries e
-   where e.post_id = p_post_id and e.contest_day = public.arena_today() and e.status in ('active', 'finalist');
   if v_entry is not null
-     and exists (select 1 from arena_views v where v.entry_id = v_entry and v.viewer_id = v_uid)
+     and exists (select 1 from arena_views v where v.entry_id = v_entry and v.viewer_id = v_uid and v.counted)
      and exists (select 1 from profiles where id = v_uid and created_at <= now() - v_cfg.min_viewer_account_age)
      and public.can_vote(v_uid) then
     insert into arena_entry_stats as st (entry_id, shard, reports) values (v_entry, floor(random() * v_cfg.stat_shards)::smallint, 1)
@@ -937,6 +972,13 @@ begin
   select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
   where p.author_id = v_uid and public.media_path(m->>'url') is not null
   on conflict do nothing;
+  -- Anche i file caricati e mai usati in un post: tutta la cartella dell'utente (solo su Supabase).
+  if to_regclass('storage.objects') is not null then
+    execute 'insert into public.storage_purge (bucket, path)
+             select bucket_id, name from storage.objects
+              where bucket_id in (''media'', ''documenti'') and split_part(name, ''/'', 1) = $1
+             on conflict do nothing' using v_uid::text;
+  end if;
   delete from auth.users where id = v_uid;
 end;
 $$;
@@ -970,6 +1012,7 @@ returns void language plpgsql security definer set search_path = public, pg_temp
 declare
   v_uid uuid := auth.uid();
   v_author uuid;
+  v_day date;
 begin
   if not public.is_staff(v_uid) then raise exception 'Solo per i moderatori.'; end if;
   if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
@@ -1001,6 +1044,17 @@ begin
   else
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = 'moderazione' where id = p_post_id;
     update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where post_id = p_post_id;
+    -- Un contenuto rimosso non deve restare raggiungibile dal suo indirizzo pubblico: i file vanno in pulizia.
+    insert into storage_purge (bucket, path)
+    select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
+     where p.id = p_post_id and public.media_path(m->>'url') is not null
+    on conflict do nothing;
+    -- Era la copertina appena scelta (o in attesa di uscire)? Si toglie e si sceglie il secondo classificato.
+    select contest_day into v_day from daily_viral where post_id = p_post_id and featured_on >= public.cover_day();
+    if v_day is not null then
+      delete from daily_viral where contest_day = v_day;
+      perform public.arena_close_day(v_day);
+    end if;
     -- L'autore viene avvisato (e può scrivere al supporto se pensa sia un errore).
     perform public.notify(v_author, 'removed', null, p_post_id);
   end if;
@@ -1010,6 +1064,10 @@ begin
     on conflict (username) do nothing;
     update profiles set banned_at = now() where id = v_author;
     update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = v_author;
+    insert into storage_purge (bucket, path)
+    select 'media', public.media_path(m->>'url') from posts p, jsonb_array_elements(p.media) m
+     where p.author_id = v_author and public.media_path(m->>'url') is not null
+    on conflict do nothing;
     update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where author_id = v_author and contest_day = public.arena_today();
   end if;
 end;
@@ -1063,7 +1121,8 @@ begin
     'entry', (select jsonb_build_object('entry_id', e.id, 'post_id', e.post_id, 'tier', e.tier, 'status', e.status,
                                         'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day)
               -- La propria candidatura è privata: degli altri non si vedono livello e viste.
-              from arena_entries e where e.author_id = v_pr.id and v_pr.id = v_uid and e.post_id is not null
+              -- Anche la candidatura ritirata (post eliminato): l'app spiega che per oggi è fatta.
+              from arena_entries e where e.author_id = v_pr.id and v_pr.id = v_uid
                 and e.contest_day = public.arena_today())
   );
 end;
@@ -1155,13 +1214,15 @@ declare
   v_saved boolean;
   v_shared boolean;
   v_completed boolean;
+  v_served timestamptz;
 begin
   if v_uid is null or not public.can_act(v_uid) then return false; end if;
 
   -- Solo contenuti serviti a questo utente, solo una volta, solo il giorno stesso.
   update arena_views set recorded_at = now()
    where entry_id = p_entry_id and viewer_id = v_uid and recorded_at is null
-     and contest_day = public.arena_today();
+     and contest_day = public.arena_today()
+  returning served_at into v_served;
   if not found then return false; end if;
 
   -- Gli account appena creati, o senza età verificata, guardano ma non votano.
@@ -1173,13 +1234,14 @@ begin
   -- I segnali si leggono dal database, non da ciò che dice il client: mi piace, commento, salvataggio
   -- e condivisione contano solo se esistono davvero. Le segnalazioni passano da report_post.
   select * into v_entry from arena_entries where id = p_entry_id;
-  v_liked := exists (select 1 from post_likes where post_id = v_entry.post_id and user_id = v_uid);
-  v_commented := exists (select 1 from comments where post_id = v_entry.post_id and user_id = v_uid);
-  v_saved := exists (select 1 from post_saves where post_id = v_entry.post_id and user_id = v_uid);
-  v_shared := exists (select 1 from post_shares where post_id = v_entry.post_id and user_id = v_uid);
+  -- Contano solo i segnali dati dopo che il post è stato servito: un mi piace di giorni fa non è un voto di oggi.
+  v_liked := exists (select 1 from post_likes where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
+  v_commented := exists (select 1 from comments where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
+  v_saved := exists (select 1 from post_saves where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
+  v_shared := exists (select 1 from post_shares where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
   -- Completamento e ri-visione li misura il telefono, ma devono essere compatibili col tempo passato sul post.
   v_completed := v_dwell >= v_cfg.complete_dwell_ms or (coalesce(p_completed, false) and v_dwell >= v_cfg.skip_dwell_ms);
-  update arena_views set credited = array_remove(array[
+  update arena_views set counted = true, credited = array_remove(array[
       case when v_liked then 'like' end, case when v_commented then 'comment' end,
       case when v_saved then 'save' end, case when v_shared then 'share' end], null)
    where entry_id = p_entry_id and viewer_id = v_uid;
@@ -1228,7 +1290,7 @@ begin
    where e.post_id = new.post_id and e.contest_day = public.arena_today() and e.status in ('active', 'finalist');
   if v_entry is null then return null; end if;
   update arena_views set credited = credited || v_kind
-   where entry_id = v_entry and viewer_id = new.user_id and recorded_at is not null
+   where entry_id = v_entry and viewer_id = new.user_id and recorded_at is not null and counted
      and not (v_kind = any (credited))
      and exists (select 1 from profiles where id = new.user_id and banned_at is null
                    and created_at <= now() - v_cfg.min_viewer_account_age)
@@ -1295,7 +1357,12 @@ begin
   cross join lateral public.arena_entry_totals(e.id) t
   where e.contest_day = p_day
     and e.status <> 'disqualified'
-    and public.can_see(e.post_id, null)
+    -- Un post nascosto solo da segnalazioni (non ancora esaminate) resta in gara: qualche account d'accordo
+    -- non deve poter cambiare la copertina all'ultimo minuto. Finché un moderatore non decide, la copertina
+    -- non si vede; se il moderatore lo rimuove, mod_resolve fa scegliere il secondo.
+    and exists (select 1 from posts p join profiles a on a.id = p.author_id
+                 where p.id = e.post_id and a.banned_at is null
+                   and (p.hidden_at is null or p.hidden_reason = 'segnalazioni'))
     and t.views > 0
     and not (t.views >= v_cfg.report_min_views and t.reports::numeric / t.views > v_cfg.max_report_rate)
     and not exists (
@@ -1472,7 +1539,8 @@ begin
   select jsonb_build_object('user_id', i.user_id, 'username', p.username, 'first_name', v.first_name, 'last_name', v.last_name,
                             'birth_date', v.birth_date, 'document_path', i.document_path, 'selfie_path', i.selfie_path,
                             'submitted_at', i.submitted_at, 'deadline', i.deadline, 'method', i.method,
-                            'provider_note', i.provider_note)
+                            'provider_note', i.provider_note,
+                            'duplicate_of', public.identity_duplicate(i.user_id, public.person_key(v.first_name, v.last_name, v.birth_date), i.doc_key))
   from identity_checks i join profiles p on p.id = i.user_id left join profile_private v on v.id = i.user_id
   where i.status = 'pending'
   order by i.submitted_at;
@@ -1523,7 +1591,10 @@ begin
          reject_reason = case when p_decision = 'approve' then null
                               when p_decision = 'underage' then 'Hai meno di ' || public.min_age_years() || ' anni.'
                               else left(coalesce(nullif(trim(p_reason), ''), 'Documento non leggibile o non corrispondente.'), 200) end,
-         reviewed_at = now(), reviewed_by = p_reviewer, document_path = null, selfie_path = null
+         reviewed_at = now(), reviewed_by = p_reviewer, document_path = null, selfie_path = null,
+         person_key = case when p_decision = 'approve'
+                           then (select public.person_key(v.first_name, v.last_name, v.birth_date) from profile_private v where v.id = p_user_id)
+                      end
    where user_id = p_user_id;
   if p_decision = 'underage' then
     -- Minore dell'età minima: account chiuso, contenuti e dati personali eliminati; resta solo il nome utente
@@ -1648,6 +1719,8 @@ returns setof jsonb language sql stable security definer set search_path = publi
     and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))
     and (n.post_id is null or p.id is not null)
     and n.created_at <= now()
+    -- La notifica "sei la copertina" non arriva prima della rivelazione, anche se l'orario è stato spostato.
+    and (n.kind <> 'cover' or coalesce((n.data->>'featured_on')::date, '-infinity'::date) <= public.cover_day())
     -- Pagine per (data, id): notifiche nate nella stessa transazione hanno la stessa data.
     and (n.created_at, n.id) < (coalesce(p_before, 'infinity'), coalesce(p_before_id, 9223372036854775807))
   order by n.created_at desc, n.id desc
@@ -1736,6 +1809,7 @@ returns jsonb language sql stable security definer set search_path = public, pg_
     'banned', exists (select 1 from profiles where id = auth.uid() and banned_at is not null),
     'unread', (select count(*) from notifications n left join profiles a on a.id = n.actor_id
                where n.user_id = auth.uid() and n.read_at is null and n.created_at <= now()
+                 and (n.kind <> 'cover' or coalesce((n.data->>'featured_on')::date, '-infinity'::date) <= public.cover_day())
                  and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))),
     'needs_private', not exists (select 1 from profile_private where id = auth.uid()),
     'settings', public.get_settings()
@@ -1767,12 +1841,29 @@ $$;
  */
 create or replace function public.check_media_urls()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  -- Il progetto Supabase di questa app, dal token di chi pubblica (iss = https://<progetto>.supabase.co/auth/v1).
+  v_host text := substring(coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb ->> 'iss' from '^https://([^/]+)/');
+  v_exists boolean;
+  v_item jsonb;
 begin
   if exists (
     select 1 from jsonb_array_elements(new.media) m
     where coalesce(m->>'url', '') !~ ('^https://[a-z0-9-]+\.supabase\.co/storage/v1/object/public/media/' || new.author_id::text || '/[^/?#]+$')
+       -- Un altro progetto Supabase andrebbe bene alla regola sopra: il file deve stare nel nostro.
+       or (v_host is not null and substring(m->>'url' from '^https://([^/]+)/') is distinct from v_host)
   ) then
     raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
+  end if;
+  -- E il file deve esistere davvero nel bucket (su Supabase; nei test locali lo Storage non c'è).
+  if to_regclass('storage.objects') is not null then
+    for v_item in select value from jsonb_array_elements(new.media) loop
+      execute 'select exists (select 1 from storage.objects where bucket_id = $1 and name = $2)' into v_exists
+        using 'media', public.media_path(v_item->>'url');
+      if not v_exists then
+        raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
+      end if;
+    end loop;
   end if;
   return new;
 end;
@@ -2015,7 +2106,7 @@ declare
   r record;
 begin
   if v_uid is null or not public.is_active(v_uid) or p_items is null or jsonb_typeof(p_items) <> 'array' then return; end if;
-  v_act := public.can_act(v_uid);
+  v_act := public.can_vote(v_uid);
   for r in
     select distinct on (x.post_id) x.post_id,
            case when x.dwell_ms is null then null else least(greatest(x.dwell_ms, 0), 600000) end as dwell,
@@ -2036,6 +2127,8 @@ begin
            when r.dwell >= 2500 then 0.2
            when r.dwell < 1200 then -0.4
            else 0 end);
+    -- Le visualizzazioni pubbliche le fanno solo account con l'età verificata: account finti appena creati
+    -- non gonfiano i numeri.
     if v_act and (r.dwell is null or r.dwell >= 1000) then
       insert into post_views (post_id, viewer_id, day) values (r.post_id, v_uid, v_day) on conflict do nothing;
       if found then update posts set view_count = view_count + 1 where id = r.post_id; end if;
@@ -2101,6 +2194,27 @@ returns text language sql immutable as $$
   select trim(regexp_replace(translate(lower(coalesce(p, '')), 'àáâäãèéêëìíîïòóôöõùúûüçñ''’-', 'aaaaaeeeeiiiiooooouuuucn   '), '\s+', ' ', 'g'));
 $$;
 
+create or replace function public.person_key(p_first text, p_last text, p_birth date)
+returns text language sql immutable set search_path = public, pg_temp as $$
+  select case when p_birth is null then null
+              else encode(sha256(convert_to(public.name_norm(p_first) || '|' || public.name_norm(p_last) || '|' || p_birth::text, 'UTF8')), 'hex') end;
+$$;
+
+create or replace function public.doc_key(p_number text)
+returns text language sql immutable set search_path = public, pg_temp as $$
+  select case when length(regexp_replace(coalesce(p_number, ''), '[^A-Za-z0-9]', '', 'g')) < 5 then null
+              else encode(sha256(convert_to(upper(regexp_replace(p_number, '[^A-Za-z0-9]', '', 'g')), 'UTF8')), 'hex') end;
+$$;
+
+-- Altro account già verificato con la stessa persona (nome, cognome, nascita) o lo stesso documento.
+create or replace function public.identity_duplicate(p_user_id uuid, p_person_key text, p_doc_key text)
+returns text language sql stable security definer set search_path = public, pg_temp as $$
+  select p.username from identity_checks i join profiles p on p.id = i.user_id
+   where i.status = 'approved' and i.user_id <> p_user_id
+     and ((p_person_key is not null and i.person_key = p_person_key) or (p_doc_key is not null and i.doc_key = p_doc_key))
+   limit 1;
+$$;
+
 create or replace function public.identity_provider_start(p_user_id uuid, p_session text)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
@@ -2112,14 +2226,17 @@ $$;
 
 -- Esito della verifica automatica. Restituisce cosa è stato deciso ('approved', 'underage', 'rejected',
 -- 'review') oppure 'ignored' se l'esito non riguarda la sessione aperta (vecchio, ripetuto, già verificato).
+drop function if exists public.identity_provider_result(uuid, text, text, date, text, text);
 create or replace function public.identity_provider_result(p_user_id uuid, p_session text, p_status text,
-                                                           p_birth_date date, p_first_name text default null, p_last_name text default null)
+                                                           p_birth_date date, p_first_name text default null, p_last_name text default null,
+                                                           p_document_number text default null)
 returns text language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_row identity_checks;
   v_priv profile_private;
   v_doc text;
   v_age int;
+  v_dup text;
 begin
   select * into v_row from identity_checks where user_id = p_user_id for update;
   if not found or v_row.provider_session is distinct from p_session or v_row.status = 'approved' then return 'ignored'; end if;
@@ -2168,6 +2285,18 @@ begin
       return 'review';
     end if;
   end if;
+  -- Stessa persona o stesso documento già usati per un altro account verificato: decide una persona.
+  v_dup := public.identity_duplicate(p_user_id, public.person_key(p_first_name, p_last_name, p_birth_date), public.doc_key(p_document_number));
+  if v_dup is not null then
+    update identity_checks
+       set status = 'pending', method = 'didit', submitted_at = now(), reject_reason = null,
+           provider_note = left('Lo stesso documento o la stessa persona hanno già verificato @' || v_dup
+                                || '. Una persona, un account: controlla prima di approvare.', 300),
+           doc_key = public.doc_key(p_document_number)
+     where user_id = p_user_id;
+    return 'review';
+  end if;
+  update identity_checks set doc_key = public.doc_key(p_document_number) where user_id = p_user_id;
   -- Fa fede il documento: la data di nascita privata diventa quella letta da Didit.
   insert into profile_private (id, first_name, last_name, birth_date)
   values (p_user_id, left(coalesce(nullif(trim(p_first_name), ''), '-'), 60), left(coalesce(nullif(trim(p_last_name), ''), '-'), 60), p_birth_date)
@@ -2176,6 +2305,122 @@ begin
   return 'approved';
 end;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 17) Protezioni aggiuntive (revisione di sicurezza)
+-- ---------------------------------------------------------------------------
+-- Date decise dal server anche per follow, mi piace, salvataggi e condivisioni: un client non può datare
+-- un follow nel futuro (invisibile negli elenchi) o un mi piace "recente" per pilotare i consigli.
+revoke insert on public.post_likes, public.post_saves, public.follows from authenticated;
+grant insert (post_id, user_id) on public.post_likes, public.post_saves to authenticated;
+grant insert (follower_id, followee_id) on public.follows to authenticated;
+create or replace function public.force_created_now()
+returns trigger language plpgsql set search_path = public, pg_temp as $$
+begin
+  new.created_at := now();
+  return new;
+end;
+$$;
+drop trigger if exists trg_likes_now on public.post_likes;
+create trigger trg_likes_now before insert on public.post_likes for each row execute function public.force_created_now();
+drop trigger if exists trg_saves_now on public.post_saves;
+create trigger trg_saves_now before insert on public.post_saves for each row execute function public.force_created_now();
+drop trigger if exists trg_shares_now on public.post_shares;
+create trigger trg_shares_now before insert on public.post_shares for each row execute function public.force_created_now();
+drop trigger if exists trg_follows_now on public.follows;
+create trigger trg_follows_now before insert on public.follows for each row execute function public.force_created_now();
+
+-- Limiti di velocità: un account (anche verificato) non può seguire, commentare, mettere mi piace o segnalare
+-- a raffica. Valori larghi per una persona vera, stretti per un programma.
+create index if not exists idx_comments_user_time on public.comments (user_id, created_at desc);
+create index if not exists idx_reports_reporter_time on public.reports (reporter_id, created_at desc);
+create or replace function public.rate_guard()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_n int;
+begin
+  if tg_table_name = 'post_likes' then
+    select count(*) into v_n from post_likes where user_id = new.user_id and created_at > now() - interval '10 minutes';
+    if v_n >= 300 then raise exception 'Troppi mi piace in poco tempo: riprova tra qualche minuto.'; end if;
+  elsif tg_table_name = 'post_saves' then
+    select count(*) into v_n from post_saves where user_id = new.user_id and created_at > now() - interval '10 minutes';
+    if v_n >= 200 then raise exception 'Troppi salvataggi in poco tempo: riprova tra qualche minuto.'; end if;
+  elsif tg_table_name = 'follows' then
+    select count(*) into v_n from follows where follower_id = new.follower_id and created_at > now() - interval '1 hour';
+    if v_n >= 150 then raise exception 'Hai iniziato a seguire troppe persone in poco tempo: riprova più tardi.'; end if;
+  elsif tg_table_name = 'comments' then
+    select count(*) into v_n from comments where user_id = new.user_id and created_at > now() - interval '5 minutes';
+    if v_n >= 20 then raise exception 'Troppi commenti in poco tempo: riprova tra qualche minuto.'; end if;
+  elsif tg_table_name = 'reports' then
+    select count(*) into v_n from reports where reporter_id = new.reporter_id and created_at > now() - interval '1 hour';
+    if v_n >= 30 then raise exception 'Troppe segnalazioni in poco tempo: riprova più tardi.'; end if;
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trg_rate_likes on public.post_likes;
+create trigger trg_rate_likes before insert on public.post_likes for each row execute function public.rate_guard();
+drop trigger if exists trg_rate_saves on public.post_saves;
+create trigger trg_rate_saves before insert on public.post_saves for each row execute function public.rate_guard();
+drop trigger if exists trg_rate_follows on public.follows;
+create trigger trg_rate_follows before insert on public.follows for each row execute function public.rate_guard();
+drop trigger if exists trg_rate_comments on public.comments;
+create trigger trg_rate_comments before insert on public.comments for each row execute function public.rate_guard();
+drop trigger if exists trg_rate_reports on public.reports;
+create trigger trg_rate_reports before insert on public.reports for each row execute function public.rate_guard();
+
+-- Chi verifica i documenti resta riservato: l'utente legge il proprio esito, non il nome dell'amministratore.
+revoke select on public.identity_checks from authenticated;
+grant select (user_id, status, deadline, submitted_at, reviewed_at, reject_reason, method) on public.identity_checks to authenticated;
+
+-- I file di un post eliminato (dall'autore, per età, con l'account) vanno in pulizia: niente file orfani pubblici.
+create or replace function public.purge_post_media()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  insert into storage_purge (bucket, path)
+  select 'media', public.media_path(m->>'url') from jsonb_array_elements(old.media) m
+   where public.media_path(m->>'url') is not null
+  on conflict do nothing;
+  return null;
+end;
+$$;
+drop trigger if exists trg_posts_purge_media on public.posts;
+create trigger trg_posts_purge_media after delete on public.posts for each row execute function public.purge_post_media();
+
+-- Un file del bucket media è usato da un post del suo autore? (Regola dello Storage: non si cancella né
+-- si sostituisce il file di un post pubblicato, così il contenuto non cambia dopo la moderazione.)
+create or replace function public.media_in_use(p_path text)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (
+    select 1 from posts p, jsonb_array_elements(p.media) m
+     where p.author_id::text = split_part(p_path, '/', 1) and public.media_path(m->>'url') = p_path
+  );
+$$;
+
+-- Il nome di accesso è legato al nome utente: un account non può prendersi altri nomi cambiando email.
+create or replace function public.guard_login_email()
+returns trigger language plpgsql security definer set search_path = public, auth, pg_temp as $$
+declare
+  v_username text;
+begin
+  if new.email is not distinct from old.email then return new; end if;
+  select username into v_username from public.profiles where id = new.id;
+  if v_username is not null and lower(coalesce(new.email, '')) <> v_username || '@' || public.login_domain() then
+    raise exception 'Il nome di accesso non si può cambiare.';
+  end if;
+  return new;
+end;
+$$;
+do $$ begin
+  drop trigger if exists trg_guard_login_email on auth.users;
+  create trigger trg_guard_login_email before update of email on auth.users for each row execute function public.guard_login_email();
+exception when insufficient_privilege then
+  raise notice 'Non ho i permessi per il controllo sul nome di accesso (auth.users): salto.';
+end $$;
+
+-- Database esistenti: le viste già registrate oggi da chi poteva votare contano come "contate".
+update public.arena_views v set counted = true
+ where v.recorded_at is not null and not v.counted and v.contest_day >= public.arena_today() - 1 and public.can_vote(v.viewer_id);
 
 -- Permessi: per default ogni funzione è eseguibile da chiunque. Si toglie tutto e si riconcede solo il necessario.
 revoke execute on all functions in schema public from public, anon, authenticated;
@@ -2229,12 +2474,14 @@ grant execute on function public.list_follows(text, text, int, timestamptz) to a
 grant execute on function public.feed_explore(int, uuid[]) to authenticated;
 grant execute on function public.track_views(jsonb) to authenticated;
 grant execute on function public.admin_set_id_provider(text) to authenticated;
+-- Usata dalla regola dello Storage sul bucket media (setup-produzione.sql).
+grant execute on function public.media_in_use(text) to authenticated;
 -- Solo per la funzione verifica-eta (chiave di servizio).
 revoke all on function public.identity_provider_start(uuid, text) from public, anon, authenticated;
-revoke all on function public.identity_provider_result(uuid, text, text, date, text, text) from public, anon, authenticated;
+revoke all on function public.identity_provider_result(uuid, text, text, date, text, text, text) from public, anon, authenticated;
 revoke all on function public.identity_apply(uuid, text, text, uuid) from public, anon, authenticated;
 grant execute on function public.identity_provider_start(uuid, text) to service_role;
-grant execute on function public.identity_provider_result(uuid, text, text, date, text, text) to service_role;
+grant execute on function public.identity_provider_result(uuid, text, text, date, text, text, text) to service_role;
 grant execute on function public.profile_posts(text, text, timestamptz, int) to authenticated;
 
 -- ---------------------------------------------------------------------------

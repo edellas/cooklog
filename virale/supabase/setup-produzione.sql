@@ -24,16 +24,21 @@ grant execute on function public.my_object_count(text) to authenticated;
 drop policy if exists "media upload own folder" on storage.objects;
 create policy "media upload own folder" on storage.objects for insert to authenticated
   with check (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text
-              and public.can_act(auth.uid()) and public.my_object_count('media') < 1000);
+              and public.can_act(auth.uid()) and public.my_object_count('media') < 300);
 
 drop policy if exists "media list own folder" on storage.objects;
 create policy "media list own folder" on storage.objects for select to authenticated
   using (bucket_id = 'media' and (storage.foldername(name))[1] = auth.uid()::text);
 
 drop policy if exists "media delete own" on storage.objects;
--- L'amministratore cancella i file di post di account chiusi o eliminati (coda storage_purge).
+-- Ognuno cancella i propri file che non sono in un post (caricamenti falliti, post eliminati): il file di un
+-- post pubblicato non si cancella né si sostituisce, così dopo la moderazione il contenuto non cambia.
+-- L'amministratore cancella i file in coda di pulizia (post rimossi, account chiusi o eliminati).
 create policy "media delete own" on storage.objects for delete to authenticated
-  using (bucket_id = 'media' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin(auth.uid())));
+  using (bucket_id = 'media' and (((storage.foldername(name))[1] = auth.uid()::text and not public.media_in_use(name))
+                                  or public.is_admin(auth.uid())));
+-- Nessuna regola di UPDATE sul bucket media: un file caricato non si sovrascrive.
+drop policy if exists "media update own" on storage.objects;
 
 -- 2b) Bucket PRIVATO "documenti" per la verifica dell'età: 10 MB a file, solo immagini.
 --     Ognuno carica nella propria cartella; leggono solo l'interessato e gli amministratori;
@@ -59,15 +64,29 @@ create policy "documenti delete own or admin" on storage.objects for delete to a
 --    Gira un minuto dopo entrambe: una delle due è la mezzanotte giusta, l'altra non fa nulla
 --    (la giornata è già chiusa). Così la nuova copertina esce al minuto 00:01 tutto l'anno.
 create extension if not exists pg_cron;
-select cron.unschedule(jobid) from cron.job where jobname = 'arena-close-day';
+select cron.unschedule(jobid) from cron.job where jobname in ('arena-close-day', 'virale-pulizia');
+-- Solo la chiusura: da sola, così un errore nelle pulizie non può annullarla.
+select cron.schedule('arena-close-day', '1 22,23 * * *', $$ select public.arena_close_day(public.arena_today() - 1) $$);
+
+-- Pulizie, una volta al giorno alle 3:17 UTC, in un'operazione separata.
 select cron.schedule(
-  'arena-close-day',
-  '1 22,23 * * *',
-  $$ select public.arena_close_day(public.arena_today() - 1);
-     delete from public.post_views where day < public.arena_today() - 1;
+  'virale-pulizia',
+  '17 3 * * *',
+  $$ delete from public.post_views where day < public.arena_today() - 1;
      delete from public.notifications where created_at < now() - interval '90 days';
      delete from public.seen_posts where seen_at < now() - interval '30 days';
      delete from public.user_interests where updated_at < now() - interval '120 days';
+     -- File caricati da più di un giorno e mai usati in un post (pubblicazione interrotta): in pulizia.
+     insert into public.storage_purge (bucket, path)
+     select o.bucket_id, o.name from storage.objects o
+      where o.bucket_id = 'media' and o.created_at < now() - interval '1 day' and not public.media_in_use(o.name)
+     on conflict do nothing;
+     -- Documenti rimasti senza una verifica in attesa (invio fallito): dopo un giorno, in pulizia.
+     insert into public.storage_purge (bucket, path)
+     select o.bucket_id, o.name from storage.objects o
+      where o.bucket_id = 'documenti' and o.created_at < now() - interval '1 day'
+        and not exists (select 1 from public.identity_checks i where i.status = 'pending' and o.name in (i.document_path, i.selfie_path))
+     on conflict do nothing;
      -- Utenti di accesso rimasti senza profilo (registrazione interrotta) dopo un giorno: liberano il nome.
      delete from auth.users u where u.created_at < now() - interval '1 day'
        and not exists (select 1 from public.profiles p where p.id = u.id) $$

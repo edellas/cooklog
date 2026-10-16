@@ -500,3 +500,119 @@ do $$ begin
   if (select view_count from posts where id = '20000000-0000-0000-0000-000000000004') <> 1 then raise exception 'visualizzazione da link non contata'; end if;
   raise notice 'ok, aprire un post da un link conta la vista senza toccare i gusti';
 end $$;
+
+-- ---------- Revisione: gara e sicurezza ----------
+reset role;
+update arena_config set tier_thresholds = '{100,200}', min_cohort = 100;
+insert into auth.users (id, email) select ('00000000-0000-0000-0000-0000000000e'||i)::uuid, 'gara'||i||'@utenti.virale.invalid' from generate_series(1,6) i;
+insert into profiles (id, username, display_name) select id, 'gara'||right(id::text,1), 'Gara G.' from auth.users where id::text like '00000000-0000-0000-0000-0000000000e%';
+update profiles set created_at = now() - interval '10 days' where username like 'gara%';
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username like 'gara%';
+insert into posts (id, author_id, media, caption)
+  select ('30000000-0000-0000-0000-00000000000'||i)::uuid, ('00000000-0000-0000-0000-0000000000e'||i)::uuid,
+         test_media(('00000000-0000-0000-0000-0000000000e'||i)::uuid, 'g.jpg'), 'Gara '||i
+  from generate_series(1,3) i;
+set role authenticated;
+do $$ declare i int; begin
+  for i in 1..3 loop
+    perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e'||i, false);
+    perform arena_submit(('30000000-0000-0000-0000-00000000000'||i)::uuid);
+  end loop;
+end $$;
+-- Il livello di una candidatura lo vede solo l'autore.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e4', false);
+do $$ declare c jsonb; begin
+  select get_post('30000000-0000-0000-0000-000000000001') -> 'contest' into c;
+  if c ->> 'tier' is not null or c ->> 'entry_id' is not null or c ->> 'status' <> 'active' then raise exception 'livello visibile a chi vota: %', c; end if;
+  raise notice 'ok, chi vota vede solo "in gara", non il livello';
+end $$;
+-- Un mi piace dato prima che il post fosse servito non è un voto.
+insert into post_likes (post_id, user_id) values ('30000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000e4');
+-- Date imposte dal server: un follow datato nel futuro non passa.
+do $$ begin
+  insert into follows (follower_id, followee_id, created_at) values ('00000000-0000-0000-0000-0000000000e4', '00000000-0000-0000-0000-0000000000e1', 'infinity');
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, data dei follow decisa dal server'; end $$;
+-- Consegnati ma mai guardati: dopo 10 minuti tornano.
+do $$ declare n1 int; n2 int; begin
+  select count(*) into n1 from feed_for_you(10) f where f.post ->> 'id' like '30000000%';
+  select count(*) into n2 from feed_for_you(10) f where f.post ->> 'id' like '30000000%';
+  if n1 <> 3 or n2 <> 0 then raise exception 'consegna: % poi %', n1, n2; end if;
+end $$;
+reset role;
+update arena_views set last_served_at = now() - interval '11 minutes', served_at = served_at
+ where viewer_id = '00000000-0000-0000-0000-0000000000e4';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e4', false);
+do $$ declare n int; e uuid; begin
+  create temp table served on commit drop as select * from feed_for_you(10) f where f.post ->> 'id' like '30000000%';
+  select count(*) into n from served;
+  if n <> 3 then raise exception 'candidati non guardati persi: tornati %', n; end if;
+  raise notice 'ok, i candidati consegnati ma non guardati tornano';
+  select entry_id into e from served where post ->> 'id' = '30000000-0000-0000-0000-000000000001';
+  perform arena_record_view(e, 5000, true);
+end $$;
+reset role;
+do $$ begin
+  if (select coalesce(sum(likes), 0) from arena_entry_stats s join arena_entries e on e.id = s.entry_id where e.post_id = '30000000-0000-0000-0000-000000000001') <> 0 then
+    raise exception 'un mi piace vecchio è stato contato come voto';
+  end if;
+  if not (select counted from arena_views v join arena_entries e on e.id = v.entry_id where e.post_id = '30000000-0000-0000-0000-000000000001' and v.viewer_id = '00000000-0000-0000-0000-0000000000e4') then
+    raise exception 'vista non segnata come contata';
+  end if;
+  raise notice 'ok, contano solo i segnali dati dopo che il post è stato servito';
+end $$;
+-- Tre segnalazioni da chi il post non l'ha mai avuto davanti non lo nascondono.
+set role authenticated;
+do $$ declare i int; begin
+  for i in 4..6 loop
+    perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e'||i, false);
+    perform report_post('30000000-0000-0000-0000-000000000002', 'spam');
+  end loop;
+end $$;
+reset role;
+do $$ begin
+  if (select hidden_at from posts where id = '30000000-0000-0000-0000-000000000002') is not null then
+    raise exception 'tre account hanno nascosto un post che non avevano visto';
+  end if;
+  raise notice 'ok, segnalazioni di chi non ha visto il post non lo nascondono';
+end $$;
+-- Un post già in gara un altro giorno non si ricandida.
+update arena_entries set contest_day = arena_today() - 3 where post_id = '30000000-0000-0000-0000-000000000003';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e3', false);
+do $$ begin perform arena_submit('30000000-0000-0000-0000-000000000003'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%già partecipato%' then raise; end if; raise notice 'ok, un post partecipa una volta sola'; end $$;
+-- Chi ha deciso sul documento non si legge.
+do $$ begin perform reviewed_by from identity_checks where user_id = auth.uid(); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, nome di chi verifica riservato'; end $$;
+-- Il nome di accesso non si cambia.
+reset role;
+do $$ begin
+  update auth.users set email = 'altro@utenti.virale.invalid' where id = '00000000-0000-0000-0000-0000000000e1';
+  raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non si può cambiare%' then raise; end if; raise notice 'ok, nome di accesso bloccato'; end $$;
+-- Stessa persona, secondo account: la verifica automatica lo manda in revisione.
+insert into profile_private (id, first_name, last_name, birth_date) values
+  ('00000000-0000-0000-0000-0000000000e5', 'Mario', 'Rossi', '1990-01-01'), ('00000000-0000-0000-0000-0000000000e6', 'Mario', 'Rossi', '1990-01-01');
+update identity_checks set status = 'missing' where user_id in ('00000000-0000-0000-0000-0000000000e5', '00000000-0000-0000-0000-0000000000e6');
+set role service_role;
+select identity_provider_start('00000000-0000-0000-0000-0000000000e5', 'dup-a');
+select identity_provider_start('00000000-0000-0000-0000-0000000000e6', 'dup-b');
+do $$ begin
+  if identity_provider_result('00000000-0000-0000-0000-0000000000e5', 'dup-a', 'Approved', '1990-01-01', 'Mario', 'Rossi', 'CA12345AB') <> 'approved' then raise exception 'primo'; end if;
+  if identity_provider_result('00000000-0000-0000-0000-0000000000e6', 'dup-b', 'Approved', '1990-01-01', 'Mario', 'Rossi', 'CA12345AB') <> 'review' then raise exception 'doppione approvato'; end if;
+  raise notice 'ok, stessa persona su due account: decide un amministratore';
+end $$;
+reset role;
+-- La copertina resta assegnata anche se il vincitore elimina l'account; rimuovere la copertina sceglie il secondo.
+do $$ declare w uuid; d date := arena_today(); author uuid; again uuid; begin
+  w := arena_close_day(d);
+  if w is null then raise exception 'nessun vincitore'; end if;
+  select author_id into author from daily_viral where contest_day = d;
+  delete from auth.users where id = author;
+  if not exists (select 1 from daily_viral where contest_day = d) then raise exception 'giorno riassegnabile dopo la cancellazione'; end if;
+  again := arena_close_day(d);
+  if again is distinct from (select entry_id from daily_viral where contest_day = d) then raise exception 'secondo vincitore'; end if;
+  raise notice 'ok, la copertina non si riassegna se il vincitore se ne va';
+end $$;
