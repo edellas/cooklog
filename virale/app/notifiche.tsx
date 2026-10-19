@@ -10,6 +10,7 @@ import { Thumb } from '../src/components/Thumb';
 import { Txt } from '../src/components/Txt';
 import { timeAgo } from '../src/design/format';
 import { color, radius, space } from '../src/design/tokens';
+import { ownerEmail } from '../src/legal/docs';
 import { getNotifications, markNotificationsRead, TIER_NAMES } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
@@ -37,10 +38,28 @@ function text(n: AppNotification): string {
       if (n.data.final) return `Account chiuso: ${reason}. Virale è aperta dai 14 anni.`;
       return `Documento non accettato: ${reason}. Puoi ricaricarlo.`;
     }
-    case 'removed':
-      return 'Un tuo post è stato rimosso perché viola le linee guida. Se pensi sia un errore, scrivici.';
+    case 'removed': {
+      const email = ownerEmail();
+      const appeal = email ? ` Se pensi sia un errore, scrivici a ${email}.` : ' Se pensi sia un errore, scrivici.';
+      const why = REMOVAL_REASON[n.data.reason ?? ''] ?? 'viola le linee guida';
+      if (n.data.what === 'comment') return `Un tuo commento è stato rimosso: ${why}${n.data.body ? ` (“${n.data.body}”)` : ''}.${appeal}`;
+      if (n.data.what === 'profile') return `Foto, nome o bio del tuo profilo sono stati azzerati: ${why}.${appeal}`;
+      return `Un tuo post è stato rimosso: ${why}.${appeal}`;
+    }
   }
 }
+
+/** Il motivo di una rimozione detto a parole (DSA art. 17: chi viene moderato deve sapere perché). */
+const REMOVAL_REASON: Record<string, string> = {
+  spam: 'spam',
+  nudo: 'nudo o contenuti sessuali',
+  minori: 'mette in pericolo un minore',
+  violenza: 'violenza o contenuti scioccanti',
+  odio: 'odio o discriminazione',
+  molestie: 'molestie o bullismo',
+  falso: 'falso, truffa o furto d’identità',
+  altro: 'viola le linee guida',
+};
 
 const ICON: Record<AppNotification['kind'], IconName> = {
   follow: 'segui',

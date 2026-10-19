@@ -71,7 +71,7 @@ create policy "documenti delete own or admin" on storage.objects for delete to a
 --    dall'amministratore, ora di Roma). Appena passa, la gara chiude, si sceglie il vincitore e la nuova
 --    copertina esce. Negli altri minuti non fa nulla (una lettura).
 create extension if not exists pg_cron;
-select cron.unschedule(jobid) from cron.job where jobname in ('arena-close-day', 'virale-pulizia');
+select cron.unschedule(jobid) from cron.job where jobname in ('arena-close-day', 'virale-pulizia', 'virale-lavori');
 -- Solo la chiusura: da sola, così un errore nelle pulizie non può annullarla.
 select cron.schedule('arena-close-day', '* * * * *', $$ select public.arena_close_due() $$);
 
@@ -97,10 +97,32 @@ select cron.schedule(
       where o.bucket_id = 'documenti' and o.created_at < now() - interval '1 day'
         and not exists (select 1 from public.identity_checks i where i.status = 'pending' and o.name in (i.document_path, i.selfie_path))
      on conflict do nothing;
+     -- Foto profilo caricate da più di un giorno e non usate da nessun profilo (cambiate o mai salvate): in pulizia.
+     insert into public.storage_purge (bucket, path)
+     select o.bucket_id, o.name from storage.objects o
+      where o.bucket_id = 'avatars' and o.created_at < now() - interval '1 day'
+        and not exists (select 1 from public.profiles p where p.avatar_path = o.name)
+     on conflict do nothing;
      -- Utenti di accesso rimasti senza profilo (registrazione interrotta) dopo un giorno: liberano il nome.
      delete from auth.users u where u.created_at < now() - interval '1 day'
        and not exists (select 1 from public.profiles p where p.id = u.id) $$
 );
+
+-- 3b) Lavori ogni minuto: la funzione verifica-eta (rotta /lavori) cancella dallo Storage i file rimossi dalla
+--     moderazione o di account chiusi (e, con le notifiche push configurate, le invia). Parte solo dopo aver
+--     creato i due segreti nel Vault (vedi PUBBLICARE.md):
+--       select vault.create_secret('https://<il-tuo-progetto>.supabase.co', 'virale_url');
+--       select vault.create_secret('<stringa segreta lunga>', 'virale_cron_secret');
+--     e il segreto VIRALE_CRON_SECRET (stesso valore) nella funzione. Senza, ogni minuto non fa nulla.
+create extension if not exists pg_net;
+select cron.schedule('virale-lavori', '* * * * *', $$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'virale_url') || '/functions/v1/verifica-eta/lavori',
+    headers := jsonb_build_object('Content-Type', 'application/json',
+                 'x-virale-cron', (select decrypted_secret from vault.decrypted_secrets where name = 'virale_cron_secret')),
+    body := '{}'::jsonb, timeout_milliseconds := 60000)
+  where exists (select 1 from vault.decrypted_secrets where name = 'virale_cron_secret')
+    and exists (select 1 from vault.decrypted_secrets where name = 'virale_url') $$);
 
 -- 4) Amministratore: DOPO esserti registrato dall'app, togli i due trattini e metti il tuo nome utente.
 --    L'amministratore modera, verifica i documenti e sceglie l'orario della copertina.

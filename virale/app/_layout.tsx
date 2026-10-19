@@ -68,6 +68,10 @@ export default function RootLayout() {
                     name="azioni/[postId]"
                     options={{ presentation: 'formSheet', sheetAllowedDetents: [0.55, 0.9], sheetGrabberVisible: true, sheetCornerRadius: 24, contentStyle: { backgroundColor: color.sheet } }}
                   />
+                  <Stack.Screen
+                    name="segnala-profilo/[username]"
+                    options={{ presentation: 'formSheet', sheetAllowedDetents: [0.75, 0.95], sheetGrabberVisible: true, sheetCornerRadius: 24, contentStyle: { backgroundColor: color.sheet } }}
+                  />
                   <Stack.Screen name="impostazioni" />
                   <Stack.Screen name="moderazione" />
                   <Stack.Screen name="amministrazione" />

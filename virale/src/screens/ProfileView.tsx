@@ -288,16 +288,20 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           </Press>
         )}
         {!profile.isMe ? (
-          <Press
-            style={styles.block}
-            scaleTo={1}
-            onPress={() => void block()}
-            accessibilityRole="button">
-            <Icon name="blocca" size={18} color={confirmBlock ? color.matita : color.paperFaint} />
-            <Txt variant="meta" tone={confirmBlock ? color.matita : color.paperFaint}>
-              {confirmBlock ? `Tocca di nuovo per bloccare @${profile.username}` : `Blocca @${profile.username}`}
-            </Txt>
-          </Press>
+          <View style={styles.safety}>
+            <Press style={styles.block} scaleTo={1} onPress={() => nav.push(`/segnala-profilo/${profile.username}`)} accessibilityRole="button">
+              <Icon name="segnala" size={18} color={color.paperFaint} />
+              <Txt variant="meta" tone={color.paperFaint}>
+                {`Segnala @${profile.username}`}
+              </Txt>
+            </Press>
+            <Press style={styles.block} scaleTo={1} onPress={() => void block()} accessibilityRole="button">
+              <Icon name="blocca" size={18} color={confirmBlock ? color.matita : color.paperFaint} />
+              <Txt variant="meta" tone={confirmBlock ? color.matita : color.paperFaint}>
+                {confirmBlock ? `Tocca di nuovo per bloccare @${profile.username}` : `Blocca @${profile.username}`}
+              </Txt>
+            </Press>
+          </View>
         ) : null}
 
         {entry && !entry.postId ? (
@@ -421,7 +425,8 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.canvas },
   pad: { paddingHorizontal: space[5], gap: space[4] },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  block: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 6 },
+  safety: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', columnGap: space[5] },
+  block: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 44 },
   back: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
   head: { flexDirection: 'row', alignItems: 'center', gap: space[4] },
   stats: { flexDirection: 'row', gap: space[2] },

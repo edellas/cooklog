@@ -8,9 +8,12 @@
 //   GET  /verifica-eta/stato     → controllo dal browser: quali segreti ci sono e se Didit accetta la chiave.
 //                                  Non mostra mai i valori dei segreti.
 //   GET  /verifica-eta/apri/post/<id> → link dei post condivisi: apre il post nell'app (se è installata).
+//   POST /verifica-eta/lavori    → lavoro programmato (pg_cron ogni minuto, intestazione x-virale-cron):
+//                                  cancella dallo Storage i file rimossi o di account chiusi.
 //
 // Segreti da impostare in Supabase → Edge Functions → Secrets:
-//   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET
+//   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET (verifica automatica dell'età)
+//   VIRALE_CRON_SECRET (lo stesso valore di "virale_cron_secret" nel Vault: vedi setup-produzione.sql)
 // (SUPABASE_URL e la chiave di servizio ci sono già.)
 // La funzione va creata con "Verify JWT" SPENTO: Didit non ha un utente Supabase. L'utente dell'app lo
 // controlla il codice qui sotto.
@@ -62,6 +65,7 @@ Deno.serve(async (req) => {
       return new Response(null, { status: 302, headers: { Location: to } });
     }
     if (route === 'webhook' && req.method === 'POST') return await webhook(req);
+    if (route === 'lavori' && req.method === 'POST') return await lavori(req);
     if (route === 'ritorno') {
       const android = /android/i.test(req.headers.get('user-agent') ?? '');
       return new Response(null, { status: 302, headers: { Location: android ? ANDROID_RETURN : APP_RETURN } });
@@ -227,6 +231,42 @@ async function webhook(req: Request): Promise<Response> {
     await fetch(`${DIDIT}/session/${encodeURIComponent(event.session_id)}/delete/`, { method: 'DELETE', headers: { 'x-api-key': env('DIDIT_API_KEY') } }).catch(() => undefined);
   }
   return json({ ok: true, outcome });
+}
+
+/**
+ * Il lavoro programmato: lo chiama pg_cron ogni minuto (setup-produzione.sql) con il segreto condiviso.
+ * Senza segreto configurato non fa nulla: la pulizia resta all'app dell'amministratore.
+ */
+async function lavori(req: Request): Promise<Response> {
+  const secret = env('VIRALE_CRON_SECRET');
+  const given = req.headers.get('x-virale-cron') ?? '';
+  if (!secret || !given || !safeEqual(given, secret)) return json({ error: 'Non autorizzato.' }, 401);
+  const purged = await purgeFiles();
+  return json({ ok: true, purged, pushed: 0 });
+}
+
+/** Cancella dallo Storage i file in coda (post rimossi, account chiusi, foto profilo sostituite), a gruppi di 100. */
+async function purgeFiles(): Promise<number> {
+  const { data, error } = await admin.rpc('storage_purge_take', { p_limit: 500 });
+  if (error) throw error;
+  const rows = (data ?? []) as { bucket: string; path: string }[];
+  let purged = 0;
+  for (const bucket of [...new Set(rows.map((r) => r.bucket))]) {
+    const paths = rows.filter((r) => r.bucket === bucket).map((r) => r.path);
+    for (let i = 0; i < paths.length; i += 100) {
+      const chunk = paths.slice(i, i + 100);
+      const { error: removeError } = await admin.storage.from(bucket).remove(chunk);
+      // Se lo Storage non risponde i file restano in coda: si riprova al prossimo giro.
+      if (removeError) {
+        console.error('verifica-eta: pulizia', bucket, removeError.message);
+        continue;
+      }
+      const { error: doneError } = await admin.rpc('storage_purge_finish', { p_bucket: bucket, p_paths: chunk });
+      if (doneError) throw doneError;
+      purged += chunk.length;
+    }
+  }
+  return purged;
 }
 
 async function hmacHex(secret: string, body: string): Promise<string> {

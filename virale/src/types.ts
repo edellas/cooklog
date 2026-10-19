@@ -143,7 +143,8 @@ export type AppNotification = {
   kind: NotificationKind;
   actor: Author | null;
   post: { id: string; media: MediaItem[] } | null;
-  data: { body?: string; tier?: number; featured_on?: string; reason?: string | null; final?: boolean };
+  /** removed: `reason` è il motivo della segnalazione (spam, odio…) e `what` cosa è stato rimosso. */
+  data: { body?: string; tier?: number; featured_on?: string; reason?: string | null; final?: boolean; what?: 'post' | 'comment' | 'profile' };
   createdAt: string;
   read: boolean;
 };

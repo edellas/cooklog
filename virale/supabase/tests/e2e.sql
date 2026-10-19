@@ -824,3 +824,163 @@ do $$ declare n int; begin
   raise exception using errcode = 'P0002', message = 'annulla';
 exception when no_data_found then null;
 end $$;
+
+-- ---------- Segnalazioni di commenti e profili, coda di moderazione (W3) ----------
+reset role;
+insert into auth.users (id) select ('00000000-0000-0000-0000-0000000001'||lpad(i::text, 2, '0'))::uuid from generate_series(1, 6) i;
+insert into profiles (id, username, display_name, bio)
+  select ('00000000-0000-0000-0000-0000000001'||lpad(i::text, 2, '0'))::uuid, 'mod'||i, 'Mod '||i, 'Bio di mod'||i from generate_series(1, 6) i;
+update profiles set created_at = now() - interval '10 days' where username like 'mod_';
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username like 'mod_';
+insert into profile_private (id, first_name, last_name, birth_date) values ('00000000-0000-0000-0000-000000000102', 'Carla', 'Neri', '1990-01-01');
+-- mod1 pubblica, mod2 e mod3 commentano; mod5 è moderatore, mod6 amministratore.
+insert into posts (id, author_id, media, caption) values ('50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000101', test_media('00000000-0000-0000-0000-000000000101', 'm.jpg'), 'Moderazione');
+insert into comments (id, post_id, user_id, body) values
+  ('51000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000102', 'Commento brutto'),
+  ('51000000-0000-0000-0000-000000000002', '50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000103', 'Commento normale');
+update profiles set is_moderator = true where username = 'mod5';
+update profiles set is_admin = true where username = 'mod6';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+do $$ declare n int; begin
+  perform report_comment('51000000-0000-0000-0000-000000000001', 'spam');
+  perform report_comment('51000000-0000-0000-0000-000000000001', 'odio');
+  if (select count(*) from get_comments('50000000-0000-0000-0000-000000000001')) <> 1 then raise exception 'il commento segnalato si vede ancora'; end if;
+  -- Il conteggio sotto il post coincide con i commenti mostrati.
+  if (get_post('50000000-0000-0000-0000-000000000001') ->> 'comment_count')::int <> 1 then raise exception 'conteggio diverso dai commenti mostrati'; end if;
+  raise notice 'ok, commento segnalato: sparisce per chi segnala, anche dal conteggio';
+end $$;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000103', false);
+do $$ begin
+  if (select count(*) from get_comments('50000000-0000-0000-0000-000000000001')) <> 2 then raise exception 'il commento segnalato è sparito anche per gli altri'; end if;
+  begin perform report_comment('51000000-0000-0000-0000-000000000002', 'spam'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%tuo commento%' then raise; end if; end;
+  begin perform mod_user_reports(); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%moderatori%' then raise; end if; end;
+  begin perform report_profile(auth.uid(), 'spam'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%tuo profilo%' then raise; end if; end;
+  perform report_profile('00000000-0000-0000-0000-000000000102', 'falso');
+  raise notice 'ok, niente segnalazioni dei propri contenuti, coda riservata allo staff';
+end $$;
+reset role;
+do $$ begin
+  if (select count(*) from user_reports where comment_id = '51000000-0000-0000-0000-000000000001') <> 1 then raise exception 'doppia segnalazione registrata'; end if;
+  if (select snapshot ->> 'body' from user_reports where comment_id = '51000000-0000-0000-0000-000000000001') <> 'Commento brutto' then raise exception 'testo del commento non conservato'; end if;
+  raise notice 'ok, la doppia segnalazione dello stesso commento si ignora e il testo resta come prova';
+end $$;
+-- Il moderatore vede la coda e rimuove: il commento sparisce e l'autore riceve il motivo.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000105', false);
+do $$ declare q jsonb[]; begin
+  select array_agg(x) into q from mod_user_reports() x;
+  if array_length(q, 1) <> 2 then raise exception 'coda: % elementi', array_length(q, 1); end if;
+  perform mod_resolve_user_report('comment', '51000000-0000-0000-0000-000000000001', 'remove');
+  if exists (select 1 from mod_user_reports() x where x ->> 'kind' = 'comment') then raise exception 'segnalazione ancora in coda'; end if;
+  raise notice 'ok, coda dei commenti e dei profili, la rimozione la svuota';
+end $$;
+reset role;
+do $$ declare d jsonb; begin
+  if exists (select 1 from comments where id = '51000000-0000-0000-0000-000000000001') then raise exception 'commento non cancellato'; end if;
+  select data into d from notifications where user_id = '00000000-0000-0000-0000-000000000102' and kind = 'removed';
+  if d ->> 'what' <> 'comment' or d ->> 'reason' not in ('spam', 'odio') or d ->> 'body' <> 'Commento brutto' then raise exception 'notifica di rimozione senza motivo: %', d; end if;
+  raise notice 'ok, commento rimosso e autore avvisato con il motivo';
+end $$;
+-- Rimozione del profilo: bio e foto azzerate, nome di nuovo "Nome I.".
+update profiles set avatar_path = '00000000-0000-0000-0000-000000000102/avatar-1700000000000.jpg', display_name = 'Moderatore Ufficiale' where username = 'mod2';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000105', false);
+select mod_resolve_user_report('profile', '00000000-0000-0000-0000-000000000102', 'remove');
+reset role;
+do $$ declare pr profiles; begin
+  select * into pr from profiles where username = 'mod2';
+  if pr.bio <> '' or pr.avatar_path is not null or pr.display_name <> 'Carla N.' then raise exception 'profilo non azzerato: % % %', pr.bio, pr.avatar_path, pr.display_name; end if;
+  if not exists (select 1 from storage_purge where bucket = 'avatars' and path = '00000000-0000-0000-0000-000000000102/avatar-1700000000000.jpg') then raise exception 'foto non messa in pulizia'; end if;
+  raise notice 'ok, profilo rimosso: bio e foto azzerate, nome ripristinato';
+end $$;
+-- Un moderatore non espelle un amministratore (nemmeno da una segnalazione di profilo).
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+select report_profile('00000000-0000-0000-0000-000000000106', 'spam');
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000105', false);
+do $$ begin perform mod_resolve_user_report('profile', '00000000-0000-0000-0000-000000000106', 'ban'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%staff%' then raise; end if; raise notice 'ok, un moderatore non espelle un amministratore'; end $$;
+-- 31 segnalazioni in un'ora: la trentunesima viene fermata (post, commenti e profili contano insieme).
+reset role;
+insert into rate_events (user_id, kind, at) select '00000000-0000-0000-0000-000000000104', 'reports', now() from generate_series(1, 29);
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+do $$ begin
+  perform report_profile('00000000-0000-0000-0000-000000000103', 'spam');
+  raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%Troppe segnalazioni%' then raise; end if; raise notice 'ok, segnalazioni a raffica fermate'; end $$;
+reset role;
+
+-- ---------- Commenti coerenti: conteggi, blocchi, notifiche, espulsi (W14) ----------
+-- Conteggio per chi ha bloccato un commentatore (B10).
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000101', false);
+insert into comments (post_id, user_id, body) values ('50000000-0000-0000-0000-000000000001', auth.uid(), 'Grazie');
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+select block_user('00000000-0000-0000-0000-000000000103');
+do $$ declare shown int; counted int; begin
+  select count(*) into shown from get_comments('50000000-0000-0000-0000-000000000001');
+  counted := (get_post('50000000-0000-0000-0000-000000000001') ->> 'comment_count')::int;
+  if shown <> counted then raise exception 'conteggio % ma commenti mostrati %', counted, shown; end if;
+  raise notice 'ok, il conteggio dei commenti coincide con quelli mostrati (blocchi e segnalazioni)';
+end $$;
+-- Due commenti della stessa persona: cancellandone uno la notifica resta (con l'altro testo), poi sparisce (B33).
+reset role;
+insert into comments (id, post_id, user_id, body) values ('51000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000104', 'Primo');
+insert into comments (id, post_id, user_id, body) values ('51000000-0000-0000-0000-000000000004', '50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000104', 'Secondo');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+delete from comments where id = '51000000-0000-0000-0000-000000000004';
+reset role;
+do $$ begin
+  if (select data ->> 'body' from notifications where user_id = '00000000-0000-0000-0000-000000000101' and kind = 'comment' and actor_id = '00000000-0000-0000-0000-000000000104') is distinct from 'Primo' then
+    raise exception 'notifica sparita o con il testo sbagliato';
+  end if;
+  delete from comments where id = '51000000-0000-0000-0000-000000000003';
+  if exists (select 1 from notifications where user_id = '00000000-0000-0000-0000-000000000101' and kind = 'comment' and actor_id = '00000000-0000-0000-0000-000000000104') then
+    raise exception 'notifica rimasta senza commenti';
+  end if;
+  raise notice 'ok, la notifica del commento segue i commenti rimasti';
+end $$;
+-- Espulsione: i commenti dell'espulso spariscono e il conteggio scende (N7).
+do $$ declare before int; begin
+  select comment_count into before from posts where id = '50000000-0000-0000-0000-000000000001';
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000106', true);
+  perform mod_resolve_user_report('profile', '00000000-0000-0000-0000-000000000103', 'ban');
+  if exists (select 1 from comments where user_id = '00000000-0000-0000-0000-000000000103') then raise exception 'commenti dell''espulso rimasti'; end if;
+  if (select comment_count from posts where id = '50000000-0000-0000-0000-000000000001') <> before - 1 then raise exception 'conteggio non sceso'; end if;
+  if (select banned_at from profiles where username = 'mod3') is null then raise exception 'non espulso'; end if;
+  raise notice 'ok, espulso: commenti cancellati e conteggio aggiornato';
+end $$;
+
+-- ---------- Pulizia dei file con il lavoro programmato (W8) ----------
+do $$ begin
+  insert into storage_purge (bucket, path) values ('avatars', '00000000-0000-0000-0000-000000000101/avatar-1700000000001.jpg'), ('media', '00000000-0000-0000-0000-000000000101/vecchio.jpg');
+  -- Un file ancora usato da un post non va cancellato anche se qualcuno l'ha messo in coda.
+  insert into storage_purge (bucket, path) values ('media', '00000000-0000-0000-0000-000000000101/m.jpg');
+  update profiles set avatar_path = '00000000-0000-0000-0000-000000000101/avatar-1700000000002.jpg' where username = 'mod1';
+  insert into storage_purge (bucket, path) values ('avatars', '00000000-0000-0000-0000-000000000101/avatar-1700000000002.jpg');
+  raise notice 'ok, la coda di pulizia accetta il bucket avatars';
+end $$;
+set role authenticated;
+do $$ begin perform storage_purge_take(10); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, la pulizia programmata non si chiama dall''app'; end $$;
+reset role;
+set role service_role;
+do $$ declare paths text[]; begin
+  select array_agg(path) into paths from storage_purge_take(1000);
+  if not ('00000000-0000-0000-0000-000000000101/vecchio.jpg' = any (paths)) or not ('00000000-0000-0000-0000-000000000101/avatar-1700000000001.jpg' = any (paths)) then
+    raise exception 'file da cancellare non restituiti: %', paths;
+  end if;
+  if '00000000-0000-0000-0000-000000000101/m.jpg' = any (paths) or '00000000-0000-0000-0000-000000000101/avatar-1700000000002.jpg' = any (paths) then
+    raise exception 'restituito un file ancora in uso';
+  end if;
+  perform storage_purge_finish('media', array['00000000-0000-0000-0000-000000000101/vecchio.jpg']);
+  if exists (select 1 from storage_purge where path = '00000000-0000-0000-0000-000000000101/vecchio.jpg') then raise exception 'non tolto dalla coda'; end if;
+  raise notice 'ok, pulizia programmata: solo i file non più usati, poi tolti dalla coda';
+end $$;
+reset role;

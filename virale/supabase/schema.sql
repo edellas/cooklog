@@ -225,13 +225,54 @@ $$;
 -- File da cancellare dallo Storage (documenti dopo la decisione, media di account chiusi o eliminati).
 -- Il database non può cancellare i file: lo fa l'app dell'amministratore ogni volta che apre l'Amministrazione.
 create table if not exists public.storage_purge (
-  bucket text not null check (bucket in ('media', 'documenti')),
+  bucket text not null check (bucket in ('media', 'documenti', 'avatars')),
   path text not null,
   queued_at timestamptz not null default now(),
   primary key (bucket, path)
 );
 alter table public.storage_purge enable row level security;
 revoke all on public.storage_purge from anon, authenticated;
+-- Database esistenti: anche le foto profilo (bucket "avatars") finiscono in pulizia.
+alter table public.storage_purge drop constraint if exists storage_purge_bucket_check;
+alter table public.storage_purge add constraint storage_purge_bucket_check check (bucket in ('media', 'documenti', 'avatars'));
+
+-- Foto profilo (bucket "avatars", <id utente>/avatar-<ms>.jpg) e ultimo cambio del nome mostrato.
+alter table public.profiles add column if not exists avatar_path text;
+alter table public.profiles add column if not exists name_changed_at timestamptz;
+do $$ begin
+  alter table public.profiles add constraint profiles_avatar_path_check
+    check (avatar_path is null or avatar_path ~ '^[0-9a-f-]{36}/avatar-[0-9]{10,16}\.jpg$');
+exception when duplicate_object then null; end $$;
+
+-- Segnalazioni di commenti e profili (quelle dei post stanno in reports). La "fotografia" (snapshot) tiene
+-- il testo del commento o nome, bio e foto del profilo al momento della segnalazione: resta come prova anche
+-- se il contenuto viene cambiato o rimosso.
+create table if not exists public.user_reports (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (kind in ('comment', 'profile')),
+  comment_id uuid references public.comments(id) on delete set null,
+  -- Il post su cui stava il commento (contesto per chi modera).
+  post_id uuid references public.posts(id) on delete set null,
+  -- L'autore del commento o il profilo segnalato.
+  target_user_id uuid references public.profiles(id) on delete set null,
+  reporter_id uuid references public.profiles(id) on delete set null,
+  reason text not null check (reason in ('spam', 'nudo', 'violenza', 'odio', 'molestie', 'minori', 'falso', 'altro')),
+  note text check (length(note) <= 300),
+  snapshot jsonb not null default '{}' check (length(snapshot::text) <= 2000),
+  status text not null default 'open' check (status in ('open', 'removed', 'dismissed')),
+  resolved_by uuid references public.profiles(id) on delete set null,
+  resolved_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists uq_user_reports_comment on public.user_reports (comment_id, reporter_id) where kind = 'comment';
+create unique index if not exists uq_user_reports_profile_open on public.user_reports (target_user_id, reporter_id) where kind = 'profile' and status = 'open';
+create index if not exists idx_user_reports_open on public.user_reports (status, created_at) where status = 'open';
+create index if not exists idx_user_reports_reporter on public.user_reports (reporter_id, kind);
+create index if not exists idx_user_reports_target on public.user_reports (target_user_id);
+alter table public.user_reports enable row level security;
+-- Si legge e si scrive solo tramite le funzioni report_* / mod_*.
+revoke all on public.user_reports from anon, authenticated;
+create index if not exists idx_comments_post_user on public.comments (post_id, user_id);
 
 -- Nomi utente di account espulsi (anche per età): non si possono riprendere eliminando e ricreando l'account.
 create table if not exists public.banned_usernames (
@@ -796,12 +837,24 @@ create or replace function public.post_json(p_post_id uuid, p_viewer uuid)
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'id', p.id,
-    'author', jsonb_build_object('id', pr.id, 'username', pr.username, 'display_name', pr.display_name),
+    'author', jsonb_build_object('id', pr.id, 'username', pr.username, 'display_name', pr.display_name, 'avatar_path', pr.avatar_path),
     'media', p.media,
     'caption', p.caption,
     'created_at', p.created_at,
     'like_count', p.like_count,
-    'comment_count', p.comment_count,
+    -- I commenti che chi guarda vede davvero: senza quelli di persone bloccate (nei due sensi) e quelli che
+    -- ha segnalato (come get_comments). Il conto si fa solo se chi guarda ha blocchi o segnalazioni.
+    'comment_count', greatest(p.comment_count - case
+        when p_viewer is not null
+             and (exists (select 1 from blocks b where b.blocker_id = p_viewer)
+                  or exists (select 1 from blocks b where b.blocked_id = p_viewer)
+                  or exists (select 1 from user_reports r where r.reporter_id = p_viewer and r.kind = 'comment'))
+        then (select count(*) from comments c
+               where c.post_id = p.id
+                 and (c.user_id in (select blocked_id from blocks where blocker_id = p_viewer
+                                    union select blocker_id from blocks where blocked_id = p_viewer)
+                      or exists (select 1 from user_reports r where r.kind = 'comment' and r.comment_id = c.id and r.reporter_id = p_viewer)))
+        else 0 end, 0),
     'save_count', p.save_count,
     'share_count', p.share_count,
     'view_count', p.view_count,
@@ -909,13 +962,14 @@ returns jsonb language sql stable security definer set search_path = public, pg_
      or exists (select 1 from posts where id = p_post_id and author_id = auth.uid());
 $$;
 
--- Commenti di un post, senza quelli di utenti bloccati o espulsi.
+-- Commenti di un post, senza quelli di utenti bloccati o espulsi e senza quelli che chi guarda ha segnalato.
 create or replace function public.get_comments(p_post_id uuid)
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('id', c.id, 'post_id', c.post_id, 'body', c.body, 'created_at', c.created_at,
-                            'author', jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name))
+                            'author', jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name, 'avatar_path', a.avatar_path))
   from comments c join profiles a on a.id = c.user_id
   where c.post_id = p_post_id and a.banned_at is null and not public.is_blocked_pair(auth.uid(), c.user_id)
+    and not exists (select 1 from user_reports r where r.kind = 'comment' and r.comment_id = c.id and r.reporter_id = auth.uid())
     and (public.can_see(p_post_id, auth.uid()) or exists (select 1 from posts where id = p_post_id and author_id = auth.uid()))
   order by c.created_at
   limit 300;
@@ -1012,11 +1066,13 @@ begin
   insert into storage_purge (bucket, path)
   select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = v_uid
   on conflict do nothing;
+  insert into storage_purge (bucket, path) select 'avatars', avatar_path from profiles where id = v_uid and avatar_path is not null
+  on conflict do nothing;
   -- Anche i file caricati e mai usati in un post: tutta la cartella dell'utente (solo su Supabase).
   if to_regclass('storage.objects') is not null then
     execute 'insert into public.storage_purge (bucket, path)
              select bucket_id, name from storage.objects
-              where bucket_id in (''media'', ''documenti'') and split_part(name, ''/'', 1) = $1
+              where bucket_id in (''media'', ''documenti'', ''avatars'') and split_part(name, ''/'', 1) = $1
              on conflict do nothing' using v_uid::text;
   end if;
   delete from auth.users where id = v_uid;
@@ -1047,12 +1103,40 @@ $$;
 
 -- action: 'dismiss' (nessun problema, il post torna visibile), 'remove' (post rimosso),
 -- 'ban' (post rimosso e utente espulso: tutti i suoi post spariscono e non può più agire).
+-- Espulsione di un utente (dalla moderazione dei post, dei commenti o dei profili): non può più agire, i
+-- suoi post spariscono e i loro file vanno in pulizia, i suoi commenti si cancellano (contatori e notifiche
+-- li aggiornano i trigger), il nome utente non si potrà riprendere.
+create or replace function public.mod_ban_user(p_user uuid)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  insert into banned_usernames (username, reason) select username, 'moderazione' from profiles where id = p_user
+  on conflict (username) do nothing;
+  update profiles set banned_at = now() where id = p_user;
+  update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = p_user;
+  insert into storage_purge (bucket, path)
+  select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = p_user
+  on conflict do nothing;
+  insert into storage_purge (bucket, path) select 'avatars', avatar_path from profiles where id = p_user and avatar_path is not null
+  on conflict do nothing;
+  update profiles set avatar_path = null where id = p_user and avatar_path is not null;
+  update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where author_id = p_user and contest_day = public.arena_today();
+  delete from comments where user_id = p_user;
+end;
+$$;
+
+-- Il motivo più frequente fra le segnalazioni aperte (per la notifica di rimozione, DSA art. 17).
+create or replace function public.mod_top_reason(p_reasons text[])
+returns text language sql immutable as $$
+  select coalesce((select r from unnest(p_reasons) r group by r order by count(*) desc, r limit 1), 'altro');
+$$;
+
 create or replace function public.mod_resolve(p_post_id uuid, p_action text)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
   v_author uuid;
   v_day date;
+  v_reason text;
 begin
   if not public.is_staff(v_uid) then raise exception 'Solo per i moderatori.'; end if;
   if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
@@ -1069,6 +1153,7 @@ begin
     end if;
   end if;
 
+  select public.mod_top_reason(array_agg(reason)) into v_reason from reports where post_id = p_post_id and status = 'open';
   update reports set status = case when p_action = 'dismiss' then 'dismissed' else 'removed' end,
                      resolved_by = v_uid, resolved_at = now()
    where post_id = p_post_id and status = 'open';
@@ -1094,20 +1179,145 @@ begin
       delete from daily_viral where contest_day = v_day;
       perform public.arena_close_day(v_day);
     end if;
-    -- L'autore viene avvisato (e può scrivere al supporto se pensa sia un errore).
-    perform public.notify(v_author, 'removed', null, p_post_id);
+    -- L'autore viene avvisato, con il motivo (e può scrivere al supporto se pensa sia un errore).
+    perform public.notify(v_author, 'removed', null, p_post_id, jsonb_build_object('reason', v_reason, 'what', 'post'));
   end if;
 
-  if p_action = 'ban' then
-    insert into banned_usernames (username, reason) select username, 'moderazione' from profiles where id = v_author
-    on conflict (username) do nothing;
-    update profiles set banned_at = now() where id = v_author;
-    update posts set hidden_at = coalesce(hidden_at, now()), hidden_reason = coalesce(hidden_reason, 'utente espulso') where author_id = v_author;
-    insert into storage_purge (bucket, path)
-    select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = v_author
-    on conflict do nothing;
-    update arena_entries set status = 'disqualified', disqualified_reason = 'moderazione' where author_id = v_author and contest_day = public.arena_today();
+  if p_action = 'ban' then perform public.mod_ban_user(v_author); end if;
+end;
+$$;
+
+-- Segnala un commento: per chi segnala sparisce subito; va nella coda "Commenti e profili".
+create or replace function public.report_comment(p_comment_id uuid, p_reason text, p_note text default null)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_c comments;
+  v_author profiles;
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  select * into v_c from comments where id = p_comment_id;
+  if not found or not (public.can_see(v_c.post_id, v_uid) or exists (select 1 from posts where id = v_c.post_id and author_id = v_uid)) then
+    raise exception 'Commento non trovato.';
   end if;
+  if v_c.user_id = v_uid then raise exception 'Non puoi segnalare un tuo commento.'; end if;
+  select * into v_author from profiles where id = v_c.user_id;
+  insert into user_reports (kind, comment_id, post_id, target_user_id, reporter_id, reason, note, snapshot)
+  values ('comment', v_c.id, v_c.post_id, v_c.user_id, v_uid, p_reason, nullif(trim(coalesce(p_note, '')), ''),
+          jsonb_build_object('body', v_c.body, 'username', v_author.username, 'created_at', v_c.created_at))
+  on conflict (comment_id, reporter_id) where kind = 'comment' do nothing;
+end;
+$$;
+
+-- Segnala un profilo (nome, bio o foto): va nella coda "Commenti e profili".
+create or replace function public.report_profile(p_user_id uuid, p_reason text, p_note text default null)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_pr profiles;
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if p_user_id = v_uid then raise exception 'Non puoi segnalare il tuo profilo.'; end if;
+  select * into v_pr from profiles where id = p_user_id;
+  if not found or v_pr.banned_at is not null or public.is_blocked_pair(v_uid, p_user_id) then raise exception 'Profilo non trovato.'; end if;
+  insert into user_reports (kind, target_user_id, reporter_id, reason, note, snapshot)
+  values ('profile', p_user_id, v_uid, p_reason, nullif(trim(coalesce(p_note, '')), ''),
+          jsonb_build_object('username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio, 'avatar_path', v_pr.avatar_path))
+  on conflict (target_user_id, reporter_id) where kind = 'profile' and status = 'open' do nothing;
+end;
+$$;
+
+-- Coda dei commenti e dei profili segnalati (solo staff), dal più vecchio, con il contenuto di adesso.
+create or replace function public.mod_user_reports()
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if not public.is_staff(auth.uid()) then raise exception 'Solo per i moderatori.'; end if;
+  return query
+  select jsonb_build_object(
+    'kind', r.kind,
+    'target', case when r.kind = 'comment' then r.comment_id else r.target_user_id end,
+    'reports', count(*),
+    'reasons', jsonb_agg(distinct r.reason),
+    'first_at', min(r.created_at),
+    'snapshot', (array_agg(r.snapshot order by r.created_at desc))[1],
+    'comment', (select jsonb_build_object('id', c.id, 'body', c.body, 'post_id', c.post_id, 'created_at', c.created_at)
+                  from comments c where c.id = r.comment_id),
+    'user', (select jsonb_build_object('id', pr.id, 'username', pr.username, 'display_name', pr.display_name, 'bio', pr.bio,
+                                       'avatar_path', pr.avatar_path, 'banned', pr.banned_at is not null)
+               from profiles pr where pr.id = r.target_user_id)
+  )
+  from user_reports r
+  -- Un commento già cancellato (dal suo autore) non ha più niente da decidere.
+  where r.status = 'open' and (r.kind = 'profile' or r.comment_id is not null) and r.target_user_id is not null
+  group by r.kind, r.comment_id, r.target_user_id
+  order by min(r.created_at);
+end;
+$$;
+
+-- Profilo azzerato dalla moderazione: niente bio né foto, il nome torna "Nome I." (se ci sono i dati privati).
+create or replace function public.mod_reset_profile(p_user uuid)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  insert into storage_purge (bucket, path) select 'avatars', avatar_path from profiles where id = p_user and avatar_path is not null
+  on conflict do nothing;
+  update profiles
+     set bio = '', avatar_path = null, name_changed_at = now(),
+         display_name = coalesce((select left(trim(v.first_name), 36) || ' ' || upper(left(trim(v.last_name), 1)) || '.'
+                                    from profile_private v where v.id = p_user), display_name)
+   where id = p_user;
+end;
+$$;
+
+-- action: 'dismiss' (va bene), 'remove' (commento cancellato / profilo azzerato), 'ban' (in più l'autore è espulso).
+create or replace function public.mod_resolve_user_report(p_kind text, p_target uuid, p_action text)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_author uuid;
+  v_post uuid;
+  v_body text;
+  v_reason text;
+begin
+  if not public.is_staff(v_uid) then raise exception 'Solo per i moderatori.'; end if;
+  if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
+  if p_kind = 'comment' then
+    select user_id, post_id, body into v_author, v_post, v_body from comments where id = p_target;
+    if v_author is null then raise exception 'Il commento non esiste più.'; end if;
+  elsif p_kind = 'profile' then
+    select id into v_author from profiles where id = p_target;
+    if v_author is null then raise exception 'Profilo non trovato.'; end if;
+  else
+    raise exception 'Tipo non valido.';
+  end if;
+  if v_author = v_uid then raise exception 'Non puoi decidere sui tuoi contenuti.'; end if;
+  -- Un moderatore agisce solo su segnalazioni aperte e non può espellere chi fa parte dello staff.
+  if not public.is_admin(v_uid) then
+    if not exists (select 1 from user_reports where status = 'open' and kind = p_kind
+                     and (case when p_kind = 'comment' then comment_id else target_user_id end) = p_target) then
+      raise exception 'Non ci sono segnalazioni aperte.';
+    end if;
+    if p_action = 'ban' and exists (select 1 from profiles where id = v_author and (is_admin or is_moderator)) then
+      raise exception 'Non puoi espellere un membro dello staff.';
+    end if;
+  end if;
+
+  select public.mod_top_reason(array_agg(reason)) into v_reason from user_reports
+   where status = 'open' and kind = p_kind and (case when p_kind = 'comment' then comment_id else target_user_id end) = p_target;
+  update user_reports set status = case when p_action = 'dismiss' then 'dismissed' else 'removed' end,
+                          resolved_by = v_uid, resolved_at = now()
+   where status = 'open' and kind = p_kind and (case when p_kind = 'comment' then comment_id else target_user_id end) = p_target;
+
+  if p_action <> 'dismiss' then
+    if p_kind = 'comment' then
+      -- La fotografia nella segnalazione resta come prova.
+      delete from comments where id = p_target;
+      perform public.notify(v_author, 'removed', null, v_post, jsonb_build_object('reason', v_reason, 'what', 'comment', 'body', left(v_body, 80)));
+    else
+      perform public.mod_reset_profile(v_author);
+      perform public.notify(v_author, 'removed', null, null, jsonb_build_object('reason', v_reason, 'what', 'profile'));
+    end if;
+  end if;
+  if p_action = 'ban' then perform public.mod_ban_user(v_author); end if;
 end;
 $$;
 
@@ -1709,6 +1919,10 @@ begin
     select 'media', x from posts p, public.media_paths(p.media) x where p.author_id = p_user_id
     on conflict do nothing;
     delete from posts where author_id = p_user_id;
+    delete from comments where user_id = p_user_id;
+    insert into storage_purge (bucket, path) select 'avatars', avatar_path from profiles where id = p_user_id and avatar_path is not null
+    on conflict do nothing;
+    update profiles set avatar_path = null, bio = '' where id = p_user_id;
     delete from profile_private where id = p_user_id;
   end if;
   insert into notifications (user_id, kind, data)
@@ -1764,6 +1978,7 @@ create or replace function public.notify_on_change()
 returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_author uuid;
+  v_body text;
 begin
   if tg_table_name = 'follows' then
     if tg_op = 'INSERT' then perform public.notify(new.followee_id, 'follow', new.follower_id, null);
@@ -1777,8 +1992,15 @@ begin
     end if;
   elsif tg_table_name = 'comments' then
     if tg_op = 'DELETE' then
-      -- Un commento cancellato non resta nelle notifiche (con il suo testo).
-      delete from notifications where kind = 'comment' and actor_id = old.user_id and post_id = old.post_id;
+      -- Un commento cancellato non resta nelle notifiche (con il suo testo): se la stessa persona ha altri
+      -- commenti sul post la notifica mostra il più recente, altrimenti sparisce.
+      select body into v_body from comments where post_id = old.post_id and user_id = old.user_id order by created_at desc limit 1;
+      if v_body is not null then
+        update notifications set data = jsonb_build_object('body', left(v_body, 120))
+         where kind = 'comment' and actor_id = old.user_id and post_id = old.post_id;
+      else
+        delete from notifications where kind = 'comment' and actor_id = old.user_id and post_id = old.post_id;
+      end if;
       return null;
     end if;
     select author_id into v_author from posts where id = new.post_id;
@@ -1922,14 +2144,30 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 14) Pulizia dei file e controllo degli indirizzi dei media
 -- ---------------------------------------------------------------------------
+-- Una foto profilo è ancora quella di qualcuno?
+create or replace function public.avatar_in_use(p_path text)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (select 1 from profiles where avatar_path = p_path);
+$$;
+
+-- I file da cancellare davvero: un file che un post (o un profilo) usa ancora non si cancella mai,
+-- chiunque l'abbia messo in coda.
+create or replace function public.storage_purge_pending(p_limit int)
+returns table (bucket text, path text) language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  return query select q.bucket, q.path from storage_purge q
+   where not (q.bucket = 'media' and public.media_in_use(q.path))
+     and not (q.bucket = 'avatars' and public.avatar_in_use(q.path))
+   order by q.queued_at limit least(greatest(p_limit, 1), 1000);
+end;
+$$;
+
+-- Dall'app dell'amministratore (ripiego se il lavoro programmato non è configurato).
 create or replace function public.storage_purge_list(p_limit int default 200)
 returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
   if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
-  -- Un file che un post usa ancora non si cancella mai, chiunque l'abbia messo in coda.
-  return query select jsonb_build_object('bucket', q.bucket, 'path', q.path) from storage_purge q
-   where not (q.bucket = 'media' and public.media_in_use(q.path))
-   order by q.queued_at limit least(greatest(p_limit, 1), 1000);
+  return query select jsonb_build_object('bucket', q.bucket, 'path', q.path) from public.storage_purge_pending(p_limit) q;
 end;
 $$;
 
@@ -1939,6 +2177,20 @@ begin
   if not public.is_admin(auth.uid()) then raise exception 'Solo per gli amministratori.'; end if;
   delete from storage_purge where bucket = p_bucket and path = any (p_paths);
 end;
+$$;
+
+-- Dal lavoro programmato (funzione verifica-eta, rotta /lavori, con la chiave di servizio): i file rimossi
+-- dalla moderazione o di account chiusi spariscono entro un minuto, senza aspettare l'amministratore.
+create or replace function public.storage_purge_take(p_limit int default 500)
+returns table (bucket text, path text) language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  return query select * from public.storage_purge_pending(p_limit);
+end;
+$$;
+
+create or replace function public.storage_purge_finish(p_bucket text, p_paths text[])
+returns void language sql security definer set search_path = public, pg_temp as $$
+  delete from storage_purge where bucket = p_bucket and path = any (p_paths);
 $$;
 
 /**
@@ -2478,15 +2730,19 @@ returns trigger language plpgsql security definer set search_path = public, pg_t
 declare
   v_user uuid;
   v_window interval := case tg_table_name when 'follows' then interval '1 hour' when 'reports' then interval '1 hour'
+                                          when 'user_reports' then interval '1 hour'
                                           when 'comments' then interval '5 minutes' else interval '10 minutes' end;
   v_max int := case tg_table_name when 'post_likes' then 300 when 'post_saves' then 200 when 'follows' then 150
                                   when 'comments' then 20 else 30 end;
   v_n int;
 begin
   if tg_table_name = 'follows' then v_user := new.follower_id;
-  elsif tg_table_name = 'reports' then v_user := new.reporter_id;
+  elsif tg_table_name in ('reports', 'user_reports') then v_user := new.reporter_id;
   else v_user := new.user_id; end if;
-  select count(*) into v_n from rate_events where user_id = v_user and kind = tg_table_name and at > now() - v_window;
+  -- Segnalazioni di post, commenti e profili contano insieme: lo stesso tetto per tutte.
+  select count(*) into v_n from rate_events where user_id = v_user
+     and kind = any (case when tg_table_name in ('reports', 'user_reports') then array['reports', 'user_reports'] else array[tg_table_name] end)
+     and at > now() - v_window;
   if v_n >= v_max then
     raise exception '%', case tg_table_name
       when 'post_likes' then 'Troppi mi piace in poco tempo: riprova tra qualche minuto.'
@@ -2509,6 +2765,9 @@ drop trigger if exists trg_rate_comments on public.comments;
 create trigger trg_rate_comments before insert on public.comments for each row execute function public.rate_guard();
 drop trigger if exists trg_rate_reports on public.reports;
 create trigger trg_rate_reports before insert on public.reports for each row execute function public.rate_guard();
+drop trigger if exists trg_rate_user_reports on public.user_reports;
+create trigger trg_rate_user_reports before insert on public.user_reports for each row execute function public.rate_guard();
+create index if not exists idx_user_reports_reporter_time on public.user_reports (reporter_id, created_at desc);
 
 -- Chi verifica i documenti resta riservato: l'utente legge il proprio esito, non il nome dell'amministratore.
 revoke select on public.identity_checks from authenticated;
@@ -2626,6 +2885,18 @@ grant execute on function public.identity_review(uuid, text, text, timestamptz) 
 grant execute on function public.complete_private_data(text, text, date) to authenticated;
 grant execute on function public.storage_purge_list(int) to authenticated;
 grant execute on function public.storage_purge_done(text, text[]) to authenticated;
+-- Segnalazioni di commenti e profili, e la loro coda.
+grant execute on function public.report_comment(uuid, text, text) to authenticated;
+grant execute on function public.report_profile(uuid, text, text) to authenticated;
+grant execute on function public.mod_user_reports() to authenticated;
+grant execute on function public.mod_resolve_user_report(text, uuid, text) to authenticated;
+-- Pulizia dei file dal lavoro programmato: solo con la chiave di servizio.
+revoke all on function public.storage_purge_take(int) from public, anon, authenticated;
+revoke all on function public.storage_purge_finish(text, text[]) from public, anon, authenticated;
+grant execute on function public.storage_purge_take(int) to service_role;
+grant execute on function public.storage_purge_finish(text, text[]) to service_role;
+revoke all on function public.mod_ban_user(uuid) from public, anon, authenticated;
+revoke all on function public.mod_reset_profile(uuid) from public, anon, authenticated;
 grant execute on function public.list_notifications(int, timestamptz, bigint) to authenticated;
 grant execute on function public.mark_notifications_read(timestamptz) to authenticated;
 grant execute on function public.register_views(uuid[]) to authenticated;

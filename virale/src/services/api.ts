@@ -365,6 +365,8 @@ type DemoDb = {
   shared?: string[];
   /** Post che ho segnalato: spariscono subito dal mio feed. */
   reported: { postId: string; reason: ReportReason; at: string }[];
+  /** Commenti e profili che ho segnalato (i commenti spariscono subito per me). */
+  userReports?: DemoUserReport[];
   /** Account creati sul dispositivo (demo): credenziali, dati privati, verifica e stato personale salvato all'uscita. */
   accounts?: Record<string, DemoAccount>;
   settings?: Settings;
@@ -379,7 +381,17 @@ type DemoDb = {
   seen?: Record<string, number>;
 };
 
-type DemoUserState = Pick<DemoDb, 'likes' | 'saves' | 'following' | 'blocked' | 'reported' | 'shared' | 'myBio' | 'notifications' | 'viewed' | 'interests' | 'seen'> & {
+type DemoUserReport = {
+  kind: 'comment' | 'profile';
+  commentId?: string;
+  postId?: string;
+  userId: string;
+  reason: ReportReason;
+  at: string;
+  snapshot: { body?: string; username?: string; display_name?: string; bio?: string };
+};
+
+type DemoUserState = Pick<DemoDb, 'likes' | 'saves' | 'following' | 'blocked' | 'reported' | 'userReports' | 'shared' | 'myBio' | 'notifications' | 'viewed' | 'interests' | 'seen'> & {
   fans?: string[];
 };
 
@@ -551,6 +563,7 @@ async function load(): Promise<DemoDb> {
   if (!demo) demo = freshDb();
   demo.blocked ??= [];
   demo.reported ??= [];
+  demo.userReports ??= [];
   demo.accounts ??= {};
   demo.settings ??= { ...DEFAULT_SETTINGS };
   // Come sul server: il giorno di gara va da un orario di copertina al successivo.
@@ -587,6 +600,13 @@ function withDemo<T>(fn: (demo: DemoDb) => T | Promise<T>, save = false): Promis
   return run;
 }
 
+/** I commenti di un post che l'utente demo vede: niente persone bloccate né commenti che ha segnalato (come get_comments). */
+function visibleComments(demo: DemoDb, postId: string): StoredComment[] {
+  return (demo.comments[postId] ?? []).filter(
+    (cm) => !demo.blocked.includes(cm.authorId) && !(demo.userReports ?? []).some((r) => r.kind === 'comment' && r.commentId === cm.id),
+  );
+}
+
 function stored(demo: DemoDb, postId: string): StoredPost {
   const p = demo.posts[postId];
   if (!p || !visible(demo, postId)) throw new Error('Questo post non è più disponibile.');
@@ -611,7 +631,7 @@ function toPost(demo: DemoDb, id: string): Post {
     caption: sp.caption,
     createdAt: sp.createdAt,
     likeCount: sp.likes,
-    commentCount: demo.comments[id]?.length ?? 0,
+    commentCount: visibleComments(demo, id).length,
     saveCount: sp.saves,
     shareCount: sp.shares,
     viewCount: postViews(demo, sp),
@@ -732,6 +752,7 @@ function emptyUserState(): DemoUserState {
     following: DEMO_FOLLOWING.map((u) => `demo-${u}`),
     blocked: [],
     reported: [],
+    userReports: [],
     shared: [],
     myBio: '',
     notifications: [],
@@ -759,6 +780,7 @@ function saveDemoUser(demo: DemoDb) {
     following: demo.following,
     blocked: demo.blocked,
     reported: demo.reported,
+    userReports: demo.userReports,
     shared: demo.shared,
     myBio: demo.myBio,
     notifications: demo.notifications,
@@ -777,6 +799,7 @@ function restoreDemoUser(demo: DemoDb, acc: DemoAccount) {
   demo.following = st?.following ?? DEMO_FOLLOWING.map((u) => `demo-${u}`);
   demo.blocked = st?.blocked ?? [];
   demo.reported = st?.reported ?? [];
+  demo.userReports = st?.userReports ?? [];
   demo.shared = st?.shared ?? [];
   demo.myBio = st?.myBio ?? '';
   demo.notifications = st?.notifications ?? [];
@@ -1199,11 +1222,7 @@ export async function getComments(postId: string): Promise<Comment[]> {
     });
     return rows.map((r) => ({ id: r.id, postId: r.post_id, body: r.body, createdAt: r.created_at, author: { id: r.author.id, username: r.author.username, displayName: r.author.display_name } }));
   }
-  return withDemo((demo) =>
-    (demo.comments[postId] ?? [])
-      .filter((cm) => !demo.blocked.includes(cm.authorId))
-      .map((cm) => ({ id: cm.id, postId, author: author(demo, cm.authorId), body: cm.body, createdAt: cm.createdAt })),
-  );
+  return withDemo((demo) => visibleComments(demo, postId).map((cm) => ({ id: cm.id, postId, author: author(demo, cm.authorId), body: cm.body, createdAt: cm.createdAt })));
 }
 
 export async function addComment(postId: string, body: string): Promise<Comment> {
@@ -1622,6 +1641,46 @@ export async function reportPost(postId: string, reason: ReportReason, note?: st
   }, true);
 }
 
+/** Segnala un commento: per chi segnala sparisce subito; lo controlla la moderazione. */
+export async function reportComment(commentId: string, reason: ReportReason, note?: string): Promise<void> {
+  if (!isDemo) {
+    await rpc('report_comment', { p_comment_id: commentId, p_reason: reason, p_note: note ?? null });
+    return;
+  }
+  await withDemo((demo) => {
+    const postId = Object.keys(demo.comments).find((id) => demo.comments[id].some((c) => c.id === commentId));
+    const cm = postId ? demo.comments[postId].find((c) => c.id === commentId) : undefined;
+    if (!cm || !postId) throw new Error('Commento non trovato.');
+    if (cm.authorId === demo.me?.id) throw new Error('Non puoi segnalare un tuo commento.');
+    demo.userReports ??= [];
+    if (demo.userReports.some((r) => r.kind === 'comment' && r.commentId === commentId)) return;
+    const who = author(demo, cm.authorId);
+    demo.userReports.push({ kind: 'comment', commentId, postId, userId: cm.authorId, reason, at: new Date().toISOString(), snapshot: { body: cm.body, username: who.username } });
+  }, true);
+}
+
+/** Segnala un profilo (nome, bio o foto). */
+export async function reportProfile(userId: string, reason: ReportReason, note?: string): Promise<void> {
+  if (!isDemo) {
+    await rpc('report_profile', { p_user_id: userId, p_reason: reason, p_note: note ?? null });
+    return;
+  }
+  await withDemo((demo) => {
+    if (userId === demo.me?.id) throw new Error('Non puoi segnalare il tuo profilo.');
+    const person = demo.people[userId];
+    if (!person || demo.blocked.includes(userId)) throw new Error('Profilo non trovato.');
+    demo.userReports ??= [];
+    if (demo.userReports.some((r) => r.kind === 'profile' && r.userId === userId)) return;
+    demo.userReports.push({
+      kind: 'profile',
+      userId,
+      reason,
+      at: new Date().toISOString(),
+      snapshot: { username: person.username, display_name: person.displayName, bio: person.bio },
+    });
+  }, true);
+}
+
 export async function blockUser(userId: string): Promise<void> {
   if (!isDemo) {
     await rpc('block_user', { p_user_id: userId });
@@ -1716,6 +1775,89 @@ export async function modResolve(postId: string, action: 'dismiss' | 'remove' | 
     }
     if (action === 'ban' && authorId) {
       for (const p of Object.values(demo.posts)) if (p.authorId === authorId) delete demo.posts[p.id];
+      for (const id of Object.keys(demo.comments)) demo.comments[id] = demo.comments[id].filter((c) => c.authorId !== authorId);
+      demo.state.entries = demo.state.entries.filter((e) => e.authorId !== authorId);
+    }
+  }, true);
+}
+
+/** Un commento o un profilo segnalato, con il contenuto di adesso e quello al momento della segnalazione. */
+export type UserReportItem = {
+  kind: 'comment' | 'profile';
+  target: string;
+  reports: number;
+  reasons: ReportReason[];
+  firstAt: string;
+  snapshot: { body?: string; username?: string; display_name?: string; bio?: string };
+  comment: { id: string; body: string; postId: string | null } | null;
+  user: { id: string; username: string; displayName: string; bio: string } | null;
+};
+
+/** Coda di moderazione dei commenti e dei profili segnalati (solo moderatori). */
+export async function getUserReports(): Promise<UserReportItem[]> {
+  if (!isDemo) {
+    const rows = await rpc<
+      {
+        kind: 'comment' | 'profile';
+        target: string;
+        reports: number;
+        reasons: ReportReason[];
+        first_at: string;
+        snapshot: UserReportItem['snapshot'] | null;
+        comment: { id: string; body: string; post_id: string | null } | null;
+        user: { id: string; username: string; display_name: string; bio: string | null } | null;
+      }[]
+    >('mod_user_reports');
+    return rows.map((r) => ({
+      kind: r.kind,
+      target: r.target,
+      reports: Number(r.reports),
+      reasons: r.reasons,
+      firstAt: r.first_at,
+      snapshot: r.snapshot ?? {},
+      comment: r.comment ? { id: r.comment.id, body: r.comment.body, postId: r.comment.post_id } : null,
+      user: r.user ? { id: r.user.id, username: r.user.username, displayName: r.user.display_name, bio: r.user.bio ?? '' } : null,
+    }));
+  }
+  return withDemo((demo) =>
+    (demo.userReports ?? [])
+      .map((r): UserReportItem | null => {
+        const person = demo.people[r.userId];
+        const user = person ? { id: person.id, username: person.username, displayName: person.displayName, bio: person.bio } : null;
+        if (r.kind === 'comment') {
+          const cm = r.postId ? demo.comments[r.postId]?.find((c) => c.id === r.commentId) : undefined;
+          if (!cm) return null;
+          return { kind: 'comment', target: cm.id, reports: 1, reasons: [r.reason], firstAt: r.at, snapshot: r.snapshot, comment: { id: cm.id, body: cm.body, postId: r.postId ?? null }, user };
+        }
+        if (!user) return null;
+        return { kind: 'profile', target: r.userId, reports: 1, reasons: [r.reason], firstAt: r.at, snapshot: r.snapshot, comment: null, user };
+      })
+      .filter((x): x is UserReportItem => x !== null),
+  );
+}
+
+export async function modResolveUserReport(kind: 'comment' | 'profile', target: string, action: 'dismiss' | 'remove' | 'ban'): Promise<void> {
+  if (!isDemo) {
+    await rpc('mod_resolve_user_report', { p_kind: kind, p_target: target, p_action: action });
+    return;
+  }
+  await withDemo((demo) => {
+    const reports = demo.userReports ?? [];
+    const match = (r: DemoUserReport) => r.kind === kind && (kind === 'comment' ? r.commentId === target : r.userId === target);
+    const report = reports.find(match);
+    let authorId = report?.userId;
+    if (kind === 'comment') {
+      const postId = report?.postId ?? Object.keys(demo.comments).find((id) => demo.comments[id].some((c) => c.id === target));
+      const cm = postId ? demo.comments[postId]?.find((c) => c.id === target) : undefined;
+      authorId = cm?.authorId ?? authorId;
+      if (action !== 'dismiss' && postId) demo.comments[postId] = demo.comments[postId].filter((c) => c.id !== target);
+    } else if (action !== 'dismiss' && demo.people[target]) {
+      demo.people[target].bio = '';
+    }
+    demo.userReports = reports.filter((r) => !match(r));
+    if (action === 'ban' && authorId) {
+      for (const p of Object.values(demo.posts)) if (p.authorId === authorId) delete demo.posts[p.id];
+      for (const id of Object.keys(demo.comments)) demo.comments[id] = demo.comments[id].filter((c) => c.authorId !== authorId);
       demo.state.entries = demo.state.entries.filter((e) => e.authorId !== authorId);
     }
   }, true);
@@ -2098,14 +2240,15 @@ export async function listFollows(username: string, kind: 'followers' | 'followi
 }
 
 /**
- * Cancella i file in coda (documenti dopo la decisione, media di account chiusi o eliminati).
- * Lo fa l'app dell'amministratore: il database da solo non può cancellare file dallo Storage.
+ * Cancella i file in coda (documenti dopo la decisione, media di post rimossi o di account chiusi, foto
+ * profilo cambiate). Di norma lo fa ogni minuto il lavoro programmato (funzione verifica-eta, /lavori);
+ * l'app dell'amministratore lo fa anche lei, così funziona pure se il lavoro non è ancora configurato.
  */
 export async function purgeStorage(): Promise<number> {
   if (isDemo) return 0;
-  const rows = await rpc<{ bucket: 'media' | 'documenti'; path: string }[]>('storage_purge_list', { p_limit: 500 });
+  const rows = await rpc<{ bucket: 'media' | 'documenti' | 'avatars'; path: string }[]>('storage_purge_list', { p_limit: 500 });
   let done = 0;
-  for (const bucket of ['documenti', 'media'] as const) {
+  for (const bucket of ['documenti', 'media', 'avatars'] as const) {
     const paths = rows.filter((r) => r.bucket === bucket).map((r) => r.path);
     for (let i = 0; i < paths.length; i += 100) {
       const chunk = paths.slice(i, i + 100);

@@ -18,6 +18,22 @@ export const OWNER = {
   website: process.env.EXPO_PUBLIC_OWNER_WEBSITE || '',
 };
 
+/** I nomi delle variabili EXPO_PUBLIC_OWNER_* non impostate (mai i valori). */
+export function ownerMissing(): string[] {
+  const missing: string[] = [];
+  if (!process.env.EXPO_PUBLIC_OWNER_NAME) missing.push('EXPO_PUBLIC_OWNER_NAME');
+  if (!process.env.EXPO_PUBLIC_OWNER_ADDRESS) missing.push('EXPO_PUBLIC_OWNER_ADDRESS');
+  if (!process.env.EXPO_PUBLIC_OWNER_TAX_ID) missing.push('EXPO_PUBLIC_OWNER_TAX_ID');
+  if (!process.env.EXPO_PUBLIC_OWNER_EMAIL) missing.push('EXPO_PUBLIC_OWNER_EMAIL');
+  if (!process.env.EXPO_PUBLIC_OWNER_WEBSITE) missing.push('EXPO_PUBLIC_OWNER_WEBSITE');
+  return missing;
+}
+
+/** L'email di supporto, o null se è ancora il segnaposto: in quel caso le righe "Scrivi a …" non compaiono. */
+export function ownerEmail(): string | null {
+  return process.env.EXPO_PUBLIC_OWNER_EMAIL ? OWNER.email : null;
+}
+
 /** Data di entrata in vigore dei documenti (aggiornala quando li modifichi). */
 export const LEGAL_UPDATED = '16 ottobre 2026';
 

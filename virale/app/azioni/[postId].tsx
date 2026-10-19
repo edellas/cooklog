@@ -9,7 +9,8 @@ import { haptic, Press } from '../../src/components/Press';
 import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { color, radius, space } from '../../src/design/tokens';
-import { blockUser, deletePost, getPost, REPORT_REASONS, reportPost, type ReportReason } from '../../src/services/api';
+import { ReportReasons } from '../../src/components/ReportReasons';
+import { blockUser, deletePost, getPost, reportPost } from '../../src/services/api';
 import { emitPostGone } from '../../src/state/postEvents';
 import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
@@ -88,20 +89,11 @@ export default function PostActions() {
       ) : null}
 
       {step === 'segnala' ? (
-        <>
-          <Txt variant="title">Perché lo segnali?</Txt>
-          <Txt variant="small" tone={color.paperDim} style={{ marginBottom: space[2] }}>
-            {who} non saprà chi l’ha segnalato.
-          </Txt>
-          {REPORT_REASONS.map((r) => (
-            <Row
-              key={r.key}
-              label={r.label}
-              onPress={() => void run(() => reportPost(post.id, r.key as ReportReason), 'Grazie: post segnalato. Non lo vedrai più.', { postId: post.id })}
-              disabled={busy}
-            />
-          ))}
-        </>
+        <ReportReasons
+          who={who}
+          disabled={busy}
+          onPick={(reason) => void run(() => reportPost(post.id, reason), 'Grazie: post segnalato. Non lo vedrai più.', { postId: post.id })}
+        />
       ) : null}
 
       {step === 'blocca' ? (
