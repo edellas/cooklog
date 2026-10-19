@@ -13,9 +13,10 @@ import { Txt } from './Txt';
 export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>, revealMinutes = 0): string {
   const n = entry.views.toLocaleString('it-IT');
   if (entry.status === 'disqualified') return 'Fuori gara: troppe segnalazioni.';
-  if (entry.status === 'finalist') return `In finale con ${n} viste. Si decide ${atTime(revealMinutes)}.`;
-  if (entry.status === 'parked') return `Fermo a “${TIER_NAMES[entry.tier]}” con ${n} viste. Alla prossima gara si riparte.`;
-  return `${n} di ${TIERS[entry.tier].toLocaleString('it-IT')} viste per passare a “${TIER_NAMES[entry.tier + 1]}”.`;
+  const views = entry.views === 1 ? 'visualizzazione' : 'visualizzazioni';
+  if (entry.status === 'finalist') return `In finale con ${n} ${views}. Si decide ${atTime(revealMinutes)}.`;
+  if (entry.status === 'parked') return `Fermo a “${TIER_NAMES[entry.tier]}” con ${n} ${views}. Alla prossima gara si riparte.`;
+  return `${n} ${views} su ${TIERS[entry.tier].toLocaleString('it-IT')} per salire a “${TIER_NAMES[entry.tier + 1]}”.`;
 }
 
 /**
@@ -23,7 +24,7 @@ export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>,
  * Il riempimento del gradino corrente si anima (stato che cambia, 600 ms ease-out): è un elemento
  * assoluto senza figli, quindi animarne la larghezza non ricalcola il layout di nessun altro.
  */
-export function TierLadder({ entry, compact }: { entry: Pick<MyEntry, 'tier' | 'status' | 'views'>; compact?: boolean }) {
+export function TierLadder({ entry, compact, example }: { entry: Pick<MyEntry, 'tier' | 'status' | 'views'>; compact?: boolean; example?: boolean }) {
   const reduced = useReducedMotion();
   const revealMinutes = useSession().status?.settings.revealMinutes ?? 0;
   const reached = entry.status === 'finalist' ? TIER_NAMES.length - 1 : entry.tier;
@@ -54,17 +55,12 @@ export function TierLadder({ entry, compact }: { entry: Pick<MyEntry, 'tier' | '
         })}
       </View>
       {compact ? null : (
-        <Txt variant="meta" tone={color.paperFaint}>
-          {TIER_NAMES.map((name, i) => (
-            <Txt key={name} variant="meta" tone={i === reached ? color.giallo : i < reached ? color.paper : color.paperFaint} style={i === reached ? styles.now : undefined}>
-              {name}
-              {i < TIER_NAMES.length - 1 ? '  ·  ' : ''}
-            </Txt>
-          ))}
+        <Txt variant="meta" tone={off ? color.paperFaint : color.giallo} style={styles.now}>
+          {`Livello ${reached + 1} di ${TIER_NAMES.length} · ${TIER_NAMES[reached]}`}
         </Txt>
       )}
       <Txt variant="small" tone={color.paperDim}>
-        {describeEntry(entry, revealMinutes)}
+        {`${example ? 'Esempio: ' : ''}${describeEntry(entry, revealMinutes)}`}
       </Txt>
     </View>
   );

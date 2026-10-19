@@ -202,7 +202,7 @@ export function CoverView({
             on={post.likedByMe}
             tone={color.matita}
             onPress={() => like(!post.likedByMe)}
-            a11y={post.likedByMe ? 'Togli il cerchio' : 'Cerchia: mi piace'}
+            a11y={post.likedByMe ? 'Togli il cerchio' : 'Cerchia'}
           />
           <CoverAction icon="commento" label="Commenta" onPress={() => nav.push(`/commenti/${post.id}`)} a11y="Commenti" />
           <CoverAction

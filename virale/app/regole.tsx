@@ -21,7 +21,7 @@ const rules = (reveal: number, cutoffHour: number): { icon: IconName; title: str
   {
     icon: 'copertina',
     title: 'Una sola copertina',
-    text: `${atTime(reveal).replace(/^./, (c) => c.toUpperCase())} la gara chiude: vince chi è salito più in alto; a parità, chi ha il punteggio più solido su più viste. Diventa subito la copertina, la prima cosa che vede chiunque apra l’app.`,
+    text: `${atTime(reveal).replace(/^./, (c) => c.toUpperCase())} la gara chiude: vince chi è salito più in alto; a parità, chi ha il punteggio più solido su più visualizzazioni. Diventa subito la copertina, la prima cosa che vede chiunque apra l’app.`,
   },
   { icon: 'segnala', title: 'Niente trucchi', text: 'Un voto a testa per post. Votano solo gli account con l’età verificata e creati da almeno 24 ore: gli altri guardano. Oltre il 2% di segnalazioni si è fuori gara. Chi va in copertina non può vincere di nuovo per 30 giorni: se si ricandida prima di sapere di aver vinto, il post resta in gara ma non può diventare copertina. Ogni post partecipa una volta sola.' },
 ];
@@ -42,13 +42,13 @@ export default function RulesSheet() {
       </View>
 
       <View style={styles.ladder}>
-        <TierLadder entry={{ tier: 2, status: 'active', views: 1210 }} />
+        <TierLadder entry={{ tier: 2, status: 'active', views: 1210 }} example />
         <View style={styles.steps}>
           {TIER_NAMES.map((name, i) => (
             <View key={name} style={styles.step}>
               <Txt variant="label">{name}</Txt>
               <Txt variant="meta" tone={color.paperFaint}>
-                {i < TIERS.length ? `fino a ${TIERS[i].toLocaleString('it-IT')} viste` : `pubblico aperto fino alla fine della gara (${atTime(reveal)})`}
+                {i < TIERS.length ? `fino a ${TIERS[i].toLocaleString('it-IT')} visualizzazioni` : `pubblico aperto fino alla fine della gara (${atTime(reveal)})`}
               </Txt>
             </View>
           ))}

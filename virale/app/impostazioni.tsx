@@ -194,7 +194,7 @@ export default function Settings() {
 
         <Section title="Account">
           <Txt variant="small" tone={color.paperDim}>
-            Sei @{me?.username}. Eliminando l’account cancelli profilo, post, commenti, mi piace, salvati, follow e partecipazioni alla gara. Non si può annullare.
+            Sei @{me?.username}. Eliminando l’account cancelli profilo, post, commenti, cerchi, salvati, follow e partecipazioni alla gara. Non si può annullare.
           </Txt>
           <Press style={[styles.delete, confirm && styles.deleteConfirm]} onPress={() => void remove()} disabled={deleting} accessibilityRole="button">
             {deleting ? (

@@ -70,7 +70,7 @@ ${nav()}
 
 const storeButtons = () =>
   `<a class="btn" id="play" href="${esc(PLAY_URL)}">Scarica per Android</a>` +
-  (APPSTORE_URL ? `<a class="btn" id="ios" href="${esc(APPSTORE_URL)}">Scarica per iPhone</a>` : `<span class="btn off" id="ios">Presto su App Store</span>`);
+  (APPSTORE_URL ? `<a class="btn" id="ios" href="${esc(APPSTORE_URL)}">Scarica dall’App Store</a>` : `<span class="btn off" id="ios">Presto su App Store</span>`);
 
 mkdirSync(join(OUT, 'fonts'), { recursive: true });
 for (const [from, to] of FONTS) copyFileSync(join(ROOT, 'node_modules', '@expo-google-fonts', from), join(OUT, 'fonts', to));

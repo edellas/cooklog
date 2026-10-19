@@ -63,7 +63,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           `Devi avere almeno ${MIN_AGE} anni. Se hai meno di 18 anni, usa Virale solo con il permesso di un genitore o di chi ne fa le veci.`,
           'Per registrarti indichi il tuo vero nome, cognome e data di nascita, un nome utente e una password. Un account è personale: non puoi crearne più di uno per partecipare alla gara né cederlo ad altri, e sei responsabile di custodire la password.',
-          'Entro il periodo indicato nell’app (di regola 7 giorni) devi confermare la tua età con un documento d’identità: con la verifica automatica (documento e breve selfie) oppure caricando la foto del documento e un selfie con il documento. Finché non lo fai, scaduto il periodo, puoi guardare ma non pubblicare, commentare, mettere mi piace, seguire né votare. Se il documento dimostra un’età inferiore al minimo, l’account viene chiuso.',
+          'Entro il periodo indicato nell’app (di regola 7 giorni) devi confermare la tua età con un documento d’identità: con la verifica automatica (documento e breve selfie) oppure caricando la foto del documento e un selfie con il documento. Finché non lo fai, scaduto il periodo, puoi guardare ma non pubblicare, commentare, cerchiare (il nostro mi piace), seguire né votare. Se il documento dimostra un’età inferiore al minimo, l’account viene chiuso.',
         ],
       },
       {
@@ -98,7 +98,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       },
       {
         heading: 'Chiusura dell’account',
-        body: ['Puoi eliminare l’account in qualsiasi momento da Profilo → Impostazioni → Elimina account. Vengono eliminati profilo, post, commenti, mi piace, salvati, follow e partecipazioni alla gara.'],
+        body: ['Puoi eliminare l’account in qualsiasi momento da Profilo → Impostazioni → Elimina account. Vengono eliminati profilo, post, commenti, cerchi, salvati, follow e partecipazioni alla gara.'],
       },
       {
         heading: 'Legge applicabile',
@@ -120,7 +120,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Dati privati, che non mostriamo agli altri utenti: nome, cognome e data di nascita.',
           'Verifica dell’età, in uno di due modi. Automatica: tramite Didit inquadri il documento d’identità e fai un breve selfie; Didit controlla che il documento sia autentico e che il volto corrisponda, e ci comunica l’esito con la data di nascita letta dal documento. Con le foto: carichi la foto del documento e un selfie con il documento, che vede soltanto un amministratore. In entrambi i casi le immagini vengono cancellate appena presa la decisione; conserviamo solo l’esito, la data di nascita, la data della verifica e chi ha deciso.',
           'Contenuti: foto e video che pubblichi (con le loro dimensioni e durata), didascalie, commenti.',
-          'Interazioni: mi piace, salvataggi, condivisioni, commenti, follow, blocchi, segnalazioni, visualizzazioni dei post, il tempo per cui un post resta sullo schermo, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
+          'Interazioni: cerchi (il nostro mi piace), salvataggi, condivisioni, commenti, follow, blocchi, segnalazioni, visualizzazioni dei post, il tempo per cui un post resta sullo schermo, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
           'Gusti: dalle interazioni ricaviamo punteggi su autori, hashtag e tipo di contenuto (foto o video) che ti interessano di più, che perdono peso col tempo (si dimezzano ogni 14 giorni). Servono solo a ordinare i post in “In gara” ed “Esplora”: non li mostriamo a nessuno, non li usiamo per la pubblicità e non li cediamo.',
           'Notifiche sul telefono, solo se le attivi: un identificativo del telefono per le notifiche (token) e le categorie che hai scelto. Serve solo a inviarti le notifiche; lo cancelliamo quando esci dall’account, quando lo elimini e quando il telefono non risulta più raggiungibile (per esempio dopo aver disinstallato l’app).',
           'Codice di recupero della password: ne conserviamo solo una forma cifrata, non il codice.',
@@ -213,7 +213,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Cosa viene eliminato',
         body: [
-          'Profilo, foto e video pubblicati, didascalie, commenti, mi piace, salvati, follow, blocchi e partecipazioni alla gara. Le tue Copertine spariscono anche dall’Archivio.',
+          'Profilo, foto e video pubblicati, didascalie, commenti, cerchi, salvati, follow, blocchi e partecipazioni alla gara. Le tue Copertine spariscono anche dall’Archivio.',
           'Le copie di sicurezza vengono sovrascritte entro 30 giorni. Le segnalazioni che ti riguardano possono essere conservate fino a 12 mesi per prevenire abusi.',
         ],
       },

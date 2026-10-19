@@ -49,7 +49,7 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
         }}
         accessibilityRole="tab"
         accessibilityState={{ selected: focused }}
-        accessibilityLabel={route.name === 'profilo' && unread ? `${meta.label}, ${unread} notifiche da leggere` : meta.label}>
+        accessibilityLabel={route.name === 'profilo' && unread ? `${meta.label}, ${unread === 1 ? '1 notifica' : `${unread} notifiche`} da leggere` : meta.label}>
         <View>
           <Icon name={meta.icon} size={24} color={focused ? color.paper : color.paperFaint} strokeWidth={focused ? 2 : 1.75} />
           {route.name === 'profilo' && unread ? <View style={styles.dot} /> : null}

@@ -207,7 +207,7 @@ export const PostCard = memo(function PostCard({
             pop
             tone={color.matita}
             onPress={() => like(!post.likedByMe)}
-            a11y={post.likedByMe ? 'Togli il cerchio' : 'Cerchia: mi piace'}
+            a11y={post.likedByMe ? 'Togli il cerchio' : 'Cerchia'}
           />
           <Action
             icon="commento"

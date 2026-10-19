@@ -9,6 +9,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  useWindowDimensions,
   View,
 } from "react-native";
 import Animated, {
@@ -352,10 +353,10 @@ export default function CreateScreen() {
   }));
 
   return (
-    // iOS: la ScrollView sposta da sola il contenuto sopra la tastiera; Android (bordo a bordo): padding.
+    // Su iPhone e su Android (bordo a bordo) il modulo si accorcia sopra la tastiera: "Pubblica" resta visibile.
     <KeyboardAvoidingView
       style={[styles.root, { paddingTop: insets.top }]}
-      behavior={Platform.OS === "ios" ? undefined : "padding"}
+      behavior="padding"
     >
       <View style={styles.bar}>
         {busy ? (
@@ -398,7 +399,6 @@ export default function CreateScreen() {
           paddingBottom: insets.bottom + space[8],
         }}
         keyboardShouldPersistTaps="handled"
-        automaticallyAdjustKeyboardInsets
       >
         {blocked ? (
           <Press
@@ -680,6 +680,9 @@ function Done({
   onGo: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  // Schermi bassi (iPhone SE, telefoni piccoli): miniatura e titolo più piccoli, così "Fatto" si vede.
+  const small = height < 700;
   const reduced = useReducedMotion();
   const s = useSharedValue(reduced ? 1 : 0.92);
   const r = useSharedValue(reduced ? -2 : -7);
@@ -694,21 +697,23 @@ function Done({
     transform: [{ scale: s.get() }, { rotate: `${r.get()}deg` }],
   }));
   return (
-    <View
-      style={[
-        styles.root,
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[
         styles.done,
+        small && { gap: space[4] },
         {
-          paddingTop: insets.top + space[8],
+          flexGrow: 1,
+          paddingTop: insets.top + (small ? space[4] : space[8]),
           paddingBottom: insets.bottom + space[5],
         },
       ]}
     >
-      <Animated.View style={[styles.pinned, card]}>
+      <Animated.View style={[styles.pinned, small && styles.pinnedSmall, card]}>
         <Thumb media={post.media} rounded={12} />
       </Animated.View>
       <View style={{ gap: space[2], alignItems: "center" }}>
-        <Txt variant="heading" style={{ textAlign: "center" }}>
+        <Txt variant={small ? "title" : "heading"} style={{ textAlign: "center" }}>
           {entry ? "Sei nei Provini." : "Pubblicato."}
         </Txt>
         <Txt
@@ -757,7 +762,7 @@ function Done({
           <Txt variant="label">Fatto</Txt>
         </Press>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -930,6 +935,7 @@ const styles = StyleSheet.create({
   },
   off: { opacity: 0.4 },
   done: { alignItems: "center", paddingHorizontal: space[6], gap: space[6] },
+  pinnedSmall: { width: 120, height: 180 },
   pinned: {
     width: 170,
     height: 255,

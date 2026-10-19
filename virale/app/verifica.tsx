@@ -349,7 +349,7 @@ export default function VerifyScreen() {
                   <Txt variant="title">Perché lo chiediamo</Txt>
                   <Txt variant="body" tone={color.paperDim}>
                     Virale è aperta dai 14 anni. Per esserne sicuri un amministratore confronta il documento con nome, cognome e data di nascita che hai dato
-                    all’iscrizione. Le foto le vede solo lui e vengono cancellate appena ha deciso: teniamo solo l’esito.
+                    all’iscrizione. Le foto le vede solo chi fa la verifica e le cancelliamo subito dopo: teniamo solo l’esito.
                   </Txt>
                 </View>
 

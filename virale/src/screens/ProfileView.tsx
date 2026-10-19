@@ -335,7 +335,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           <Press style={styles.contestEmpty} onPress={() => nav.push('/scatta')} accessibilityRole="button">
             <Txt variant="label">Oggi non sei in gara.</Txt>
             <Txt variant="small" tone={color.paperDim}>
-              Pubblica foto o video e candidali: domani potresti essere tu la copertina.
+              Pubblica e candida un post: domani la copertina potresti essere tu.
             </Txt>
           </Press>
         ) : null}
