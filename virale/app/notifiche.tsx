@@ -78,7 +78,10 @@ export default function NotificationsScreen() {
   const nav = useNav();
   const goBack = useGoBack('/profilo');
   const { status, refreshStatus } = useSession();
-  const unread = status?.unread ?? 0;
+  // Letto da un ref: quando le notifiche diventano lette il numero cambia, ma l'elenco non va ricaricato
+  // (le righe nuove restano evidenziate fino alla prossima apertura).
+  const unreadRef = useRef(status?.unread ?? 0);
+  unreadRef.current = status?.unread ?? 0;
   const [items, setItems] = useState<AppNotification[] | null>(null);
   const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -116,7 +119,7 @@ export default function NotificationsScreen() {
           setItems(list);
           setError(false);
           // Segno lette solo quelle che ho davvero mostrato: una arrivata un attimo dopo resta nuova.
-          if (list.some((n) => !n.read) || unread > 0) {
+          if (list.some((n) => !n.read) || unreadRef.current > 0) {
             const newest = list.reduce<string | null>((m, n) => (!m || n.createdAt > m ? n.createdAt : m), null);
             if (newest) await markNotificationsRead(newest).catch(() => undefined);
             void refreshStatus();
@@ -127,7 +130,7 @@ export default function NotificationsScreen() {
       return () => {
         alive = false;
       };
-    }, [refreshStatus, unread, tick]),
+    }, [refreshStatus, tick]),
   );
 
   const open = (n: AppNotification) => {

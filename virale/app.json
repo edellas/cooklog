@@ -36,8 +36,9 @@
     "web": {
       "favicon": "./assets/favicon.png",
       "name": "Virale",
-      "backgroundColor": "#000000",
-      "themeColor": "#000000",
+      "lang": "it",
+      "backgroundColor": "#0C1322",
+      "themeColor": "#0C1322",
       "output": "single"
     },
     "plugins": [

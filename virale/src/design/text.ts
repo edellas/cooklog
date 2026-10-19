@@ -16,3 +16,9 @@ export function firstChar(s: string): string {
   for (const ch of s) return ch;
   return '';
 }
+
+/** Per lo screen reader: "di @autore: inizio della didascalia" (al massimo 60 caratteri). */
+export function mediaLabel(username: string, caption?: string | null): string {
+  const text = (caption ?? '').replace(/\s+/g, ' ').trim();
+  return `di @${username}${text ? `: ${clampChars(text, 60)}` : ''}`;
+}

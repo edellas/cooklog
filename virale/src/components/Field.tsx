@@ -50,5 +50,5 @@ const styles = StyleSheet.create({
   },
   focused: { borderColor: color.giallo },
   invalid: { borderColor: color.matita },
-  input: { flex: 1, color: color.paper, fontFamily: font.ui, fontSize: 16, paddingVertical: 13 },
+  input: { flex: 1, minWidth: 0, color: color.paper, fontFamily: font.ui, fontSize: 16, paddingVertical: 13 },
 });

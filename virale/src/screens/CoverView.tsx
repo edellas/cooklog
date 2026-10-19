@@ -16,6 +16,7 @@ import { Txt } from '../components/Txt';
 import { resolveMedia } from '../data/demoMedia';
 import { atTime, formatCount, longDate, relTime, relTimeLong } from '../design/format';
 import { duration, ease } from '../design/motion';
+import { mediaLabel } from '../design/text';
 import { color, font, radius, space } from '../design/tokens';
 import { msUntil, msUntilReveal } from '../engine/engine';
 import { postLink, registerShare, toggleLike, toggleSave } from '../services/api';
@@ -52,6 +53,8 @@ export function CoverView({
   onDayEnd?: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  // Telefono in orizzontale (o finestra bassa): testata piccola, niente didascalia né statistiche.
+  const compact = useWindowDimensions().height < 600;
   const nav = useNav();
   const goBack = useGoBack('/archivio');
   const canAct = useActGuard();
@@ -77,10 +80,14 @@ export function CoverView({
   // Sviluppo: uno strato sfocato statico che svanisce (si anima l'opacità, mai il raggio di sfocatura).
   const blur = useSharedValue(reveal ? 1 : 0);
   const zoom = useSharedValue(reveal && !reduced ? 1.04 : 1);
+  // Finito lo sviluppo lo strato sfocato si toglie (non resta sopra la foto, invisibile).
+  const [developing, setDeveloping] = useState(reveal);
   useEffect(() => {
     if (!reveal) return;
     blur.set(withTiming(0, { duration: duration.develop, easing: ease.out }));
     zoom.set(withTiming(1, { duration: duration.develop, easing: ease.out }));
+    const id = setTimeout(() => setDeveloping(false), duration.develop + 100);
+    return () => clearTimeout(id);
   }, [blur, reveal, zoom]);
   const blurStyle = useAnimatedStyle(() => ({ opacity: blur.get() }));
   const zoomStyle = useAnimatedStyle(() => ({ transform: [{ scale: zoom.get() }] }));
@@ -133,11 +140,13 @@ export function CoverView({
           onToggleMute={toggleMute}
           onDoubleTap={() => like(true)}
           onLongPress={() => nav.push(`/azioni/${post.id}`)}
-          controlsTop={insets.top + 132}
+          controlsTop={insets.top + (compact ? 84 : 132)}
+          dots={false}
+          label={mediaLabel(post.author.username, post.caption)}
         />
       </Animated.View>
-      {reveal && first?.kind === 'image' ? (
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, blurStyle]}>
+      {reveal && developing && first?.kind === 'image' ? (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, blurStyle]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
           <Image source={resolveMedia(first.src)} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={28} />
         </Animated.View>
       ) : null}
@@ -151,7 +160,7 @@ export function CoverView({
             <Icon name="indietro" />
           </Press>
         ) : null}
-        <Masthead size={76} reveal={reveal} />
+        <Masthead size={compact ? 48 : 76} reveal={reveal} />
         <View style={styles.issueRow}>
           <Txt variant="meta" style={styles.issue}>
             N. {cover.issue}
@@ -186,14 +195,17 @@ export function CoverView({
             </Txt>
           </View>
         ) : null}
-        {post.caption ? (
+        {/* In orizzontale (schermo basso) didascalia e statistiche lasciano spazio a foto e pulsanti. */}
+        {post.caption && !compact ? (
           <Txt variant="body" tone={color.paper} numberOfLines={3}>
             {post.caption}
           </Txt>
         ) : null}
-        <Txt variant="meta" tone={color.paperDim}>
-          {`Scelta tra ${cover.totalEntries.toLocaleString('it-IT')} ${cover.totalEntries === 1 ? 'provino' : 'provini'} · ${formatCount(cover.totalViews)} ${cover.totalViews === 1 ? 'visualizzazione' : 'visualizzazioni'} in gara`}
-        </Txt>
+        {compact ? null : (
+          <Txt variant="meta" tone={color.paperDim}>
+            {`Scelta tra ${cover.totalEntries.toLocaleString('it-IT')} ${cover.totalEntries === 1 ? 'provino' : 'provini'} · ${formatCount(cover.totalViews)} ${cover.totalViews === 1 ? 'visualizzazione' : 'visualizzazioni'} in gara`}
+          </Txt>
+        )}
 
         <View style={styles.actions}>
           <CoverAction
@@ -228,7 +240,7 @@ export function CoverView({
           <>
             {/* L'invito principale è guardare i provini di oggi: il conto alla rovescia passa sotto, piccolo. */}
             <Press
-              style={styles.cta}
+              style={[styles.cta, compact && styles.ctaCompact]}
               onPress={() => {
                 requestSection('gara');
                 nav.navigate('/provini');
@@ -348,6 +360,7 @@ const styles = StyleSheet.create({
   more: { marginLeft: 'auto', minHeight: 36, minWidth: 32, alignItems: 'center', justifyContent: 'center' },
   mine: { alignSelf: 'flex-start', backgroundColor: color.giallo, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
   cta: { backgroundColor: color.giallo, borderRadius: radius.control, paddingVertical: 15, alignItems: 'center', justifyContent: 'center', minHeight: 52 },
+  ctaCompact: { paddingVertical: 8, minHeight: 44 },
   timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
   small: { fontSize: 11, lineHeight: 15, letterSpacing: 0 },
   rules: { minHeight: 44, justifyContent: 'center' },

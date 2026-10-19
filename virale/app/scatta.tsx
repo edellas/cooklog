@@ -29,6 +29,7 @@ import { TierLadder } from "../src/components/TierLadder";
 import { Txt } from "../src/components/Txt";
 import { useGoBack } from "../src/state/useGoBack";
 import { atTime } from "../src/design/format";
+import { charCount, clampChars } from "../src/design/text";
 import { duration, ease } from "../src/design/motion";
 import { color, radius, space } from "../src/design/tokens";
 import { contestOpen, getMyEntry, isDemo, publish, PublishAborted, type PublishPhase } from "../src/services/api";
@@ -539,18 +540,18 @@ export default function CreateScreen() {
                 containerStyle={{ alignItems: "flex-start" }}
                 style={styles.caption}
                 value={caption}
-                onChangeText={setCaption}
+                // Limite in caratteri come il server (un'emoji è uno): niente maxLength, che la conta doppia.
+                onChangeText={(t) => setCaption(clampChars(t, CAPTION_MAX))}
                 placeholder="Scrivi una didascalia"
                 accessibilityLabel="Didascalia"
-                maxLength={300}
                 multiline
               />
               <Txt
                 variant="meta"
-                tone={color.paperFaint}
+                tone={charCount(caption) >= CAPTION_MAX ? color.matita : color.paperFaint}
                 style={{ alignSelf: "flex-end" }}
               >
-                {caption.length}/300
+                {`${charCount(caption)}/${CAPTION_MAX}`}
               </Txt>
             </View>
 
@@ -767,6 +768,7 @@ function Done({
 }
 
 const PUSH_ASKED = "virale.push.chiesto";
+const CAPTION_MAX = 300;
 
 /**
  * Dopo la prima candidatura: il momento giusto per chiedere il permesso delle notifiche (mai all'avvio).

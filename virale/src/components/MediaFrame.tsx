@@ -49,6 +49,8 @@ export function MediaFrame({
   index: controlled,
   onIndexChange,
   controlsTop = 12,
+  dots = true,
+  label,
 }: {
   media: MediaItem[];
   active: boolean;
@@ -57,6 +59,10 @@ export function MediaFrame({
   onIndexChange?: (i: number) => void;
   /** Distanza dall'alto dei controlli (audio, contatore): sulle copertine a tutto schermo va sotto la barra di stato. */
   controlsTop?: number;
+  /** I pallini sotto il carosello (sulla copertina basta il contatore "1 / 2"). */
+  dots?: boolean;
+  /** Per chi usa lo screen reader: "di @autore: inizio della didascalia" (diventa "Foto 2 di 3 di @autore: …"). */
+  label?: string;
   rounded?: boolean;
   onDoubleTap?: () => void;
   onLongPress?: () => void;
@@ -253,7 +259,11 @@ export function MediaFrame({
               maxToRenderPerBatch={1}
               windowSize={3}
               renderItem={({ item, index: i }) => (
-                <View style={{ width: size.w, height: size.h }}>
+                <View
+                  style={{ width: size.w, height: size.h }}
+                  accessible={Boolean(label)}
+                  accessibilityRole={label ? 'image' : undefined}
+                  accessibilityLabel={label ? `${item.kind === 'video' ? 'Video' : 'Foto'} ${many ? `${i + 1} di ${media.length} ` : ''}${label}` : undefined}>
                   {item.kind === 'video' ? (
                     // Un lettore video solo per l'elemento visibile e i vicini: i decoder del telefono sono pochi.
                     Math.abs(i - index) <= 1 ? (
@@ -366,7 +376,7 @@ export function MediaFrame({
         </View>
       ) : null}
 
-      {many ? (
+      {many && dots ? (
         <View style={styles.dots} pointerEvents="none">
           {media.map((_, i) => (
             <View key={i} style={[styles.dot, i === index && styles.dotOn]} />

@@ -3,7 +3,7 @@ import { Stack, useGlobalSearchParams, useRouter, useSegments, type Href } from 
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -26,6 +26,9 @@ export const unstable_settings = { initialRouteName: '(tabs)' };
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts(FONTS);
+  // Sui tablet (Android 16 non blocca più l'orientamento) l'app resta larga come un telefono, centrata.
+  const { width } = useWindowDimensions();
+  const frameMax = Platform.OS === 'web' ? 460 : width >= 700 ? 520 : undefined;
   // Se i font non si caricano si parte comunque, con quelli di sistema: meglio che uno schermo vuoto.
   const fontsReady = fontsLoaded || !!fontError;
   useEffect(() => {
@@ -42,7 +45,7 @@ export default function RootLayout() {
             <StatusBar style="light" />
             {/* Su web e tablet l'app resta larga come un telefono, centrata sull'inchiostro. */}
             <View style={styles.outer}>
-              <View style={styles.frame}>
+              <View style={[styles.frame, { maxWidth: frameMax }]}>
                 <Gate />
                 <PushBridge />
                 <Offline />
@@ -234,5 +237,5 @@ const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: color.canvas },
   retry: { marginTop: 12, backgroundColor: color.giallo, borderRadius: 999, paddingHorizontal: 22, paddingVertical: 12 },
   outer: { flex: 1, backgroundColor: Platform.OS === 'web' ? '#070B14' : color.canvas, alignItems: 'center' },
-  frame: { flex: 1, width: '100%', maxWidth: Platform.OS === 'web' ? 460 : undefined, backgroundColor: color.canvas, overflow: 'hidden' },
+  frame: { flex: 1, width: '100%', backgroundColor: color.canvas, overflow: 'hidden' },
 });

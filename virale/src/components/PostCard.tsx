@@ -3,6 +3,7 @@ import { StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 
 import { formatCount, timeAgo } from '../design/format';
+import { mediaLabel } from '../design/text';
 import { color, radius, space } from '../design/tokens';
 import { postLink, registerShare, TIER_NAMES, toggleFollow, toggleLike, toggleSave } from '../services/api';
 import { actionError } from '../services/errors';
@@ -150,6 +151,7 @@ export const PostCard = memo(function PostCard({
           onLongPress={() => nav.push(`/azioni/${post.id}`)}
           onVideoProgress={onVideoProgress ? (p) => onVideoProgress(post.id, p) : undefined}
           viewKey={viewKey}
+          label={mediaLabel(post.author.username, post.caption)}
           overlay={
             contest && contest.status !== 'disqualified' ? (
               <View style={styles.stamp} pointerEvents="none">
