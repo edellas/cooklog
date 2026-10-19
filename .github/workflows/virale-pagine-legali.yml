@@ -8,7 +8,7 @@ name: Virale · pagine legali
 on:
   push:
     branches: [master]
-    paths: ['virale/src/legal/**', 'virale/scripts/export-legal.ts', 'virale/assets/icon.png', '.github/workflows/virale-pagine-legali.yml']
+    paths: ['virale/src/legal/**', 'virale/scripts/export-legal.ts', 'virale/assets/icon.png', 'virale/store/sito/**', '.github/workflows/virale-pagine-legali.yml']
   workflow_dispatch:
 
 permissions:
@@ -46,6 +46,12 @@ jobs:
           EXPO_PUBLIC_OWNER_EMAIL: ${{ vars.EXPO_PUBLIC_OWNER_EMAIL }}
           EXPO_PUBLIC_OWNER_WEBSITE: ${{ vars.EXPO_PUBLIC_OWNER_WEBSITE }}
           EXPO_PUBLIC_APPSTORE_URL: ${{ vars.EXPO_PUBLIC_APPSTORE_URL }}
+          # Facoltative, per la pagina iniziale: VIRALE_BETA=no quando l'app è pubblica sul Play Store;
+          # VIRALE_BETA_GRUPPO = indirizzo del Google Gruppo dei tester; VIRALE_TIKTOK / VIRALE_INSTAGRAM = profili.
+          VIRALE_BETA: ${{ vars.VIRALE_BETA }}
+          VIRALE_BETA_GRUPPO: ${{ vars.VIRALE_BETA_GRUPPO }}
+          VIRALE_TIKTOK: ${{ vars.VIRALE_TIKTOK }}
+          VIRALE_INSTAGRAM: ${{ vars.VIRALE_INSTAGRAM }}
         run: npm run export:legal
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
