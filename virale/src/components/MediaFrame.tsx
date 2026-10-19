@@ -370,9 +370,7 @@ export function MediaFrame({
 
       {many ? (
         <View style={[styles.counter, { top: controlsTop }]} pointerEvents="none">
-          <Txt variant="meta">
-            {index + 1} / {media.length}
-          </Txt>
+          <Txt variant="meta">{`${index + 1} / ${media.length}`}</Txt>
         </View>
       ) : null}
 

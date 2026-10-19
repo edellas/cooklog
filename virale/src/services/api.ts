@@ -518,15 +518,23 @@ function seedDay(demo: DemoDb, day: string, seedKey = day): ArenaState {
   const order = Object.values(demo.posts).sort(
     (a, b) => Number(Boolean(contested[a.id])) - Number(Boolean(contested[b.id])) || (contested[a.id] ?? '').localeCompare(contested[b.id] ?? ''),
   );
-  for (const post of order) {
-    // Un solo post in gara per persona; il tuo lo candidi tu; mai un post che è già stato copertina.
-    if (winners.has(post.id) || blocked.has(post.authorId) || post.authorId.startsWith('me-') || post.authorId === demo.me?.id) continue;
-    if (state.entries.some((e) => e.authorId === post.authorId)) continue;
-    contested[post.id] = day;
-    const entryId = `e-${day}-${post.id}-${hash(seedKey) % 997}`;
-    submitEntry(state, { id: entryId, postId: post.id, authorId: post.authorId, createdAt: new Date(Date.parse(`${day}T06:00:00Z`) + i++ * 60000).toISOString() });
-    demo.quality[entryId] = rng() ** 1.3;
-  }
+  // Un solo post in gara per persona; il tuo lo candidi tu; mai un post che è già stato copertina. Solo se così la
+  // gara resterebbe quasi vuota (la demo ha pochi post e "simula la mezzanotte" si può toccare all'infinito)
+  // tornano anche le vecchie copertine e, in ultimo, gli autori in pausa: la copertina della demo non manca mai.
+  const fill = (allowWinners: boolean, allowBlocked: boolean) => {
+    for (const post of order) {
+      if (post.authorId.startsWith('me-') || post.authorId === demo.me?.id) continue;
+      if ((!allowWinners && winners.has(post.id)) || (!allowBlocked && blocked.has(post.authorId))) continue;
+      if (state.entries.some((e) => e.authorId === post.authorId)) continue;
+      contested[post.id] = day;
+      const entryId = `e-${day}-${post.id}-${hash(seedKey) % 997}`;
+      submitEntry(state, { id: entryId, postId: post.id, authorId: post.authorId, createdAt: new Date(Date.parse(`${day}T06:00:00Z`) + i++ * 60000).toISOString() });
+      demo.quality[entryId] = rng() ** 1.3;
+    }
+  };
+  fill(false, false);
+  if (state.entries.length < 4) fill(true, false);
+  if (!state.entries.length) fill(true, true);
   simulateCrowd(state, { quality: (id) => demo.quality[id] ?? 0.3, viewers: 80, viewsPerViewer: 7, viewerPrefix: `crowd-${seedKey}-`, forgetViewers: true }, rng);
   return state;
 }
