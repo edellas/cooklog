@@ -184,6 +184,9 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           )}
           {profile.isMe ? (
             <View style={{ flexDirection: 'row', gap: space[2] }}>
+              <Press style={styles.back} onPress={() => nav.push('/cerca')} accessibilityRole="button" accessibilityLabel="Cerca persone">
+                <Icon name="cerca" />
+              </Press>
               <Press
                 style={styles.back}
                 onPress={() => nav.push('/notifiche')}

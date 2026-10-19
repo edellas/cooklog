@@ -74,6 +74,7 @@ export default function RootLayout() {
                   />
                   <Stack.Screen name="impostazioni" />
                   <Stack.Screen name="modifica-profilo" />
+                  <Stack.Screen name="cerca" />
                   <Stack.Screen name="moderazione" />
                   <Stack.Screen name="amministrazione" />
                   <Stack.Screen name="verifica" />

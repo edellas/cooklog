@@ -45,7 +45,8 @@ export type IconName =
   | 'chiave'
   | 'persone'
   | 'meno'
-  | 'piu';
+  | 'piu'
+  | 'cerca';
 
 export function Icon({
   name,
@@ -228,6 +229,13 @@ export function Icon({
               <>
                 <Circle cx={9} cy={8.5} r={3.25} {...p} />
                 <Path d="M3 19.5c.9-3.2 3.2-4.8 6-4.8s5.1 1.6 6 4.8M15.5 5.6a3.2 3.2 0 0 1 0 6M17.5 14.9c1.7.5 2.9 2 3.5 4.6" {...p} />
+              </>
+            );
+          case 'cerca':
+            return (
+              <>
+                <Circle cx={10.5} cy={10.5} r={6} {...p} />
+                <Path d="m15 15 5 5" {...p} />
               </>
             );
           case 'meno':

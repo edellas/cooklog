@@ -2913,6 +2913,41 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 19) Cerca persone (solo profili: la gara resta alla cieca)
+-- ---------------------------------------------------------------------------
+create index if not exists idx_profiles_username_prefix on public.profiles (username text_pattern_ops);
+create index if not exists idx_profiles_display_prefix on public.profiles (lower(display_name) text_pattern_ops);
+
+-- Per @nome o per nome, dall'inizio: prima il nome utente identico, poi chi comincia così, poi i più seguiti.
+-- Niente espulsi, niente persone bloccate (nei due sensi), non sé stessi. Da 2 caratteri, al massimo 30 risultati.
+create or replace function public.search_profiles(p_query text, p_limit int default 20)
+returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_q text := left(regexp_replace(lower(trim(coalesce(p_query, ''))), '^@+', ''), 30);
+  v_like text;
+begin
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if length(v_q) < 2 then return; end if;
+  -- "_" e "%" sono lettere da cercare, non jolly.
+  v_like := replace(replace(replace(v_q, '\', '\\'), '_', '\_'), '%', '\%') || '%';
+  return query
+  with c as (
+    (select p.* from profiles p where p.username like v_like order by p.username limit 200)
+    union
+    (select p.* from profiles p where lower(p.display_name) like v_like order by lower(p.display_name) limit 200)
+  )
+  select jsonb_build_object('id', c.id, 'username', c.username, 'display_name', c.display_name, 'avatar_path', c.avatar_path,
+                            'followed', exists (select 1 from follows f where f.follower_id = v_uid and f.followee_id = c.id))
+  from c
+  where c.id <> v_uid and c.banned_at is null and not public.is_blocked_pair(v_uid, c.id)
+  order by (c.username = v_q) desc, (c.username like v_like) desc,
+           (select count(*) from follows f where f.followee_id = c.id) desc, c.username
+  limit least(greatest(coalesce(p_limit, 20), 1), 30);
+end;
+$$;
+
 -- Prima volta con la gara che chiude all'orario della copertina (database che usavano la mezzanotte):
 -- se ieri non ha avuto una copertina la si sceglie adesso, e tutti i giorni di calendario passati risultano chiusi.
 do $$
@@ -2985,6 +3020,7 @@ grant execute on function public.report_profile(uuid, text, text) to authenticat
 grant execute on function public.mod_user_reports() to authenticated;
 grant execute on function public.mod_resolve_user_report(text, uuid, text) to authenticated;
 grant execute on function public.update_my_profile(text, text, text, boolean) to authenticated;
+grant execute on function public.search_profiles(text, int) to authenticated;
 -- Pulizia dei file dal lavoro programmato: solo con la chiave di servizio.
 revoke all on function public.storage_purge_take(int) from public, anon, authenticated;
 revoke all on function public.storage_purge_finish(text, text[]) from public, anon, authenticated;

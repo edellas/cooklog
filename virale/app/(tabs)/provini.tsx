@@ -18,6 +18,7 @@ import { coverDay, msUntil, msUntilReveal } from '../../src/engine/engine';
 import { getExplore, getFollowing, getForYou, recordView } from '../../src/services/api';
 import { friendlyError } from '../../src/services/errors';
 import { useToast } from '../../src/components/Toast';
+import { useNav } from '../../src/state/nav';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
 import type { FeedCard } from '../../src/types';
@@ -67,6 +68,7 @@ export default function ProviniTab() {
   const views = useRef<Record<string, number>>({});
   const cardsRef = useRef<Card[]>([]);
   const toast = useToast();
+  const nav = useNav();
   /** Chiavi uniche: In gara e Seguiti non ripetono i post (chiave = id), Esplora sì (id~n). */
   const keySeq = useRef(0);
   const keyed = useCallback((list: FeedCard[], existing: Card[]): Card[] => {
@@ -334,7 +336,13 @@ export default function ProviniTab() {
             switchMode(m);
           }}
         />
-        {mode === 'gara' ? <ArenaClock reveal={reveal} closesAt={closesAt} /> : null}
+        {mode === 'gara' ? (
+          <ArenaClock reveal={reveal} closesAt={closesAt} />
+        ) : (
+          <Press style={styles.search} onPress={() => nav.push('/cerca')} accessibilityRole="button" accessibilityLabel="Cerca persone">
+            <Icon name="cerca" size={20} color={color.paper} strokeWidth={2} />
+          </Press>
+        )}
       </View>
 
       <View style={styles.list} onLayout={onLayout}>
@@ -378,6 +386,12 @@ export default function ProviniTab() {
               <Press style={styles.retry} onPress={() => switchMode('esplora')} accessibilityRole="button">
                 <Txt variant="label" tone={color.canvas}>
                   Vai su Esplora
+                </Txt>
+              </Press>
+            ) : mode === 'seguiti' ? (
+              <Press style={styles.retry} onPress={() => nav.push('/cerca')} accessibilityRole="button">
+                <Txt variant="label" tone={color.canvas}>
+                  Trova persone da seguire
                 </Txt>
               </Press>
             ) : null}
@@ -439,6 +453,11 @@ export default function ProviniTab() {
                       Vai su Esplora
                     </Txt>
                   </Press>
+                  {mode === 'seguiti' ? (
+                    <Press style={styles.ghostBtn} onPress={() => nav.push('/cerca')} accessibilityRole="button">
+                      <Txt variant="label">Trova persone da seguire</Txt>
+                    </Press>
+                  ) : null}
                 </View>
               ) : null
             }
@@ -515,4 +534,6 @@ const styles = StyleSheet.create({
   list: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 32 },
   retry: { marginTop: space[3], backgroundColor: color.giallo, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 12 },
+  ghostBtn: { backgroundColor: color.raised, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 12 },
+  search: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
 });

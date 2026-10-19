@@ -2376,6 +2376,24 @@ export async function listFollows(username: string, kind: 'followers' | 'followi
   });
 }
 
+/** Cerca persone per @nome o per nome (dall'inizio): solo profili, la gara resta alla cieca. Da 2 caratteri. */
+export async function searchProfiles(query: string): Promise<FollowRow[]> {
+  const q = query.trim().toLowerCase().replace(/^@+/, '').slice(0, 30);
+  if (charCount(q) < 2) return [];
+  if (!isDemo) {
+    const rows = await rpc<(AuthorJson & { followed: boolean })[]>('search_profiles', { p_query: q, p_limit: 20 });
+    return rows.map((r) => ({ ...authorFrom(r), followedByMe: r.followed, isMe: false }));
+  }
+  return withDemo((demo) => {
+    const fans = (id: string) => demo.people[id]?.followers ?? 0;
+    return Object.values(demo.people)
+      .filter((p) => p.id !== demo.me?.id && !demo.blocked.includes(p.id) && (p.username.startsWith(q) || p.displayName.toLowerCase().startsWith(q)))
+      .sort((a, b) => Number(b.username === q) - Number(a.username === q) || Number(b.username.startsWith(q)) - Number(a.username.startsWith(q)) || fans(b.id) - fans(a.id) || a.username.localeCompare(b.username))
+      .slice(0, 20)
+      .map((p) => ({ ...author(demo, p.id), followedByMe: demo.following.includes(p.id), isMe: false }));
+  });
+}
+
 /**
  * Cancella i file in coda (documenti dopo la decisione, media di post rimossi o di account chiusi, foto
  * profilo cambiate). Di norma lo fa ogni minuto il lavoro programmato (funzione verifica-eta, /lavori);

@@ -1052,3 +1052,31 @@ do $$ begin perform update_my_profile(p_bio => 'x'); raise exception 'NON DOVEVA
 exception when others then if sqlerrm not like '%verifica%' then raise; end if; raise notice 'ok, con la verifica scaduta il profilo non si modifica'; end $$;
 reset role;
 update identity_checks set status = 'approved' where user_id = '00000000-0000-0000-0000-000000000104';
+
+-- ---------- Cerca persone (W16) ----------
+reset role;
+insert into auth.users (id) values ('00000000-0000-0000-0000-000000000201'), ('00000000-0000-0000-0000-000000000202'), ('00000000-0000-0000-0000-000000000203'), ('00000000-0000-0000-0000-000000000204');
+insert into profiles (id, username, display_name) values
+  ('00000000-0000-0000-0000-000000000201', 'giulia_viaggia', 'Giulia Ferri'),
+  ('00000000-0000-0000-0000-000000000202', 'giuliano', 'Giuliano Bassi'),
+  ('00000000-0000-0000-0000-000000000203', 'giuxlia', 'Altro Nome'),
+  ('00000000-0000-0000-0000-000000000204', 'giulietta', 'Giulietta Espulsa');
+update profiles set banned_at = now() where username = 'giulietta';
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+select block_user('00000000-0000-0000-0000-000000000202');
+do $$ declare u text[]; begin
+  select array_agg(x ->> 'username') into u from search_profiles('@Giu') x;
+  if not ('giulia_viaggia' = any (u)) then raise exception 'prefisso non trovato: %', u; end if;
+  if 'giuliano' = any (u) then raise exception 'bloccato tra i risultati'; end if;
+  if 'giulietta' = any (u) then raise exception 'espulso tra i risultati'; end if;
+  select array_agg(x ->> 'username') into u from search_profiles('giu_') x;
+  if u is not null and 'giuxlia' = any (u) then raise exception '"_" usato come jolly: %', u; end if;
+  if (select count(*) from search_profiles('g')) <> 0 then raise exception 'risultati con un carattere'; end if;
+  select array_agg(x ->> 'username') into u from search_profiles('ferri') x;
+  if not ('giulia_viaggia' = any (u)) then raise exception 'ricerca per nome mostrato: %', u; end if;
+  select array_agg(x ->> 'username') into u from search_profiles('mod4') x;
+  if u is not null then raise exception 'si trova sé stessi'; end if;
+  raise notice 'ok, ricerca persone: prefissi, "_" come lettera, niente bloccati, espulsi né sé stessi';
+end $$;
+reset role;
