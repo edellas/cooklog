@@ -11,6 +11,8 @@
 //                                  di atterraggio del sito (VIRALE_SITO/apri.html) o, senza sito, all'app.
 //   POST /verifica-eta/lavori    → lavoro programmato (pg_cron ogni minuto, intestazione x-virale-cron):
 //                                  cancella dallo Storage i file rimossi o di account chiusi.
+//   POST /verifica-eta/recupero  → password dimenticata: { username, code, password } con il codice di
+//                                  recupero (vale una volta sola). Cambia la password e scollega i dispositivi.
 //
 // Segreti da impostare in Supabase → Edge Functions → Secrets:
 //   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET (verifica automatica dell'età)
@@ -75,6 +77,7 @@ Deno.serve(async (req) => {
     }
     if (route === 'webhook' && req.method === 'POST') return await webhook(req);
     if (route === 'lavori' && req.method === 'POST') return await lavori(req);
+    if (route === 'recupero' && req.method === 'POST') return await recupero(req);
     if (route === 'ritorno') {
       const android = /android/i.test(req.headers.get('user-agent') ?? '');
       return new Response(null, { status: 302, headers: { Location: android ? ANDROID_RETURN : APP_RETURN } });
@@ -252,6 +255,52 @@ async function lavori(req: Request): Promise<Response> {
   if (!secret || !given || !safeEqual(given, secret)) return json({ error: 'Non autorizzato.' }, 401);
   const purged = await purgeFiles();
   return json({ ok: true, purged, pushed: 0 });
+}
+
+const RECOVERY_WRONG = 'Nome utente o codice non validi.';
+
+/** Le stesse regole della password dell'app (passwordProblem in src/services/api.ts). */
+function passwordProblem(password: string, username: string): string | null {
+  if (password.length < 8) return 'La password deve avere almeno 8 caratteri.';
+  if (password.length > 72) return 'La password può avere al massimo 72 caratteri.';
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return 'La password deve contenere almeno una lettera e un numero.';
+  if (username && password.toLowerCase().includes(username.toLowerCase())) return 'La password non può contenere il nome utente.';
+  return null;
+}
+
+/**
+ * Password dimenticata, con il codice di recupero. Prima si controlla il codice senza consumarlo, poi si cambia
+ * la password e solo allora lo si invalida: se Supabase rifiuta la password nuova (per esempio perché comparsa
+ * in furti di dati) il codice resta valido. Stessa risposta per nome sbagliato, codice sbagliato o account chiuso.
+ */
+async function recupero(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as { username?: unknown; code?: unknown; password?: unknown };
+  const username = typeof body.username === 'string' ? body.username.trim().toLowerCase().replace(/^@+/, '') : '';
+  const code = typeof body.code === 'string' ? body.code.slice(0, 64) : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!username || !code) return json({ error: RECOVERY_WRONG }, 400);
+  const weak = passwordProblem(password, username);
+  if (weak) return json({ error: weak }, 400);
+  const check = await admin.rpc('recovery_redeem', { p_username: username, p_code: code, p_consume: false });
+  if (check.error) {
+    if (/Troppi tentativi/.test(check.error.message)) return json({ error: 'Troppi tentativi: riprova tra un’ora.' }, 429);
+    throw check.error;
+  }
+  const id = check.data as string | null;
+  if (!id) return json({ error: RECOVERY_WRONG }, 400);
+  const { error: updateError } = await admin.auth.admin.updateUserById(id, { password });
+  if (updateError) {
+    const m = updateError.message;
+    if (/weak|leaked|pwned/i.test(m)) return json({ error: 'Password troppo debole o già comparsa in furti di dati: scegline un’altra.' }, 400);
+    if (/at least \d+ characters|too short/i.test(m)) return json({ error: 'La password deve avere almeno 8 caratteri.' }, 400);
+    throw updateError;
+  }
+  const used = await admin.rpc('recovery_redeem', { p_username: username, p_code: code, p_consume: true });
+  if (used.error) throw used.error;
+  // Chi aveva preso la password (o un telefono perso) resta fuori: tutti i dispositivi devono rientrare.
+  const { error: revokeError } = await admin.rpc('revoke_sessions', { p_user_id: id });
+  if (revokeError) console.error('verifica-eta: recupero, sessioni', revokeError.message);
+  return json({ ok: true });
 }
 
 /** Cancella dallo Storage i file in coda (post rimossi, account chiusi, foto profilo sostituite), a gruppi di 100. */

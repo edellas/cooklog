@@ -40,7 +40,7 @@ import { Platform } from 'react-native';
 
 import { charCount } from '../design/text';
 import { OWNER } from '../legal/docs';
-import { canActKnown, friendlyError, TOO_BIG_ERROR } from './errors';
+import { canActKnown, friendlyError, GENERIC_ERROR, NETWORK_ERROR, SESSION_ERROR, TOO_BIG_ERROR } from './errors';
 import { getJson, removeKey, setJson } from './storage';
 import { MAX_UPLOAD_BYTES, prepareVideo } from './video';
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from './supabase';
@@ -421,6 +421,9 @@ type DemoAccount = {
   nameChangedAt?: string;
   /** Quando è stato creato l'account demo (il voto conta dopo 24 ore, come sul server). */
   createdAt?: string;
+  /** Impronta del codice di recupero (mai il codice) e tentativi sbagliati recenti, come sul server. */
+  recoveryHash?: string | null;
+  recoveryFails?: number[];
 };
 
 const DEFAULT_SETTINGS: Settings = { revealMinutes: 0, idGraceDays: 7, cutoffHour: DEFAULT_ARENA_CONFIG.submissionCutoffHour, idProvider: 'manual' };
@@ -728,23 +731,34 @@ export function ageOn(birthDate: string, today = arenaDay()): number {
   return ty - by - (tm < bm || (tm === bm && td < bd) ? 1 : 0);
 }
 
-/** Controlli del modulo di registrazione: gli stessi li rifà il server. */
-export function validateRegistration(input: RegisterInput): string | null {
+/** I campi del modulo di registrazione, nell'ordine in cui compaiono: l'errore va sotto quello giusto. */
+export type RegisterField = 'first' | 'last' | 'birth' | 'username' | 'password' | 'again' | 'terms';
+export type RegistrationProblem = { field: RegisterField; message: string };
+
+/**
+ * Controlli del modulo di registrazione, campo per campo e nell'ordine del modulo (gli stessi li rifà il
+ * server). `again` è la password ripetuta: si controlla solo se passata.
+ */
+export function validateRegistration(input: RegisterInput, again?: string): RegistrationProblem | null {
   const u = input.username.trim().toLowerCase();
-  if (!input.firstName.trim() || !input.lastName.trim()) return 'Scrivi nome e cognome.';
-  if (input.firstName.trim().length > 60 || input.lastName.trim().length > 60) return 'Nome e cognome: al massimo 60 caratteri.';
+  const bad = (field: RegisterField, message: string): RegistrationProblem => ({ field, message });
+  if (!input.firstName.trim()) return bad('first', 'Scrivi nome e cognome.');
+  if (!input.lastName.trim()) return bad('last', 'Scrivi nome e cognome.');
+  if (input.firstName.trim().length > 60) return bad('first', 'Nome e cognome: al massimo 60 caratteri.');
+  if (input.lastName.trim().length > 60) return bad('last', 'Nome e cognome: al massimo 60 caratteri.');
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.birthDate);
   const d = m ? new Date(`${input.birthDate}T12:00:00Z`) : null;
   if (!m || !d || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== input.birthDate || input.birthDate < '1900-01-01' || input.birthDate > arenaDay()) {
-    return 'Data di nascita non valida.';
+    return bad('birth', 'Data di nascita non valida.');
   }
-  if (ageOn(input.birthDate) < MIN_AGE_YEARS) return `Per usare Virale devi avere almeno ${MIN_AGE_YEARS} anni.`;
-  if (!usernameFormatOk(u)) return USERNAME_RULES;
-  if (usernameReserved(u)) return USERNAME_RESERVED;
-  if (input.password.length < PASSWORD_MIN) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
-  if (!/[A-Za-z]/.test(input.password) || !/\d/.test(input.password)) return 'La password deve contenere almeno una lettera e un numero.';
-  if (input.password.toLowerCase().includes(u)) return 'La password non può contenere il nome utente.';
-  if (!input.acceptedTerms) return 'Per registrarti devi accettare termini e linee guida.';
+  if (ageOn(input.birthDate) < MIN_AGE_YEARS) return bad('birth', `Per usare Virale devi avere almeno ${MIN_AGE_YEARS} anni.`);
+  if (!usernameFormatOk(u)) return bad('username', USERNAME_RULES);
+  if (usernameReserved(u)) return bad('username', USERNAME_RESERVED);
+  const weak = passwordProblem(input.password, u);
+  if (weak) return bad('password', weak);
+  if (again !== undefined && !again) return bad('again', 'Ripeti la password.');
+  if (again !== undefined && again !== input.password) return bad('again', 'Le due password non coincidono.');
+  if (!input.acceptedTerms) return bad('terms', 'Per registrarti devi accettare termini e linee guida.');
   return null;
 }
 
@@ -910,7 +924,7 @@ export async function usernameAvailable(username: string): Promise<boolean> {
 /** Registrazione: nome, cognome, data di nascita, nome utente e password. */
 export async function register(input: RegisterInput): Promise<Me> {
   const problem = validateRegistration(input);
-  if (problem) throw new Error(problem);
+  if (problem) throw new Error(problem.message);
   const username = input.username.trim().toLowerCase();
   if (!isDemo) {
     // Prima si controlla il nome: così non resta un utente di autenticazione "orfano" con un nome già preso.
@@ -1022,7 +1036,8 @@ function authMessage(message: string): string {
   return friendlyError({ message, name: 'AuthApiError' });
 }
 
-function passwordProblem(password: string, username: string): string | null {
+/** Regole della password (le stesse nella funzione verifica-eta, rotta /recupero). */
+export function passwordProblem(password: string, username: string): string | null {
   if (password.length < PASSWORD_MIN) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
   if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return 'La password deve contenere almeno una lettera e un numero.';
   if (username && password.toLowerCase().includes(username.toLowerCase())) return 'La password non può contenere il nome utente.';
@@ -1070,6 +1085,104 @@ export async function changePassword(current: string, next: string): Promise<voi
     if (!acc || acc.passwordHash !== oldHash) throw new Error('La password attuale non è corretta.');
     acc.passwordHash = newHash;
   }, true);
+}
+
+// ---------------------------------------------------------------------------
+// Codice di recupero della password (niente email: con il codice se ne sceglie una nuova da sé)
+// ---------------------------------------------------------------------------
+const RECOVERY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+/** Il codice come lo si scrive: maiuscolo, senza spazi né trattini (come recovery_redeem in schema.sql). */
+const recoveryPlain = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+/** Mentre lo si scrive: XXXX-XXXX-XXXX-XXXX. */
+export function formatRecoveryCode(text: string): string {
+  return (recoveryPlain(text).slice(0, 16).match(/.{1,4}/g) ?? []).join('-');
+}
+export const RECOVERY_WRONG = 'Nome utente o codice non validi.';
+const RECOVERY_TOO_MANY = 'Troppi tentativi: riprova tra un’ora.';
+
+/** Solo demo: un codice nuovo generato sul dispositivo (sul server lo fa create_recovery_code). */
+function demoRecoveryCode(): string {
+  const bytes = new Uint8Array(16);
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (c?.getRandomValues) c.getRandomValues(bytes);
+  else for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  const plain = Array.from(bytes, (b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join('');
+  return formatRecoveryCode(plain);
+}
+
+/**
+ * Crea un codice di recupero nuovo (il precedente smette di valere) e lo restituisce: si vede solo adesso.
+ * Con `currentPassword` (da Impostazioni) prima si controlla la password, come per cambiarla.
+ */
+export async function createRecoveryCode(currentPassword?: string): Promise<string> {
+  if (!isDemo) {
+    if (currentPassword !== undefined) {
+      const me = await getMe();
+      if (!me) throw new Error(SESSION_ERROR);
+      const check = await db().auth.signInWithPassword({ email: loginEmail(me.username), password: currentPassword });
+      if (check.error) throw new Error(/invalid login|credentials/i.test(check.error.message) ? 'La password attuale non è corretta.' : authMessage(check.error.message));
+    }
+    return rpc<string>('create_recovery_code');
+  }
+  const username = (await getMe())?.username ?? '';
+  const given = currentPassword === undefined ? null : await demoHash(username, currentPassword);
+  const code = demoRecoveryCode();
+  const recoveryHash = await demoHash(username, `recupero:${recoveryPlain(code)}`);
+  await withDemo((demo) => {
+    const acc = demo.me ? demo.accounts?.[demo.me.username] : undefined;
+    if (!acc) throw new Error(SESSION_ERROR);
+    if (given !== null && acc.passwordHash !== given) throw new Error('La password attuale non è corretta.');
+    acc.recoveryHash = recoveryHash;
+  }, true);
+  return code;
+}
+
+/** Il problema della rotta /recupero spiegato a chi sta recuperando la password (non all'amministratore). */
+async function recoveryProblem(error: unknown): Promise<string> {
+  const e = error as { name?: string; context?: Response };
+  if (e.name === 'FunctionsFetchError') return NETWORK_ERROR;
+  const res = e.context;
+  if (res && (res.status === 400 || res.status === 429)) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (body.error) return body.error;
+  }
+  if (res?.status === 404) return 'Il recupero con il codice non è ancora attivo. Riprova più tardi.';
+  return GENERIC_ERROR;
+}
+
+/**
+ * Password dimenticata: con nome utente e codice di recupero se ne sceglie una nuova. Il codice vale una volta
+ * sola e gli altri dispositivi collegati escono. Poi si entra con la password nuova.
+ */
+export async function recoverPassword(username: string, code: string, password: string): Promise<Me> {
+  const u = username.trim().toLowerCase().replace(/^@+/, '');
+  if (!u || recoveryPlain(code).length !== 16) throw new Error(RECOVERY_WRONG);
+  const weak = passwordProblem(password, u);
+  if (weak) throw new Error(weak);
+  if (!isDemo) {
+    const { data, error } = await db().functions.invoke<{ ok?: boolean; error?: string }>('verifica-eta/recupero', { body: { username: u, code, password } });
+    if (error) throw new Error(await recoveryProblem(error));
+    if (!data?.ok) throw new Error(data?.error ?? GENERIC_ERROR);
+    return login(u, password);
+  }
+  const [given, nextHash] = await Promise.all([demoHash(u, `recupero:${recoveryPlain(code)}`), demoHash(u, password)]);
+  // Il tentativo sbagliato va salvato: si restituisce l'errore invece di lanciarlo dentro withDemo.
+  const problem = await withDemo((demo): string | null => {
+    const acc = demo.accounts?.[u];
+    if (!acc) return RECOVERY_WRONG;
+    const recent = (acc.recoveryFails ?? []).filter((t) => Date.now() - t < 3600_000);
+    if (recent.length >= 5) return RECOVERY_TOO_MANY;
+    if (!acc.recoveryHash || acc.recoveryHash !== given) {
+      acc.recoveryFails = [...recent, Date.now()];
+      return RECOVERY_WRONG;
+    }
+    // Come sul server: i tentativi sbagliati restano contati per un'ora anche dopo quello giusto.
+    acc.recoveryHash = null;
+    acc.passwordHash = nextHash;
+    return null;
+  }, true);
+  if (problem) throw new Error(problem);
+  return login(u, password);
 }
 
 /** Stesse regole di update_my_profile (schema.sql): nome da 1 a 30 caratteri senza nomi da staff, bio fino a 160. */
@@ -2124,10 +2237,6 @@ export async function setIdProvider(provider: Settings['idProvider']): Promise<S
 }
 
 /**
- * Verifica automatica: chiede alla funzione "verifica-eta" una sessione Didit e restituisce il link da aprire
- * nel browser. In demo non c'è nessun servizio: si simula l'esito con la data di nascita dichiarata.
- */
-/**
  * Errore della funzione verifica-eta spiegato: chi configura (l'amministratore) deve capire cosa sistemare
  * senza aprire i log.
  */
@@ -2150,6 +2259,10 @@ async function functionProblem(error: unknown): Promise<string> {
   return `Il servizio di verifica non risponde (errore ${res.status}${detail ? `: ${detail}` : ''}). Riprova tra poco.`;
 }
 
+/**
+ * Verifica automatica: chiede alla funzione "verifica-eta" una sessione Didit e restituisce il link da aprire
+ * nel browser. In demo non c'è nessun servizio: si simula l'esito con la data di nascita dichiarata.
+ */
 export async function startAgeCheck(): Promise<string | null> {
   if (!isDemo) {
     const { data, error } = await db().functions.invoke<{ url?: string; error?: string }>('verifica-eta', { body: {} });
@@ -2438,7 +2551,7 @@ export async function purgeStorage(): Promise<number> {
 /** Per chi si era iscritto prima: nome, cognome e data di nascita, necessari per verificare l'età. */
 export async function completePrivateData(firstName: string, lastName: string, birthDate: string): Promise<void> {
   const problem = validateRegistration({ username: 'utente', firstName, lastName, birthDate, password: 'a1aaaaaaaa', acceptedTerms: true });
-  if (problem) throw new Error(problem);
+  if (problem) throw new Error(problem.message);
   if (!isDemo) {
     await rpc('complete_private_data', { p_first_name: firstName.trim(), p_last_name: lastName.trim(), p_birth_date: birthDate });
     return;

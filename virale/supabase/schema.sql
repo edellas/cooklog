@@ -163,6 +163,9 @@ create table if not exists public.profile_private (
   birth_date date not null check (birth_date >= date '1900-01-01'),
   created_at timestamptz not null default now()
 );
+-- Codice di recupero della password: solo l'impronta (bcrypt), mai il codice. Lo si vede una volta sola.
+alter table public.profile_private add column if not exists recovery_hash text;
+alter table public.profile_private add column if not exists recovery_created_at timestamptz;
 alter table public.profile_private enable row level security;
 drop policy if exists "private own" on public.profile_private;
 create policy "private own" on public.profile_private for select to authenticated using (id = auth.uid());
@@ -2952,6 +2955,75 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 20) Codice di recupero della password (niente email: con il codice si sceglie una password nuova da sé)
+-- ---------------------------------------------------------------------------
+-- Crea (o sostituisce) il codice: 16 simboli senza quelli che si confondono (0/O, 1/I/L), XXXX-XXXX-XXXX-XXXX.
+-- Si restituisce una volta sola; nel database resta solo l'impronta bcrypt. Al massimo 5 all'ora.
+create or replace function public.create_recovery_code()
+returns text language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_alphabet constant text := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  v_bytes bytea := gen_random_bytes(16);
+  v_code text := '';
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if not exists (select 1 from profile_private where id = v_uid) then raise exception 'Prima inserisci nome, cognome e data di nascita.'; end if;
+  if (select count(*) from rate_events where user_id = v_uid and kind = 'recovery_code' and at > now() - interval '1 hour') >= 5 then
+    raise exception 'Hai creato troppi codici in poco tempo: riprova tra un’ora.';
+  end if;
+  insert into rate_events (user_id, kind) values (v_uid, 'recovery_code');
+  for i in 0..15 loop
+    -- 256 non è multiplo di 31: si scartano i valori alti per non favorire i primi simboli.
+    while get_byte(v_bytes, i) >= 248 loop
+      v_bytes := set_byte(v_bytes, i, get_byte(gen_random_bytes(1), 0));
+    end loop;
+    v_code := v_code || substr(v_alphabet, get_byte(v_bytes, i) % 31 + 1, 1);
+  end loop;
+  update profile_private set recovery_hash = crypt(v_code, gen_salt('bf', 8)), recovery_created_at = now() where id = v_uid;
+  return substr(v_code, 1, 4) || '-' || substr(v_code, 5, 4) || '-' || substr(v_code, 9, 4) || '-' || substr(v_code, 13, 4);
+end;
+$$;
+
+-- Solo per la funzione verifica-eta (chiave di servizio), rotta /recupero. Restituisce l'id se il codice è
+-- giusto (e, con p_consume, lo invalida: vale una volta sola), altrimenti null, sempre con la stessa risposta
+-- per nome sbagliato, codice sbagliato o account espulso. Dopo 5 tentativi sbagliati in un'ora: si ferma.
+create or replace function public.recovery_redeem(p_username text, p_code text, p_consume boolean default true)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_id uuid;
+  v_hash text;
+  v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g'));
+begin
+  select p.id, v.recovery_hash into v_id, v_hash
+    from profiles p join profile_private v on v.id = p.id
+   where p.username = lower(trim(regexp_replace(coalesce(p_username, ''), '^@+', ''))) and p.banned_at is null;
+  if v_id is null then return null; end if;
+  if (select count(*) from rate_events where user_id = v_id and kind = 'recovery_fail' and at > now() - interval '1 hour') >= 5 then
+    raise exception 'Troppi tentativi: riprova tra un’ora.';
+  end if;
+  if v_hash is null or length(v_code) <> 16 or crypt(v_code, v_hash) <> v_hash then
+    insert into rate_events (user_id, kind) values (v_id, 'recovery_fail');
+    return null;
+  end if;
+  if coalesce(p_consume, true) then
+    update profile_private set recovery_hash = null, recovery_created_at = null where id = v_id;
+  end if;
+  return v_id;
+end;
+$$;
+
+-- Dopo il cambio di password con il codice: tutti i dispositivi collegati escono (anche quello di chi l'aveva rubata).
+create or replace function public.revoke_sessions(p_user_id uuid)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if to_regclass('auth.sessions') is not null then
+    execute 'delete from auth.sessions where user_id = $1' using p_user_id;
+  end if;
+end;
+$$;
+
 -- Prima volta con la gara che chiude all'orario della copertina (database che usavano la mezzanotte):
 -- se ieri non ha avuto una copertina la si sceglie adesso, e tutti i giorni di calendario passati risultano chiusi.
 do $$
@@ -3025,6 +3097,11 @@ grant execute on function public.mod_user_reports() to authenticated;
 grant execute on function public.mod_resolve_user_report(text, uuid, text) to authenticated;
 grant execute on function public.update_my_profile(text, text, text, boolean) to authenticated;
 grant execute on function public.search_profiles(text, int) to authenticated;
+grant execute on function public.create_recovery_code() to authenticated;
+revoke all on function public.recovery_redeem(text, text, boolean) from public, anon, authenticated;
+revoke all on function public.revoke_sessions(uuid) from public, anon, authenticated;
+grant execute on function public.recovery_redeem(text, text, boolean) to service_role;
+grant execute on function public.revoke_sessions(uuid) to service_role;
 -- Pulizia dei file dal lavoro programmato: solo con la chiave di servizio.
 revoke all on function public.storage_purge_take(int) from public, anon, authenticated;
 revoke all on function public.storage_purge_finish(text, text[]) from public, anon, authenticated;

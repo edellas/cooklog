@@ -11,7 +11,8 @@ import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { DOCS, ownerEmail, type DocSlug } from '../src/legal/docs';
-import { changePassword, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, setPassword, unblockUser } from '../src/services/api';
+import { changePassword, createRecoveryCode, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, setPassword, unblockUser } from '../src/services/api';
+import { RecoveryCodeCard } from '../src/components/RecoveryCode';
 import { flushViews } from '../src/state/views';
 import { Field } from '../src/components/Field';
 import { useSession } from '../src/state/session';
@@ -127,6 +128,7 @@ export default function Settings() {
           ) : (
             <>
               <PasswordChange />
+              <RecoveryCode />
               <Press style={styles.row} onPress={() => void exit()} accessibilityRole="button">
                 <Icon name="esci" size={22} />
                 <Txt variant="label" style={{ flex: 1 }}>
@@ -300,6 +302,78 @@ function PasswordChange() {
           </Txt>
         </Press>
         <Press style={styles.pill} onPress={() => setOpen(false)} accessibilityRole="button">
+          <Txt variant="meta">Annulla</Txt>
+        </Press>
+      </View>
+    </View>
+  );
+}
+
+/** Codice di recupero nuovo: serve la password attuale (come per cambiarla). Il precedente smette di valere. */
+function RecoveryCode() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [code, setCode] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const close = () => {
+    setOpen(false);
+    setCode(null);
+    setCurrent('');
+    setError(null);
+  };
+  if (code) {
+    return (
+      <View style={[styles.row, { flexDirection: 'column', alignItems: 'stretch' }]}>
+        <RecoveryCodeCard code={code} note={false} compact onDone={close} />
+      </View>
+    );
+  }
+  if (!open) {
+    return (
+      <Press style={styles.row} onPress={() => setOpen(true)} accessibilityRole="button">
+        <Icon name="scudo" size={22} />
+        <View style={{ flex: 1, gap: 2 }}>
+          <Txt variant="label">Codice di recupero</Txt>
+          <Txt variant="small" tone={color.paperFaint}>
+            Serve se dimentichi la password.
+          </Txt>
+        </View>
+        <Icon name="destra" size={20} color={color.paperFaint} />
+      </Press>
+    );
+  }
+  const create = async () => {
+    try {
+      setBusy(true);
+      setError(null);
+      setCode(await createRecoveryCode(current));
+      haptic('success');
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={[styles.row, { flexDirection: 'column', alignItems: 'stretch', gap: space[3] }]}>
+      <Txt variant="label">Codice di recupero</Txt>
+      <Txt variant="small" tone={color.paperDim}>
+        Serve se dimentichi la password. Il codice precedente smetterà di funzionare.
+      </Txt>
+      <Field value={current} onChangeText={setCurrent} placeholder="Password attuale" secureTextEntry autoCapitalize="none" accessibilityLabel="Password attuale" maxLength={72} />
+      {error ? (
+        <Txt variant="small" tone={color.matita}>
+          {error}
+        </Txt>
+      ) : null}
+      <View style={{ flexDirection: 'row', gap: space[2], flexWrap: 'wrap' }}>
+        <Press style={[styles.pill, { backgroundColor: color.giallo, borderColor: color.giallo }]} onPress={() => void create()} disabled={busy || !current} accessibilityRole="button">
+          <Txt variant="meta" tone={color.canvas}>
+            {busy ? 'Creo…' : 'Crea un nuovo codice'}
+          </Txt>
+        </Press>
+        <Press style={styles.pill} onPress={close} accessibilityRole="button">
           <Txt variant="meta">Annulla</Txt>
         </Press>
       </View>

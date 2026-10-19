@@ -1097,3 +1097,35 @@ do $$ declare v jsonb; begin
   raise notice 'ok, my_status dice se il voto conta e da quando';
 end $$;
 reset role;
+
+-- ---------- Codice di recupero della password (W20) ----------
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000102', false);
+create temp table recovery_code as select create_recovery_code() as code;
+reset role;
+do $$ declare c text := (select code from recovery_code); begin
+  if c !~ '^[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}$' then raise exception 'formato del codice: %', c; end if;
+  if (select recovery_hash from profile_private where id = '00000000-0000-0000-0000-000000000102') like '%' || replace(c, '-', '') || '%' then raise exception 'codice salvato in chiaro'; end if;
+  raise notice 'ok, codice di recupero nel formato giusto, salvato solo come impronta';
+  perform set_config('virale.test_code', c, false);
+end $$;
+set role authenticated;
+do $$ begin perform recovery_redeem('mod2', 'AAAA-AAAA-AAAA-AAAA'); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, il codice si usa solo dalla funzione (chiave di servizio)'; end $$;
+reset role;
+set role service_role;
+do $$ declare c text := current_setting('virale.test_code'); begin
+  if recovery_redeem('mod2', 'ZZZZ-ZZZZ-ZZZZ-ZZZZ') is not null then raise exception 'codice sbagliato accettato'; end if;
+  if recovery_redeem('nessuno', c) is not null then raise exception 'utente inesistente'; end if;
+  -- Solo controllo, senza consumarlo (la funzione lo consuma dopo aver cambiato la password).
+  if recovery_redeem('@MOD2', lower(c), false) is distinct from '00000000-0000-0000-0000-000000000102' then raise exception 'controllo del codice giusto'; end if;
+  if recovery_redeem('mod2', c) is distinct from '00000000-0000-0000-0000-000000000102' then raise exception 'codice giusto rifiutato'; end if;
+  if recovery_redeem('mod2', c) is not null then raise exception 'codice usato due volte'; end if;
+  raise notice 'ok, il codice giusto vale una volta sola';
+end $$;
+do $$ declare i int; begin
+  for i in 1..5 loop perform recovery_redeem('mod2', 'ZZZZ-ZZZZ-ZZZZ-ZZZZ'); end loop;
+  raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%Troppi tentativi%' then raise; end if; raise notice 'ok, dopo 5 tentativi sbagliati in un''ora si ferma'; end $$;
+reset role;
+drop table recovery_code;
