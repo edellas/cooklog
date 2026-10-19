@@ -85,6 +85,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Moderazione',
         body: [
+          'Prima della pubblicazione foto, video (attraverso alcuni fotogrammi), didascalie e foto profilo passano un controllo automatico. Ciò che viola in modo evidente le Linee guida non viene pubblicato; i casi dubbi, o quelli che non è stato possibile controllare, restano nascosti finché una persona non li esamina. Un post in revisione non può partecipare alla gara.',
           'Puoi segnalare qualsiasi post e bloccare qualsiasi utente. Un post segnalato da più persone viene nascosto subito fino alla revisione.',
           'Esaminiamo le segnalazioni entro 24 ore. Possiamo rimuovere contenuti e sospendere o espellere account che violano termini o linee guida, anche senza preavviso nei casi gravi. Se pensi che una decisione sia sbagliata, scrivi a ' + OWNER.email + '.',
         ],
@@ -121,6 +122,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Dati privati, che non mostriamo agli altri utenti: nome, cognome e data di nascita.',
           'Verifica dell’età, in uno di due modi. Automatica: tramite Didit inquadri il documento d’identità e fai un breve selfie; Didit controlla che il documento sia autentico e confronta il volto del selfie con la foto del documento (un confronto biometrico), e ci comunica solo l’esito con la data di nascita letta dal documento. Con le foto: carichi la foto del documento e un selfie con il documento, che vede soltanto un amministratore. In entrambi i casi le immagini vengono cancellate appena presa la decisione; conserviamo solo l’esito, la data di nascita, la data della verifica e chi ha deciso.',
           'Contenuti: foto e video che pubblichi (con le loro dimensioni e durata), didascalie, commenti.',
+          'Controllo automatico dei contenuti: prima della pubblicazione analizziamo foto, alcuni fotogrammi dei video, didascalie e foto profilo per riconoscere nudo, violenza, autolesionismo, odio e molestie. Conserviamo l’esito (pubblicabile, da rivedere, bloccato) con le categorie e i punteggi, non una copia dei contenuti; i fotogrammi dei video si cancellano appena controllati.',
           'Interazioni: cerchi (il nostro mi piace), salvataggi, condivisioni, commenti, follow, blocchi, segnalazioni, visualizzazioni dei post, il tempo per cui un post resta sullo schermo, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
           'Gusti: dalle interazioni ricaviamo punteggi su autori, hashtag e tipo di contenuto (foto o video) che ti interessano di più, che perdono peso col tempo (si dimezzano ogni 14 giorni). Servono solo a ordinare i post in “In gara” ed “Esplora”: non li mostriamo a nessuno, non li usiamo per la pubblicità e non li cediamo.',
           'Notifiche sul telefono, solo se le attivi: un identificativo del telefono per le notifiche (token) e le categorie che hai scelto. Serve solo a inviarti le notifiche; lo cancelliamo quando esci dall’account, quando lo elimini, quando recuperi la password con il codice (da tutti i telefoni) o la cambi dall’app (da tutti tranne quello che stai usando) e quando il telefono non risulta più raggiungibile (per esempio dopo aver disinstallato l’app).',
@@ -133,6 +135,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           'Fornire il servizio, mostrare i contenuti e far funzionare la gara: esecuzione del contratto (art. 6.1.b GDPR).',
           'Sicurezza, moderazione, prevenzione di abusi e di manipolazioni della gara: legittimo interesse (art. 6.1.f) e obblighi di legge (art. 6.1.c).',
+          'Controllo automatico dei contenuti prima della pubblicazione: legittimo interesse a proteggere gli utenti, in particolare i minori, e obblighi di legge sulla moderazione (art. 6.1.f e 6.1.c). Riguarda i contenuti, non la persona: non porta da solo a sospensioni dell’account, i casi dubbi li decide una persona e, se pensi che un contenuto sia stato bloccato per errore, puoi scriverci.',
           `Verifica dell’età: obbligo di legge sull’età minima per i servizi online (art. 2-quinquies del Codice privacy, ${MIN_AGE} anni) e legittimo interesse a proteggere i minori (art. 6.1.c e 6.1.f). Con la verifica automatica, il confronto tra il volto del selfie e la foto del documento è un trattamento di dati biometrici (art. 9 GDPR): lo fa Didit, una sola volta e solo per questo scopo, e solo con il tuo consenso esplicito (art. 9.2.a), che dai toccando “Verifica ora” dopo averlo letto. Puoi non darlo: in quel caso carichi le foto e il confronto lo fa una persona, senza trattamenti automatici del volto.`,
           'Ordinare i post secondo i tuoi gusti: legittimo interesse a mostrarti contenuti pertinenti (art. 6.1.f). La gara resta aperta a tutti: anche i post lontani dai tuoi gusti ti vengono proposti, solo meno spesso. Puoi sempre guardare “Seguiti”, in semplice ordine di tempo.',
         ],
@@ -143,9 +146,10 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Ciò che pubblichi è visibile agli altri utenti; la Copertina è visibile a chiunque apra l’app. Nome, nome utente, foto profilo e bio sono visibili agli altri utenti.',
           'Quando condividi un post, il link porta a una pagina del nostro sito che apre il post nell’app (o lo store): la pagina non usa cookie né strumenti di tracciamento.',
           'Fornitori che trattano i dati per nostro conto come responsabili del trattamento: Supabase (database, archiviazione dei file e autenticazione) e, per la verifica automatica dell’età, Didit (didit.me). Per questi servizi usiamo server situati nell’Unione Europea.',
+          'Per il controllo automatico dei contenuti usiamo il servizio di moderazione di OpenAI (openai.com), come responsabile del trattamento: riceve foto, fotogrammi dei video, didascalie e foto profilo solo per analizzarli e restituirci l’esito. Secondo le sue condizioni per i servizi API, OpenAI non li usa per addestrare i propri modelli e li conserva solo per un periodo limitato, per sicurezza e prevenzione degli abusi.',
           'Le notifiche sul telefono passano dal servizio di Expo (650 Industries, Inc., expo.dev) e da quelli di Apple e Google, che le recapitano al telefono: ricevono solo il token del telefono e il testo della notifica.',
           'Il nostro sito (documenti legali e pagina dei link condivisi) è ospitato su GitHub Pages (GitHub, Inc.): come per ogni sito, GitHub riceve l’indirizzo IP e i dati tecnici del browser di chi lo visita.',
-          'Trasferimenti fuori dall’Unione Europea: Expo, Apple, Google e GitHub possono trattare questi dati negli Stati Uniti. Il trasferimento si basa sulla decisione di adeguatezza UE-USA (Data Privacy Framework, art. 45 GDPR) per le aziende che vi aderiscono e, in ogni caso, sulle clausole contrattuali tipo approvate dalla Commissione europea (art. 46 GDPR). Puoi chiederne copia scrivendoci.',
+          'Trasferimenti fuori dall’Unione Europea: OpenAI, Expo, Apple, Google e GitHub possono trattare questi dati negli Stati Uniti. Il trasferimento si basa sulla decisione di adeguatezza UE-USA (Data Privacy Framework, art. 45 GDPR) per le aziende che vi aderiscono e, in ogni caso, sulle clausole contrattuali tipo approvate dalla Commissione europea (art. 46 GDPR). Puoi chiederne copia scrivendoci.',
           'Autorità, quando la legge lo impone.',
         ],
       },
@@ -155,6 +159,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Finché l’account esiste. Quando elimini un post o l’account, i dati vengono cancellati dai sistemi attivi subito e dalle copie di sicurezza entro 30 giorni.',
           'I dati tecnici delle singole visualizzazioni della gara vengono cancellati dopo 7 giorni; quelli delle visualizzazioni dei post dopo 2 giorni (resta solo il conteggio).',
           'Le foto del documento e del selfie vengono cancellate appena presa la decisione (anche da Didit, se la verifica è automatica), e comunque eliminando l’account.',
+          'Gli esiti del controllo automatico restano finché il contenuto è pubblicato (o la foto è quella del profilo); quelli delle didascalie e dei contenuti non pubblicati, bloccati o eliminati si cancellano dopo 7 giorni. I contenuti bloccati vengono cancellati subito.',
           'I post già visti, usati per non riproporteli in Esplora, dopo 30 giorni; i punteggi dei gusti non aggiornati da 120 giorni vengono cancellati.',
           'Le segnalazioni e le decisioni di moderazione si conservano fino a 12 mesi dalla decisione, per gestire ricorsi e abusi ripetuti, poi si cancellano. Se l’account segnalato o quello che ha segnalato viene eliminato, si cancellano subito le copie dei contenuti e le note salvate con la segnalazione.',
           'Le notifiche sul telefono già inviate si cancellano dopo 7 giorni; le notifiche nell’app dopo 90 giorni.',
@@ -200,6 +205,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Cosa puoi fare',
         body: [
+          'Prima di uscire, ogni post passa un controllo automatico: se viola in modo evidente queste regole non viene pubblicato; se è dubbio resta nascosto finché non lo esaminiamo.',
           'Segnala un post dal pulsante con i tre puntini: per te sparisce subito. Con più segnalazioni sparisce per tutti fino alla nostra revisione, entro 24 ore.',
           'Blocca un utente: non vedrete più i contenuti l’uno dell’altro.',
           `Per casi urgenti scrivi a ${OWNER.email}.`,

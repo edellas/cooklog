@@ -1,10 +1,35 @@
 -- Test end-to-end di supabase/schema.sql su un Postgres locale (vedi README.md).
 \set ON_ERROR_STOP on
--- Indirizzo di un file nel bucket media, nella cartella dell'autore (come lo carica l'app).
-create function test_media(p_uid uuid, p_name text) returns jsonb language sql immutable as $$
-  select jsonb_build_array(jsonb_build_object('kind', 'image', 'url', 'https://proj.supabase.co/storage/v1/object/public/media/' || p_uid || '/' || p_name, 'width', 1080, 'height', 1620))
+-- Esito "ok" del controllo automatico (come lo scrive la funzione verifica-eta, azione "modera") per un file
+-- del bucket media (kind 'file'), una foto profilo ('avatar', p_name = percorso) o una didascalia ('caption').
+create function test_ok(p_uid uuid, p_name text, p_kind text default 'file', p_verdict text default 'ok') returns void
+language sql security definer as $$
+  insert into media_checks (kind, path, owner_id, verdict)
+  select p_kind, case p_kind when 'caption' then caption_check_path(p_uid, p_name) when 'avatar' then p_name else p_uid || '/' || p_name end, p_uid, p_verdict
+  where exists (select 1 from profiles where id = p_uid)
+  on conflict (kind, path) do update set verdict = excluded.verdict, owner_id = excluded.owner_id;
 $$;
+-- Indirizzo di un file nel bucket media, nella cartella dell'autore (come lo carica l'app), già controllato.
+create function test_media(p_uid uuid, p_name text) returns jsonb language plpgsql security definer as $$
+begin
+  if not exists (select 1 from media_checks where kind = 'file' and path = p_uid || '/' || p_name) then perform test_ok(p_uid, p_name); end if;
+  return jsonb_build_array(jsonb_build_object('kind', 'image', 'url', 'https://proj.supabase.co/storage/v1/object/public/media/' || p_uid || '/' || p_name, 'width', 1080, 'height', 1620));
+end $$;
 grant execute on function test_media(uuid, text) to authenticated;
+-- I dati di prova inseriti dal superutente hanno file e didascalia già controllati ("ok"), come se fossero
+-- passati dalla funzione: i test del controllo automatico pubblicano come utenti (ruolo authenticated).
+create function test_fixture_checks() returns trigger language plpgsql as $$
+begin
+  if current_user = 'postgres' then
+    perform test_ok(new.author_id, split_part(x, '/', 2)) from media_paths(new.media) x
+      where not exists (select 1 from media_checks where kind = 'file' and path = x);
+    if new.caption <> '' and not exists (select 1 from media_checks where kind = 'caption' and path = caption_check_path(new.author_id, new.caption)) then
+      perform test_ok(new.author_id, new.caption, 'caption');
+    end if;
+  end if;
+  return new;
+end $$;
+create trigger trg_posts_0_test_fixture before insert on posts for each row execute function test_fixture_checks();
 update arena_config set tier_thresholds='{3,5}', min_cohort=100, baseline_score=0.3, submission_cutoff_hour=24, report_min_views=3;
 
 -- 6 utenti: user1..user3 sono autori, tutti sono spettatori.
@@ -1028,13 +1053,20 @@ do $$ declare r jsonb; begin
   exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
   begin perform update_my_profile(p_avatar_path => '00000000-0000-0000-0000-000000000101/avatar-1700000000000.jpg'); raise exception 'NON DOVEVA PASSARE';
   exception when others then if sqlerrm not like '%Foto non valida%' then raise; end if; end;
+  -- Foto profilo: serve il controllo automatico con esito "ok" ("review" non basta).
+  begin perform update_my_profile(p_avatar_path => '00000000-0000-0000-0000-000000000104/avatar-1700000000123.jpg'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%controllo automatico%' then raise; end if; end;
+  perform test_ok('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000104/avatar-1700000000123.jpg', 'avatar', 'review');
+  begin perform update_my_profile(p_avatar_path => '00000000-0000-0000-0000-000000000104/avatar-1700000000123.jpg'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%controllo automatico%' then raise; end if; end;
+  perform test_ok('00000000-0000-0000-0000-000000000104', '00000000-0000-0000-0000-000000000104/avatar-1700000000123.jpg', 'avatar');
   r := update_my_profile(p_display_name => '  Nuovo   Nome ', p_bio => E'Riga uno\nRiga due', p_avatar_path => '00000000-0000-0000-0000-000000000104/avatar-1700000000123.jpg');
   if r ->> 'display_name' <> 'Nuovo Nome' or r ->> 'avatar_path' is null then raise exception 'profilo non aggiornato: %', r; end if;
   begin perform update_my_profile(p_display_name => 'Altro Nome'); raise exception 'NON DOVEVA PASSARE';
   exception when others then if sqlerrm not like '%7 giorni%' then raise; end if; end;
   -- Stesso nome di adesso: nessun cambio, nessun errore.
   perform update_my_profile(p_display_name => 'Nuovo Nome', p_bio => 'Bio nuova');
-  raise notice 'ok, profilo: regole su nome, bio e foto, nome una volta ogni 7 giorni';
+  raise notice 'ok, profilo: regole su nome, bio e foto (solo se controllata), nome una volta ogni 7 giorni';
 end $$;
 do $$ begin
   if (get_post('50000000-0000-0000-0000-000000000001') -> 'author' ->> 'avatar_path') is not null then null; end if;
@@ -1431,3 +1463,160 @@ do $$ declare n text[]; begin
   raise notice 'ok, niente nomi da staff né caratteri invisibili, alla registrazione e dopo';
 end $$;
 reset role;
+
+-- ---------- Controllo automatico dei contenuti prima della pubblicazione (media_checks) ----------
+-- c1 e c2 pubblicano, c3 è l'amministratore. Gli esiti li scrive la funzione verifica-eta (service_role).
+insert into auth.users (id) select ('00000000-0000-0000-0000-0000000c0de'||i)::uuid from generate_series(1,3) i;
+insert into profiles (id, username, display_name) select id, 'controllo'||right(id::text,1), 'Controllo C.' from auth.users where id::text like '00000000-0000-0000-0000-0000000c0de%';
+update profiles set created_at = now() - interval '10 days' where username like 'controllo%';
+update profiles set is_admin = true where username = 'controllo3';
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username like 'controllo%';
+create function test_url(p_uid uuid, p_name text) returns jsonb language sql immutable as $$
+  select jsonb_build_array(jsonb_build_object('kind', 'image', 'url', 'https://proj.supabase.co/storage/v1/object/public/media/' || p_uid || '/' || p_name, 'width', 1080, 'height', 1620))
+$$;
+
+-- Nessuno dall'app legge o scrive gli esiti, né chiama le funzioni riservate alla funzione verifica-eta.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000c0de1', false);
+do $$ begin
+  begin
+    insert into media_checks (kind, path, owner_id, verdict) values ('file', '00000000-0000-0000-0000-0000000c0de1/finto.jpg', auth.uid(), 'ok');
+    raise exception 'NON DOVEVA PASSARE';
+  exception when insufficient_privilege then null; end;
+  begin perform 1 from media_checks; raise exception 'NON DOVEVA PASSARE'; exception when insufficient_privilege then null; end;
+  begin
+    perform media_check_save(auth.uid(), '[{"kind":"file","path":"00000000-0000-0000-0000-0000000c0de1/finto.jpg","verdict":"ok"}]');
+    raise exception 'NON DOVEVA PASSARE';
+  exception when insufficient_privilege then null; end;
+  begin perform media_check_start(auth.uid(), 'file', array['00000000-0000-0000-0000-0000000c0de1/finto.jpg']); raise exception 'NON DOVEVA PASSARE';
+  exception when insufficient_privilege then null; end;
+  raise notice 'ok, authenticated non legge né scrive media_checks';
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  begin insert into media_checks (kind, path, owner_id, verdict) values ('file', 'x/y.jpg', '00000000-0000-0000-0000-0000000c0de1', 'ok'); raise exception 'NON DOVEVA PASSARE';
+  exception when insufficient_privilege then null; end;
+  raise notice 'ok, anon non scrive media_checks';
+end $$;
+reset role;
+
+-- La funzione (service_role, senza utente nel token): solo file di chi chiama e non già pubblicati; poi salva gli esiti.
+select set_config('request.jwt.claim.sub', '', false);
+set role service_role;
+do $$ declare ids jsonb; begin
+  begin perform media_check_start('00000000-0000-0000-0000-0000000c0de1', 'file', array['00000000-0000-0000-0000-0000000c0de2/altrui.jpg']); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non valida%' then raise; end if; end;
+  ids := media_check_start('00000000-0000-0000-0000-0000000c0de1', 'file', array['00000000-0000-0000-0000-0000000c0de1/ok.jpg', '00000000-0000-0000-0000-0000000c0de1/dubbio.jpg']);
+  if not ids ? '00000000-0000-0000-0000-0000000c0de1/ok.jpg' then raise exception 'media_check_start: %', ids; end if;
+  perform media_check_save('00000000-0000-0000-0000-0000000c0de1', jsonb_build_array(
+    jsonb_build_object('kind', 'file', 'path', '00000000-0000-0000-0000-0000000c0de1/ok.jpg', 'verdict', 'ok', 'scores', '{"sexual":0.01}'::jsonb),
+    jsonb_build_object('kind', 'file', 'path', '00000000-0000-0000-0000-0000000c0de1/dubbio.jpg', 'verdict', 'review', 'categories', '["sexual"]'::jsonb, 'scores', '{"sexual":0.42}'::jsonb),
+    jsonb_build_object('kind', 'file', 'path', '00000000-0000-0000-0000-0000000c0de1/vietato.jpg', 'verdict', 'blocked', 'categories', '["violence/graphic"]'::jsonb),
+    jsonb_build_object('kind', 'caption', 'caption', 'Ciao a tutti', 'verdict', 'ok'),
+    jsonb_build_object('kind', 'caption', 'caption', 'Didascalia dubbia', 'verdict', 'review', 'categories', '["harassment"]'::jsonb)));
+  begin perform media_check_save('00000000-0000-0000-0000-0000000c0de1', '[{"kind":"file","path":"00000000-0000-0000-0000-0000000c0de2/x.jpg","verdict":"ok"}]'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non valida%' then raise; end if; end;
+  raise notice 'ok, la funzione salva gli esiti solo nella cartella di chi chiama';
+end $$;
+reset role;
+-- Un esito di un altro utente sullo stesso percorso (non deve contare).
+insert into media_checks (kind, path, owner_id, verdict) values ('file', '00000000-0000-0000-0000-0000000c0de1/altrui.jpg', '00000000-0000-0000-0000-0000000c0de2', 'ok');
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000c0de1', false);
+do $$ declare v uuid; w uuid; begin
+  begin insert into posts (author_id, media) values (auth.uid(), test_url(auth.uid(), 'mai-controllato.jpg')); raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then if sqlerrm not like '%non è stato controllato%' then raise; end if; end;
+  begin insert into posts (author_id, media) values (auth.uid(), test_url(auth.uid(), 'altrui.jpg')); raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then if sqlerrm not like '%non è stato controllato%' then raise; end if; end;
+  begin insert into posts (author_id, media) values (auth.uid(), test_url(auth.uid(), 'vietato.jpg')); raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then if sqlerrm not like '%non è stato controllato%' then raise; end if; end;
+  -- File controllato, didascalia no (o diversa da quella controllata): rifiutato.
+  begin insert into posts (author_id, media, caption) values (auth.uid(), test_url(auth.uid(), 'ok.jpg'), 'Ciao a tutti!'); raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then if sqlerrm not like '%non è stato controllato%' then raise; end if; end;
+  -- Un post con un file "blocked" in mezzo a file buoni: rifiutato.
+  begin insert into posts (author_id, media) values (auth.uid(), test_url(auth.uid(), 'ok.jpg') || test_url(auth.uid(), 'vietato.jpg')); raise exception 'NON DOVEVA PASSARE';
+  exception when check_violation then if sqlerrm not like '%non è stato controllato%' then raise; end if; end;
+  raise notice 'ok, post senza controllo, con il controllo di un altro, bloccato o con didascalia diversa: rifiutati';
+
+  -- "ok": visibile subito e candidabile.
+  insert into posts (author_id, media, caption) values (auth.uid(), test_url(auth.uid(), 'ok.jpg'), 'Ciao a tutti') returning id into v;
+  if (select hidden_at from posts where id = v) is not null then raise exception 'post ok nascosto'; end if;
+  perform arena_submit(v);
+  raise notice 'ok, esito ok: post visibile e candidabile';
+
+  -- "review": il post si crea nascosto e non si candida.
+  insert into posts (author_id, media) values (auth.uid(), test_url(auth.uid(), 'dubbio.jpg')) returning id into w;
+  if (select hidden_reason from posts where id = w) is distinct from 'revisione' or (select hidden_at from posts where id = w) is null then
+    raise exception 'post in revisione non nascosto';
+  end if;
+  if get_post(w) is null then raise exception 'l''autore deve vedere il suo post in revisione'; end if;
+  begin perform arena_submit(w); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%in revisione%' then raise; end if; end;
+  raise notice 'ok, esito review: post nascosto, visibile solo all''autore, non candidabile';
+end $$;
+-- Didascalia "review" con un file ok: nascosto anche lui.
+reset role;
+select test_ok('00000000-0000-0000-0000-0000000c0de1', 'ok2.jpg');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000c0de1', false);
+do $$ declare v uuid; begin
+  insert into posts (author_id, media, caption) values (auth.uid(), test_url(auth.uid(), 'ok2.jpg'), 'Didascalia dubbia') returning id into v;
+  if (select hidden_reason from posts where id = v) is distinct from 'revisione' then raise exception 'didascalia in revisione: post non nascosto'; end if;
+  raise notice 'ok, didascalia da rivedere: post nascosto';
+end $$;
+-- Gli altri non lo vedono.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000c0de2', false);
+do $$ begin
+  if exists (select 1 from posts where author_id = '00000000-0000-0000-0000-0000000c0de1' and hidden_reason = 'revisione') then raise exception 'post in revisione leggibile da altri'; end if;
+  if get_post((select id from posts where author_id = '00000000-0000-0000-0000-0000000c0de1' and media @> test_url('00000000-0000-0000-0000-0000000c0de1', 'ok.jpg'))) is null then
+    raise exception 'post ok non visibile agli altri';
+  end if;
+  begin perform mod_queue(); raise exception 'NON DOVEVA PASSARE'; exception when others then if sqlerrm not like '%moderatori%' then raise; end if; end;
+  raise notice 'ok, un post in revisione non lo vede nessun altro';
+end $$;
+-- L'amministratore lo trova in coda, con il motivo, e lo approva (diventa visibile) o lo rimuove.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000c0de3', false);
+do $$ declare q jsonb; n int; v uuid; c uuid; begin
+  select count(*) into n from mod_queue() x where x ? 'review' and x -> 'post' -> 'author' ->> 'username' = 'controllo1';
+  if n <> 2 then raise exception 'coda di revisione: % post invece di 2', n; end if;
+  select x into q from mod_queue() x where x ? 'review' and x -> 'review' -> 'categories' ? 'sexual';
+  if q is null then raise exception 'motivo della revisione mancante'; end if;
+  v := (q -> 'post' ->> 'id')::uuid;
+  perform mod_resolve(v, 'dismiss');
+  if (select hidden_at from posts where id = v) is not null then raise exception 'post approvato ancora nascosto'; end if;
+  select (x -> 'post' ->> 'id')::uuid into c from mod_queue() x where x ? 'review';
+  perform mod_resolve(c, 'remove');
+  if (select hidden_reason from posts where id = c) <> 'moderazione' then raise exception 'post rimosso non rimosso'; end if;
+  if exists (select 1 from mod_queue() x where x ? 'review') then raise exception 'coda di revisione non vuota'; end if;
+  raise notice 'ok, coda di revisione: Approva rende visibile, Rimuovi toglie e cancella i file';
+end $$;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000c0de2', false);
+do $$ begin
+  if get_post((select id from posts where author_id = '00000000-0000-0000-0000-0000000c0de1' and media @> test_url('00000000-0000-0000-0000-0000000c0de1', 'dubbio.jpg'))) is null then
+    raise exception 'post approvato non visibile agli altri';
+  end if;
+  raise notice 'ok, post approvato visibile a tutti';
+end $$;
+reset role;
+select set_config('request.jwt.claim.sub', '', false);
+do $$ begin
+  if (select data ->> 'reason' from notifications where user_id = '00000000-0000-0000-0000-0000000c0de1' and kind = 'removed' limit 1) is distinct from 'molestie' then
+    raise exception 'motivo della rimozione: %', (select data from notifications where user_id = '00000000-0000-0000-0000-0000000c0de1' and kind = 'removed' limit 1);
+  end if;
+  if not exists (select 1 from storage_purge where path = '00000000-0000-0000-0000-0000000c0de1/ok2.jpg') then raise exception 'file del post rimosso non in pulizia'; end if;
+  -- Un file pubblicato non si ricontrolla (un esito nuovo potrebbe cancellarlo).
+  begin perform media_check_start('00000000-0000-0000-0000-0000000c0de1', 'file', array['00000000-0000-0000-0000-0000000c0de1/ok.jpg']); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%già pubblicato%' then raise; end if; end;
+  raise notice 'ok, rimozione notificata con il motivo del controllo; file pubblicati non ricontrollabili';
+end $$;
+-- Gli esiti di file non pubblicati si cancellano dopo 7 giorni (pulizia notturna); quelli dei post restano.
+update media_checks set checked_at = now() - interval '8 days' where owner_id = '00000000-0000-0000-0000-0000000c0de1';
+do $$ begin
+  perform reports_retention();
+  if exists (select 1 from media_checks where owner_id = '00000000-0000-0000-0000-0000000c0de1' and path like '%vietato.jpg') then raise exception 'esito di un file mai pubblicato rimasto'; end if;
+  if exists (select 1 from media_checks where owner_id = '00000000-0000-0000-0000-0000000c0de1' and kind = 'caption') then raise exception 'esito di una didascalia rimasto'; end if;
+  if not exists (select 1 from media_checks where path = '00000000-0000-0000-0000-0000000c0de1/ok.jpg') then raise exception 'esito di un file pubblicato cancellato'; end if;
+  raise notice 'ok, esiti del controllo: restano solo quelli dei file pubblicati';
+end $$;

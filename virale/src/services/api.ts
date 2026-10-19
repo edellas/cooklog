@@ -211,6 +211,32 @@ async function videoPoster(uri: string): Promise<string | null> {
 }
 
 /**
+ * Video: 4-6 fotogrammi distribuiti lungo la durata, piccoli JPEG per il controllo automatico dei contenuti
+ * (la funzione verifica-eta li fa analizzare e poi li cancella). Sul web non si generano: il video va in revisione.
+ */
+async function videoFrames(uri: string, durationMs?: number): Promise<string[]> {
+  if (Platform.OS === 'web') return [];
+  const seconds = durationMs && durationMs > 0 ? durationMs / 1000 : 0;
+  const n = seconds > 20 ? 6 : 4;
+  // Al centro di n parti uguali (mai il primo fotogramma nero né l'ultimo); durata ignota: i primi secondi.
+  const times = seconds ? Array.from({ length: n }, (_, k) => Math.round(((k + 0.5) * seconds * 100) / n) / 100) : [0.5, 1.5, 3, 5];
+  const player = createVideoPlayer(uri);
+  try {
+    const thumbs = await player.generateThumbnailsAsync(times, { maxWidth: 512, maxHeight: 512 });
+    const out: string[] = [];
+    for (const thumb of thumbs) {
+      const img = await (await ImageManipulator.manipulate(thumb).renderAsync()).saveAsync({ format: SaveFormat.JPEG, compress: 0.6 });
+      out.push(img.uri);
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    player.release();
+  }
+}
+
+/**
  * Carica un file nel bucket media. Sul telefono lo legge a pezzi dal disco (un video da 100 MB non passa
  * tutto in memoria) e dice a che punto è; sul web usa il client normale. Con `signal` il caricamento sul
  * telefono si interrompe subito (sul web finisce, e il file si cancella dopo).
@@ -287,7 +313,10 @@ type UploadHooks = {
   onPath?: (path: string) => void;
 };
 
-async function upload(userId: string, raw: NewPost['media'][number], index: number, hooks: UploadHooks = {}): Promise<MediaItem> {
+/** Un file caricato: l'elemento del post e, per un video, i fotogrammi temporanei per il controllo. */
+type Uploaded = { media: MediaItem; path: string; posterPath: string | null; frames: string[] };
+
+async function upload(userId: string, raw: NewPost['media'][number], index: number, hooks: UploadHooks = {}): Promise<Uploaded> {
   const { onFraction, onPhase, signal, onPath } = hooks;
   // Video: prima la compressione (solo sul telefono, se serve), che pesa il 40% della barra di questo file.
   let compressed = false;
@@ -315,6 +344,8 @@ async function upload(userId: string, raw: NewPost['media'][number], index: numb
   await putFile(path, item.uri, contentType, (f) => onFraction?.(compressed ? 0.4 + f * 0.6 : f), signal);
   const publicUrl = (p: string) => db().storage.from('media').getPublicUrl(p).data.publicUrl;
   let poster: string | undefined;
+  let posterPath: string | null = null;
+  const frames: string[] = [];
   if (item.kind === 'video') {
     // L'anteprima dal file che si pubblica (quello compresso, se c'è).
     const still = await videoPoster(item.uri);
@@ -324,20 +355,63 @@ async function upload(userId: string, raw: NewPost['media'][number], index: numb
         onPath?.(`${base}-poster.jpg`);
         await putFile(`${base}-poster.jpg`, still, 'image/jpeg', undefined, signal);
         poster = publicUrl(`${base}-poster.jpg`);
+        posterPath = `${base}-poster.jpg`;
       } catch (e) {
         if (e instanceof PublishAborted) throw e;
         // senza anteprima il video si vede lo stesso
       }
     }
+    // Fotogrammi per il controllo automatico: se non si riesce a farli, il video va in revisione (non si blocca).
+    for (const [k, frame] of (await videoFrames(item.uri, item.durationMs)).entries()) {
+      if (signal?.aborted) throw new PublishAborted();
+      const framePath = `${base}-f${k}.jpg`;
+      try {
+        onPath?.(framePath);
+        await putFile(framePath, frame, 'image/jpeg', undefined, signal);
+        frames.push(framePath);
+      } catch (e) {
+        if (e instanceof PublishAborted) throw e;
+      }
+    }
   }
   return {
-    kind: item.kind,
-    src: publicUrl(path),
-    width: Math.round(item.width),
-    height: Math.round(item.height),
-    durationMs: item.durationMs != null ? Math.round(item.durationMs) : undefined,
-    poster,
+    media: {
+      kind: item.kind,
+      src: publicUrl(path),
+      width: Math.round(item.width),
+      height: Math.round(item.height),
+      durationMs: item.durationMs != null ? Math.round(item.durationMs) : undefined,
+      poster,
+    },
+    path,
+    posterPath,
+    frames,
   };
+}
+
+/** Il controllo automatico non è passato: il post non esce (i file li ha già cancellati il server). */
+export const BLOCKED_CONTENT = 'Questo contenuto non rispetta le linee guida di Virale e non è stato pubblicato.';
+/** Il controllo automatico chiede una revisione (o non era disponibile): il post esce nascosto. */
+export const IN_REVIEW = 'Il post è in revisione: lo pubblichiamo appena controllato.';
+
+/**
+ * Controllo automatico dei contenuti (funzione verifica-eta, azione "modera"), dopo il caricamento e prima di
+ * creare il post o salvare la foto profilo. Il server fa analizzare file e didascalia e salva l'esito: senza
+ * esito il database non accetta il post. Nessuna chiave nell'app.
+ */
+async function moderate(
+  body: { paths: string[]; frames?: Record<string, string[]>; caption?: string; bucket?: 'media' | 'avatars' },
+  signal?: AbortSignal,
+): Promise<{ verdict: 'ok' | 'review' | 'blocked'; unchecked: boolean }> {
+  const { data, error } = await db().functions.invoke<{ verdict?: 'ok' | 'review' | 'blocked'; unchecked?: boolean; error?: string }>('verifica-eta', {
+    body: { action: 'modera', ...body },
+    signal,
+    timeout: 120_000,
+  });
+  if (signal?.aborted) throw new PublishAborted();
+  if (error) throw new Error(await functionProblem(error));
+  if (!data?.verdict) throw new Error(data?.error ?? 'Il controllo dei contenuti non risponde. Riprova tra poco.');
+  return { verdict: data.verdict, unchecked: Boolean(data.unchecked) };
 }
 
 // ===========================================================================
@@ -1300,6 +1374,17 @@ export async function updateProfile(change: ProfileUpdate): Promise<Me & { bio: 
       const buffer = await (await fetch(out.uri)).arrayBuffer();
       const { error } = await db().storage.from('avatars').upload(path, buffer, { contentType: 'image/jpeg', upsert: false, cacheControl: '3600' });
       if (error) throw new Error(storageMessage(error));
+      // Controllo automatico: la foto profilo la vedono tutti e non ha una coda di revisione, quindi deve essere
+      // "ok" (lo controlla anche update_my_profile). Se no, la foto si cancella e si spiega perché.
+      const checked = await moderate({ bucket: 'avatars', paths: [path] }).catch(async (e: unknown) => {
+        await db().storage.from('avatars').remove([path as string]).catch(() => undefined);
+        throw new Error(friendlyError(e));
+      });
+      if (checked.verdict !== 'ok') {
+        await db().storage.from('avatars').remove([path]).catch(() => undefined);
+        if (checked.verdict === 'blocked') throw new Error('Questa foto non rispetta le linee guida di Virale: scegline un’altra.');
+        throw new Error(checked.unchecked ? 'Il controllo delle foto non è disponibile in questo momento: riprova più tardi.' : 'Questa foto non può essere usata come foto profilo: scegline un’altra.');
+      }
     }
     const row = await rpc<{ id: string; username: string; display_name: string; bio: string; avatar_path: string | null }>('update_my_profile', {
       p_display_name: name ?? null,
@@ -1750,10 +1835,11 @@ export async function getMyEntry(): Promise<MyEntry | null> {
   });
 }
 
-export type PublishResult = { post: Post; entry: MyEntry | null; contestError: string | null };
+/** review: il controllo automatico ha messo il post in revisione (nascosto finché non viene approvato). */
+export type PublishResult = { post: Post; entry: MyEntry | null; contestError: string | null; review: boolean };
 
-/** Fasi della pubblicazione: compressione dei video, caricamento dei file, creazione del post. */
-export type PublishPhase = 'prepara' | 'carica' | 'conclude';
+/** Fasi della pubblicazione: compressione dei video, caricamento dei file, controllo automatico, creazione del post. */
+export type PublishPhase = 'prepara' | 'carica' | 'controlla' | 'conclude';
 
 /** La pubblicazione è stata annullata prima di creare il post: i file caricati sono stati cancellati. */
 export class PublishAborted extends Error {
@@ -1780,7 +1866,7 @@ export async function publish(
   if (charCount(input.caption) > 300) throw new Error('La didascalia può avere al massimo 300 caratteri.');
   if (!isDemo) {
     const me = await uid();
-    const media: MediaItem[] = [];
+    const uploaded: Uploaded[] = [];
     const started: string[] = [];
     let best = 0;
     const progress = (f: number) => {
@@ -1792,7 +1878,7 @@ export async function publish(
       const n = input.media.length;
       for (const [i, m] of input.media.entries()) {
         if (signal?.aborted) throw new PublishAborted();
-        media.push(await upload(me, m, i, { onFraction: (f) => progress((i + f) / n), onPhase, signal, onPath: (p) => started.push(p) }));
+        uploaded.push(await upload(me, m, i, { onFraction: (f) => progress((i + f) / n), onPhase, signal, onPath: (p) => started.push(p) }));
         if (signal?.aborted) throw new PublishAborted();
       }
     } catch (e) {
@@ -1804,6 +1890,33 @@ export async function publish(
       await removePaths(started);
       throw new PublishAborted();
     }
+    const media = uploaded.map((u) => u.media);
+    // Controllo automatico di foto, video (dai fotogrammi), anteprime e didascalia, prima di creare il post.
+    onPhase?.('controlla');
+    let verdict: 'ok' | 'review' | 'blocked';
+    try {
+      ({ verdict } = await moderate(
+        {
+          paths: uploaded.flatMap((u) => (u.posterPath ? [u.path, u.posterPath] : [u.path])),
+          frames: Object.fromEntries(uploaded.filter((u) => u.frames.length).map((u) => [u.path, u.frames])),
+          caption: input.caption.trim(),
+        },
+        signal,
+      ));
+    } catch (e) {
+      await removePaths(started);
+      if (e instanceof PublishAborted || signal?.aborted) throw new PublishAborted();
+      throw new Error(friendlyError(e));
+    }
+    if (verdict === 'blocked') {
+      await removePaths(started);
+      throw new Error(BLOCKED_CONTENT);
+    }
+    if (signal?.aborted) {
+      await removePaths(started);
+      throw new PublishAborted();
+    }
+    const review = verdict === 'review';
     // Da qui il post viene creato: annullare non è più possibile.
     onPhase?.('conclude');
     const { data, error } = await db()
@@ -1820,7 +1933,9 @@ export async function publish(
       throw new Error(friendlyError(error));
     }
     let contestError: string | null = null;
-    if (input.joinContest) {
+    // In revisione il post non è visibile e non può entrare in gara (lo rifiuterebbe anche il server).
+    if (input.joinContest && review) contestError = 'è in revisione.';
+    else if (input.joinContest) {
       const { error: e2 } = await db().rpc('arena_submit', { p_post_id: data.id });
       if (e2) contestError = friendlyError(e2);
     }
@@ -1843,7 +1958,7 @@ export async function publish(
       }),
     );
     const entry = input.joinContest && !contestError ? await getMyEntry().catch(() => null) : null;
-    return { post, entry, contestError };
+    return { post, entry, contestError, review };
   }
   onPhase?.('carica');
   const media: MediaItem[] = [];
@@ -1885,7 +2000,8 @@ export async function publish(
         contestError = (err as Error).message;
       }
     }
-    return { post: toPost(demo, id), entry, contestError };
+    // Demo: nessun servizio esterno, il controllo automatico dà sempre "ok".
+    return { post: toPost(demo, id), entry, contestError, review: false };
   }, true);
 }
 
@@ -2135,13 +2251,26 @@ export async function deleteAccount(): Promise<void> {
   }, true);
 }
 
-export type ModItem = { post: Post; hidden: boolean; reports: number; reasons: ReportReason[]; firstAt: string };
+/**
+ * review: messo in revisione dal controllo automatico (solo nella coda dell'amministratore), con le categorie
+ * che l'hanno deciso (es. "sexual") e le note ("non_disponibile": il controllo non era disponibile).
+ */
+export type ModItem = {
+  post: Post;
+  hidden: boolean;
+  reports: number;
+  reasons: ReportReason[];
+  firstAt: string;
+  review?: { categories: string[]; notes: string[] } | null;
+};
 
-/** Coda di moderazione (solo moderatori): i post segnalati, dal più vecchio. */
+/** Coda di moderazione (solo moderatori): i post in revisione (amministratore), poi quelli segnalati, dal più vecchio. */
 export async function getModQueue(): Promise<ModItem[]> {
   if (!isDemo) {
-    const rows = await rpc<{ post: PostJson; hidden: boolean; reports: number; reasons: ReportReason[]; first_at: string }[]>('mod_queue');
-    return rows.map((r) => ({ post: fromJson(r.post), hidden: r.hidden, reports: r.reports, reasons: r.reasons, firstAt: r.first_at }));
+    const rows = await rpc<
+      { post: PostJson; hidden: boolean; reports: number; reasons: ReportReason[]; first_at: string; review?: { categories: string[]; notes: string[] } }[]
+    >('mod_queue');
+    return rows.map((r) => ({ post: fromJson(r.post), hidden: r.hidden, reports: r.reports, reasons: r.reasons, firstAt: r.first_at, review: r.review ?? null }));
   }
   return withDemo((demo) =>
     demo.reported

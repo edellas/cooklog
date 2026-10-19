@@ -342,6 +342,12 @@ begin
     new.view_count := 0;
     new.hidden_at := null;
     new.hidden_reason := null;
+    -- Il controllo automatico ha chiesto una revisione (14b): il post esce nascosto finché l'amministratore
+    -- non lo approva dalla Moderazione. (Questo trigger gira dopo trg_posts_media_urls: ordine alfabetico.)
+    if public.post_needs_review(new.author_id, new.media, new.caption) then
+      new.hidden_at := now();
+      new.hidden_reason := 'revisione';
+    end if;
   else
     new.created_at := now();
   end if;
@@ -759,6 +765,10 @@ begin
   if not exists (select 1 from posts where id = p_post_id and author_id = v_uid) then
     raise exception 'Puoi candidare solo un tuo post.';
   end if;
+  -- Un post in attesa di revisione (controllo automatico) non è visibile: non può entrare in gara.
+  if exists (select 1 from posts where id = p_post_id and hidden_reason = 'revisione') then
+    raise exception 'Il post è in revisione: non può partecipare alla gara.';
+  end if;
   -- Un post partecipa una volta sola: niente seconda occasione per un post già in gara un altro giorno.
   if exists (select 1 from arena_entries where post_id = p_post_id and contest_day < v_day) then
     raise exception 'Questo post ha già partecipato: candidane uno nuovo.';
@@ -1089,6 +1099,21 @@ create or replace function public.mod_queue()
 returns setof jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
   if not public.is_staff(auth.uid()) then raise exception 'Solo per i moderatori.'; end if;
+  -- Per l'amministratore, prima i post messi in revisione dal controllo automatico (14b): "Approva" o "Rimuovi".
+  if public.is_admin(auth.uid()) then
+    return query
+    select jsonb_build_object(
+      'post', public.post_json(p.id, null),
+      'hidden', true,
+      'reports', 0,
+      'reasons', '[]'::jsonb,
+      'first_at', p.created_at,
+      'review', public.post_review_info(p.id)
+    )
+    from posts p join profiles a on a.id = p.author_id
+    where p.hidden_reason = 'revisione' and a.banned_at is null
+    order by p.created_at;
+  end if;
   return query
   select jsonb_build_object(
     'post', public.post_json(r.post_id, null),
@@ -1099,6 +1124,8 @@ begin
   )
   from reports r join posts p on p.id = r.post_id
   where r.status = 'open'
+    -- Un post in revisione l'amministratore lo trova già sopra (una riga sola per post).
+    and not (p.hidden_reason is not distinct from 'revisione' and public.is_admin(auth.uid()))
   group by r.post_id, p.hidden_at
   order by min(r.created_at);
 end;
@@ -1145,7 +1172,10 @@ begin
   if p_action not in ('dismiss', 'remove', 'ban') then raise exception 'Azione non valida.'; end if;
   select author_id into v_author from posts where id = p_post_id;
   if v_author is null then raise exception 'Post non trovato.'; end if;
-  if v_author = v_uid then raise exception 'Non puoi decidere sui tuoi post.'; end if;
+  -- (Eccezione: l'amministratore approva o rimuove anche i propri post in revisione, nessun altro può farlo.)
+  if v_author = v_uid and not (p_action <> 'ban' and public.is_admin(v_uid) and exists (select 1 from posts where id = p_post_id and hidden_reason = 'revisione')) then
+    raise exception 'Non puoi decidere sui tuoi post.';
+  end if;
   -- Un moderatore agisce solo su post segnalati e non può espellere chi fa parte dello staff.
   if not public.is_admin(v_uid) then
     if not exists (select 1 from reports where post_id = p_post_id and status = 'open') then
@@ -1157,12 +1187,27 @@ begin
   end if;
 
   select public.mod_top_reason(array_agg(reason)) into v_reason from reports where post_id = p_post_id and status = 'open';
+  -- Un post in revisione senza segnalazioni: il motivo lo dà il controllo automatico.
+  if v_reason = 'altro' and exists (select 1 from posts where id = p_post_id and hidden_reason = 'revisione') then
+    select case when cats ? 'sexual/minors' then 'minori'
+                when exists (select 1 from jsonb_array_elements_text(cats) x where x like 'sexual%') then 'nudo'
+                when exists (select 1 from jsonb_array_elements_text(cats) x where x like 'violence%' or x like 'self-harm%') then 'violenza'
+                when exists (select 1 from jsonb_array_elements_text(cats) x where x like 'hate%') then 'odio'
+                when exists (select 1 from jsonb_array_elements_text(cats) x where x like 'harassment%') then 'molestie'
+                else 'altro' end
+      into v_reason
+      from (select public.post_review_info(p_post_id) -> 'categories' as cats) i;
+  end if;
   update reports set status = case when p_action = 'dismiss' then 'dismissed' else 'removed' end,
                      resolved_by = v_uid, resolved_at = now()
    where post_id = p_post_id and status = 'open';
 
   if p_action = 'dismiss' then
     update posts set hidden_at = null, hidden_reason = null where id = p_post_id and hidden_reason = 'segnalazioni';
+    -- "Approva" dell'amministratore su un post in revisione (controllo automatico): diventa visibile.
+    if public.is_admin(v_uid) then
+      update posts set hidden_at = null, hidden_reason = null where id = p_post_id and hidden_reason = 'revisione';
+    end if;
     -- Le segnalazioni respinte non pesano più: se avevano fatto squalificare il post, torna in gara dal suo livello.
     update arena_entry_stats set reports = 0
      where entry_id in (select id from arena_entries where post_id = p_post_id and contest_day = public.arena_today());
@@ -2273,6 +2318,156 @@ returns void language sql security definer set search_path = public, pg_temp as 
   delete from storage_purge where bucket = p_bucket and path = any (p_paths);
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 14b) Controllo automatico dei contenuti, prima della pubblicazione
+-- ---------------------------------------------------------------------------
+-- La funzione verifica-eta (azione "modera", con la chiave di servizio) fa analizzare a OpenAI (modello
+-- omni-moderation-latest) ogni foto, i fotogrammi di ogni video, le anteprime e la didascalia, e scrive qui
+-- l'esito. Un post si crea solo con file e didascalia controllati (check_media_urls): "ok" esce subito,
+-- "review" esce nascosto (hidden_reason = 'revisione') finché l'amministratore non lo approva, "blocked" non
+-- esce (i file li cancella subito la funzione). Lo stesso vale per la foto profilo, che però deve essere "ok".
+-- Dall'app non si legge né si scrive niente: scrive solo la funzione, legge la coda dell'amministratore.
+create table if not exists public.media_checks (
+  kind text not null check (kind in ('file', 'avatar', 'caption')),
+  -- file: percorso nel bucket media; avatar: nel bucket avatars; caption: <autore>/<sha256 della didascalia>.
+  path text not null check (length(path) <= 300),
+  owner_id uuid not null references public.profiles(id) on delete cascade,
+  verdict text not null check (verdict in ('ok', 'review', 'blocked')),
+  -- Le categorie che hanno deciso l'esito (es. sexual, violence/graphic) e i punteggi più alti, arrotondati.
+  categories text[] not null default '{}',
+  scores jsonb not null default '{}'::jsonb check (length(scores::text) <= 2000),
+  -- Perché "review" senza punteggi: 'non_disponibile' (chiave mancante, OpenAI non risponde),
+  -- 'senza_fotogrammi' (video senza immagini da controllare), 'troppo_grande'.
+  note text check (length(note) <= 40),
+  -- Il file controllato (id in storage.objects): cancellato e ricaricato con lo stesso nome, l'esito non vale più.
+  object_id uuid,
+  checked_at timestamptz not null default now(),
+  primary key (kind, path)
+);
+create index if not exists idx_media_checks_owner on public.media_checks (owner_id, checked_at);
+create index if not exists idx_media_checks_age on public.media_checks (checked_at);
+-- La coda di revisione dell'amministratore, senza leggere tutti i post.
+create index if not exists idx_posts_review on public.posts (created_at) where hidden_reason = 'revisione';
+alter table public.media_checks enable row level security;
+revoke all on public.media_checks from anon, authenticated;
+
+-- Dove si salva l'esito di una didascalia: l'autore e l'impronta del testo esatto (non il testo).
+create or replace function public.caption_check_path(p_owner uuid, p_caption text)
+returns text language sql immutable as $$
+  select p_owner::text || '/' || encode(sha256(convert_to(coalesce(p_caption, ''), 'UTF8')), 'hex');
+$$;
+
+-- L'id di un file nello Storage, o null se non c'è (e sempre null nei test locali, dove lo Storage non c'è).
+create or replace function public.storage_object_id(p_bucket text, p_path text)
+returns uuid language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_id uuid;
+begin
+  if to_regclass('storage.objects') is null then return null; end if;
+  execute 'select id from storage.objects where bucket_id = $1 and name = $2' into v_id using p_bucket, p_path;
+  return v_id;
+end;
+$$;
+
+-- Il file (o la didascalia) ha un esito valido di chi pubblica? "review" vale solo se p_review_ok.
+create or replace function public.media_check_passed(p_kind text, p_owner uuid, p_path text, p_review_ok boolean)
+returns boolean language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_check media_checks;
+begin
+  select * into v_check from media_checks where kind = p_kind and path = p_path;
+  if not found or v_check.owner_id <> p_owner or v_check.verdict = 'blocked'
+     or (v_check.verdict = 'review' and not p_review_ok) then
+    return false;
+  end if;
+  -- Su Supabase: deve essere proprio il file controllato, non uno caricato dopo con lo stesso nome.
+  if p_kind <> 'caption' and to_regclass('storage.objects') is not null then
+    return v_check.object_id is not null
+       and v_check.object_id = public.storage_object_id(case p_kind when 'avatar' then 'avatars' else 'media' end, p_path);
+  end if;
+  return true;
+end;
+$$;
+
+-- Un post con almeno un file (o la didascalia) da rivedere esce nascosto, in attesa dell'amministratore.
+create or replace function public.post_needs_review(p_author uuid, p_media jsonb, p_caption text)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (
+    select 1 from media_checks c
+     where c.owner_id = p_author and c.verdict = 'review'
+       and ((c.kind = 'file' and c.path in (select public.media_paths(p_media)))
+            or (c.kind = 'caption' and coalesce(p_caption, '') <> '' and c.path = public.caption_check_path(p_author, p_caption)))
+  );
+$$;
+
+-- Per la coda dell'amministratore: perché il controllo automatico ha messo il post in revisione.
+create or replace function public.post_review_info(p_post_id uuid)
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  with c as (
+    select c.* from posts p join media_checks c on c.owner_id = p.author_id
+     where p.id = p_post_id
+       and ((c.kind = 'file' and c.path in (select public.media_paths(p.media)))
+            or (c.kind = 'caption' and c.path = public.caption_check_path(p.author_id, p.caption)))
+  )
+  select jsonb_build_object(
+    'categories', coalesce((select jsonb_agg(distinct x) from c, unnest(c.categories) x), '[]'::jsonb),
+    'notes', coalesce((select jsonb_agg(distinct c.note) from c where c.note is not null), '[]'::jsonb));
+$$;
+
+-- Dalla funzione verifica-eta, prima di chiamare OpenAI: chi chiama può pubblicare, non esagera, i file sono
+-- suoi, esistono e non sono già pubblicati. Restituisce l'id di ogni file (letto PRIMA del controllo: se il
+-- file cambia durante il controllo, l'id non corrisponde più e il post viene rifiutato).
+create or replace function public.media_check_start(p_owner uuid, p_kind text, p_paths text[])
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_path text;
+  v_id uuid;
+  v_ids jsonb := '{}'::jsonb;
+begin
+  if not public.can_act(p_owner) then raise exception 'Per pubblicare serve la verifica dell’età.'; end if;
+  if p_kind not in ('file', 'avatar') or coalesce(array_length(p_paths, 1), 0) not between 1 and 20 then
+    raise exception 'Richiesta non valida.';
+  end if;
+  -- Al massimo 30 controlli all'ora per persona (un post da 10 elementi è un controllo solo).
+  if (select count(*) from rate_events where user_id = p_owner and kind = 'modera' and at > now() - interval '1 hour') >= 30 then
+    raise exception 'Troppe pubblicazioni in poco tempo: riprova tra un po’.';
+  end if;
+  insert into rate_events (user_id, kind) values (p_owner, 'modera');
+  foreach v_path in array p_paths loop
+    if split_part(v_path, '/', 1) <> p_owner::text then raise exception 'Richiesta non valida.'; end if;
+    if (p_kind = 'file' and public.media_in_use(v_path)) or (p_kind = 'avatar' and public.avatar_in_use(v_path)) then
+      raise exception 'Questo file è già pubblicato.';
+    end if;
+    v_id := public.storage_object_id(case p_kind when 'avatar' then 'avatars' else 'media' end, v_path);
+    if v_id is null and to_regclass('storage.objects') is not null then raise exception 'File non trovato: riprova.'; end if;
+    v_ids := v_ids || jsonb_build_object(v_path, v_id);
+  end loop;
+  return v_ids;
+end;
+$$;
+
+-- Dalla funzione verifica-eta, dopo il controllo: un esito per file (e uno per la didascalia).
+-- p_items = [{ kind, path | caption, verdict, categories, scores, note, object_id }]
+create or replace function public.media_check_save(p_owner uuid, p_items jsonb)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_item jsonb;
+  v_path text;
+begin
+  for v_item in select * from jsonb_array_elements(p_items) loop
+    v_path := case when v_item->>'kind' = 'caption' then public.caption_check_path(p_owner, v_item->>'caption') else v_item->>'path' end;
+    if split_part(coalesce(v_path, ''), '/', 1) <> p_owner::text then raise exception 'Richiesta non valida.'; end if;
+    insert into media_checks (kind, path, owner_id, verdict, categories, scores, note, object_id, checked_at)
+    values (v_item->>'kind', v_path, p_owner, v_item->>'verdict',
+            coalesce((select array_agg(x) from jsonb_array_elements_text(coalesce(v_item->'categories', '[]'::jsonb)) x), '{}'),
+            coalesce(v_item->'scores', '{}'::jsonb), v_item->>'note', nullif(v_item->>'object_id', '')::uuid, now())
+    on conflict (kind, path) do update
+      set owner_id = excluded.owner_id, verdict = excluded.verdict, categories = excluded.categories,
+          scores = excluded.scores, note = excluded.note, object_id = excluded.object_id, checked_at = now();
+  end loop;
+end;
+$$;
+
 /**
  * Foto e video di un post devono stare nel bucket "media", nella cartella dell'autore: niente immagini
  * da siti esterni (che vedrebbero l'indirizzo di chi guarda, o cambierebbero dopo la moderazione).
@@ -2311,6 +2506,13 @@ begin
   if exists (select 1 from public.media_paths(new.media) x where public.media_in_use(x))
      or (select count(*) <> count(distinct x) from public.media_paths(new.media) x) then
     raise exception 'I file del post devono essere caricati dall''app.' using errcode = 'check_violation';
+  end if;
+  -- Controllo automatico (14b): ogni file e la didascalia devono avere un esito "ok" o "review" di chi pubblica,
+  -- sul file così com'è adesso. Senza, il post non si crea: nemmeno un'app modificata può saltare il controllo.
+  -- Con un "review" il post esce nascosto (lo decide force_server_fields, che gira dopo questo trigger).
+  if exists (select 1 from public.media_paths(new.media) x where not public.media_check_passed('file', new.author_id, x, true))
+     or (new.caption <> '' and not public.media_check_passed('caption', new.author_id, public.caption_check_path(new.author_id, new.caption), true)) then
+    raise exception 'Il contenuto non è stato controllato: riprova a pubblicare.' using errcode = 'check_violation';
   end if;
   return new;
 end;
@@ -2953,6 +3155,11 @@ begin
       execute 'select exists (select 1 from storage.objects where bucket_id = ''avatars'' and name = $1)' into v_exists using p_avatar_path;
       if not v_exists then raise exception 'Foto non valida.'; end if;
     end if;
+    -- Controllo automatico (14b): la foto profilo la vedono tutti, ovunque, e non ha una coda di revisione.
+    -- Serve un esito "ok" su questo file; "review" (anche con il controllo non disponibile) non basta.
+    if p_avatar_path is distinct from v_pr.avatar_path and not public.media_check_passed('avatar', v_uid, p_avatar_path, false) then
+      raise exception 'La foto non ha superato il controllo automatico: scegline un’altra.';
+    end if;
     v_avatar := p_avatar_path;
   end if;
   -- La foto di prima va cancellata dallo Storage.
@@ -3514,15 +3721,37 @@ revoke all on function public.identity_apply(uuid, text, text, uuid) from public
 grant execute on function public.identity_provider_start(uuid, text) to service_role;
 grant execute on function public.identity_provider_result(uuid, text, text, date, text, text, text) to service_role;
 grant execute on function public.profile_posts(text, text, timestamptz, int) to authenticated;
+-- Controllo automatico dei contenuti (14b): lo scrive solo la funzione verifica-eta (chiave di servizio).
+revoke all on public.media_checks from anon, authenticated;
+revoke all on function public.media_check_start(uuid, text, text[]) from public, anon, authenticated;
+revoke all on function public.media_check_save(uuid, jsonb) from public, anon, authenticated;
+revoke all on function public.media_check_passed(text, uuid, text, boolean) from public, anon, authenticated;
+revoke all on function public.post_needs_review(uuid, jsonb, text) from public, anon, authenticated;
+revoke all on function public.post_review_info(uuid) from public, anon, authenticated;
+revoke all on function public.storage_object_id(text, text) from public, anon, authenticated;
+grant execute on function public.media_check_start(uuid, text, text[]) to service_role;
+grant execute on function public.media_check_save(uuid, jsonb) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 23) Segnalazioni: conservate al massimo 12 mesi (informativa privacy), niente copie di chi se ne va
 -- ---------------------------------------------------------------------------
 -- Le segnalazioni chiuse da più di 12 mesi si cancellano (la chiama la pulizia notturna, setup-produzione.sql).
+-- Esiti del controllo automatico (14b): restano finché il file è in un post o è la foto profilo; quelli di file
+-- mai pubblicati, bloccati, di post eliminati e delle didascalie si cancellano dopo 7 giorni.
+create or replace function public.media_checks_retention()
+returns void language sql security definer set search_path = public, pg_temp as $$
+  delete from public.media_checks
+   where checked_at < now() - interval '7 days'
+     and not (kind = 'file' and public.media_in_use(path)) and not (kind = 'avatar' and public.avatar_in_use(path));
+$$;
+revoke all on function public.media_checks_retention() from public, anon, authenticated;
+
+-- (Pulisce anche gli esiti del controllo automatico: la pulizia notturna chiama già questa funzione.)
 create or replace function public.reports_retention()
 returns void language sql security definer set search_path = public, pg_temp as $$
   delete from public.reports where status <> 'open' and coalesce(resolved_at, created_at) < now() - interval '12 months';
   delete from public.user_reports where status <> 'open' and coalesce(resolved_at, created_at) < now() - interval '12 months';
+  select public.media_checks_retention();
 $$;
 revoke all on function public.reports_retention() from public, anon, authenticated;
 

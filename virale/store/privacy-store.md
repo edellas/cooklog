@@ -4,7 +4,10 @@ Coerenti con l'Informativa privacy (`src/legal/docs.ts`) e con quello che il cod
 nessun SDK di analisi o pubblicità, nessun tracciamento tra app, nessuna posizione, nessun contatto.
 Le notifiche push (facoltative) usano un token del telefono, inviato tramite Expo, Apple e Google solo per
 recapitarle. La verifica automatica dell'età (Didit, facoltativa) fa un **confronto biometrico del volto** tra
-selfie e documento, solo con il consenso esplicito dell'utente. Se aggiungi servizi (es. Sentry, analytics)
+selfie e documento, solo con il consenso esplicito dell'utente. Prima della pubblicazione foto, fotogrammi dei video,
+didascalie e foto profilo passano dal controllo automatico di OpenAI (Moderation API, chiamata solo dal server): è
+un fornitore che tratta i dati per nostro conto, non una "condivisione", e non cambia le risposte qui sotto
+(i dati sono gli stessi: foto, video, didascalie). Se aggiungi servizi (es. Sentry, analytics)
 **aggiorna queste risposte e l'informativa**.
 
 ---
@@ -43,7 +46,7 @@ ricerca, diagnostica, altri dati sensibili, identificatori pubblicitari).
 - La tua app raccoglie o condivide dati utente dei tipi richiesti? **Sì**
 - Tutti i dati raccolti sono criptati in transito? **Sì** (HTTPS)
 - Fornite un modo per richiedere l'eliminazione dei dati? **Sì** — nell'app e a <sito>/eliminazione-account.html
-- Condivisione con terze parti: **No** (Supabase, Didit ed Expo sono fornitori che trattano i dati per tuo conto: non conta come "condivisione")
+- Condivisione con terze parti: **No** (Supabase, Didit, OpenAI ed Expo sono fornitori che trattano i dati per tuo conto: non conta come "condivisione")
 
 | Categoria → tipo | Raccolto | Condiviso | Facoltativo? | Scopo |
 |---|---|---|---|---|
@@ -52,8 +55,8 @@ ricerca, diagnostica, altri dati sensibili, identificatori pubblicitari).
 | Informazioni personali → Altre informazioni (documento d'identità e selfie, solo per la verifica dell'età, cancellati dopo la decisione; con la verifica automatica Didit confronta il volto del selfie con la foto del documento, un trattamento biometrico fatto solo con il consenso esplicito) | Sì | No | Obbligatorio per pubblicare | Prevenzione frodi, sicurezza e conformità |
 | Informazioni personali → ID utente | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
 | ID dispositivo o altri ID → ID dispositivo (token per le notifiche push) | Sì | No | Facoltativo (solo con le notifiche attive) | Funzionalità app (notifiche); non per pubblicità né tracciamento |
-| Foto e video → Foto (post e foto profilo) | Sì | No | Facoltativo | Funzionalità app |
-| Foto e video → Video | Sì | No | Facoltativo | Funzionalità app |
+| Foto e video → Foto (post e foto profilo) | Sì | No | Facoltativo | Funzionalità app, Sicurezza (controllo automatico prima della pubblicazione) |
+| Foto e video → Video | Sì | No | Facoltativo | Funzionalità app, Sicurezza (controllo automatico prima della pubblicazione) |
 | Attività nelle app → Interazioni con l'app | Sì | No | Obbligatorio | Funzionalità app, Prevenzione frodi |
 | Attività nelle app → Altri contenuti generati dagli utenti (commenti, didascalie, bio) | Sì | No | Facoltativo | Funzionalità app |
 | Messaggi → Email | Solo se l'utente scrive al supporto | No | Facoltativo | Supporto |

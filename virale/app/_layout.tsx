@@ -3,17 +3,18 @@ import { Stack, useGlobalSearchParams, useRouter, useSegments, type Href } from 
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
-import { Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { AppState, Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ToastProvider, useToast } from '../src/components/Toast';
 import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
-import { isDemo, logout } from '../src/services/api';
+import { getTodayCover, isDemo, logout } from '../src/services/api';
 import { ownerEmail, ownerMissing } from '../src/legal/docs';
 import { refreshPushToken, usePushNavigation } from '../src/services/push';
 import { onStorageFull } from '../src/services/storage';
+import { coverSeenDay } from '../src/state/coverDuty';
 import { noteInAppNavigation } from '../src/state/nav';
 import { flushViews } from '../src/state/views';
 import { FONTS } from '../src/design/fonts';
@@ -48,6 +49,7 @@ export default function RootLayout() {
             <View style={styles.outer}>
               <View style={[styles.frame, { maxWidth: frameMax }]}>
                 <Gate />
+                <CoverDuty />
                 <PushBridge />
                 <StorageWarning />
                 <Offline />
@@ -56,6 +58,7 @@ export default function RootLayout() {
                   <Stack.Screen name="(tabs)" />
                   <Stack.Screen name="benvenuto" options={{ animation: 'fade', gestureEnabled: false }} />
                   <Stack.Screen name="scatta" options={{ presentation: 'fullScreenModal' }} />
+                  <Stack.Screen name="copertina-del-giorno" options={{ presentation: 'fullScreenModal', animation: 'fade', gestureEnabled: false }} />
                   <Stack.Screen
                     name="commenti/[postId]"
                     options={{
@@ -168,6 +171,50 @@ function Gate() {
       router.replace(to);
     }
   }, [me, router, segments, params]);
+  return null;
+}
+
+/** Schermate durante le quali la copertina obbligatoria aspetta: non si interrompe chi sta finendo qualcosa. */
+const COVER_WAITS = new Set(['benvenuto', 'legale', 'copertina-del-giorno', 'scatta', 'verifica', 'modifica-profilo']);
+
+/**
+ * Copertina obbligatoria: quando esce una copertina nuova, al primo accesso (apertura dell'app, ritorno
+ * dall'esterno, inizio di un nuovo giorno di gara) si apre a tutto schermo e va guardata tutta prima di
+ * fare altro. Una volta vista, per quella copertina non ricompare.
+ */
+function CoverDuty() {
+  const { me, status } = useSession();
+  const segments = useSegments();
+  const router = useRouter();
+  const id = me?.id;
+  const day = status?.settings.contestDay;
+  const screen = segments[0];
+  const where = useRef(screen);
+  where.current = screen;
+  const busy = useRef(false);
+
+  useEffect(() => {
+    if (!id) return;
+    const check = async () => {
+      if (busy.current || COVER_WAITS.has(where.current ?? '')) return;
+      busy.current = true;
+      try {
+        const cover = await getTodayCover().catch(() => null);
+        if (!cover || COVER_WAITS.has(where.current ?? '')) return;
+        if ((await coverSeenDay(id)) === cover.featuredOn) return;
+        noteInAppNavigation();
+        router.push('/copertina-del-giorno' as Href);
+      } finally {
+        busy.current = false;
+      }
+    };
+    void check();
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') void check();
+    });
+    return () => sub.remove();
+    // Si ricontrolla anche uscendo da una schermata che faceva aspettare (pubblicazione, verifica…).
+  }, [id, day, router, screen]);
   return null;
 }
 
