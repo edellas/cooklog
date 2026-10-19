@@ -32,7 +32,7 @@ import { atTime } from "../src/design/format";
 import { charCount, clampChars } from "../src/design/text";
 import { duration, ease } from "../src/design/motion";
 import { color, radius, space } from "../src/design/tokens";
-import { contestOpen, getMyEntry, isDemo, publish, PublishAborted, type PublishPhase } from "../src/services/api";
+import { contestOpen, getMyEntry, IN_REVIEW, isDemo, publish, PublishAborted, type PublishPhase } from "../src/services/api";
 import { getJson, removeKey, setJson } from "../src/services/storage";
 import { useSession } from "../src/state/session";
 import { toggleMute, useMuted } from "../src/state/sound";
@@ -81,6 +81,7 @@ export default function CreateScreen() {
     post: Post;
     entry: MyEntry | null;
     contestError: string | null;
+    review: boolean;
   } | null>(null);
   const reveal = status?.settings.revealMinutes ?? 0;
   const closed = !contestOpen(reveal);
@@ -355,6 +356,7 @@ export default function CreateScreen() {
         post={done.post}
         entry={done.entry}
         contestError={done.contestError}
+        review={done.review}
         onClose={goBack}
         onGo={() => {
           // Si chiude questa schermata e si va alla scheda Provini (non una seconda barra di schede sopra).
@@ -631,7 +633,9 @@ export default function CreateScreen() {
                 <Txt variant="label" tone={color.canvas}>
                   {phase === "conclude" || progress === null
                     ? "Pubblico…"
-                    : `${phase === "prepara" ? "Preparo il video…" : "Carico…"} ${Math.round(progress * 100)}%`}
+                    : phase === "controlla"
+                      ? "Controllo i contenuti…"
+                      : `${phase === "prepara" ? "Preparo il video…" : "Carico…"} ${Math.round(progress * 100)}%`}
                 </Txt>
               </View>
             ) : (
@@ -694,12 +698,15 @@ function Done({
   post,
   entry,
   contestError,
+  review,
   onClose,
   onGo,
 }: {
   post: Post;
   entry: MyEntry | null;
   contestError: string | null;
+  /** Il controllo automatico l'ha messo in revisione: è nascosto finché non viene approvato. */
+  review: boolean;
   onClose: () => void;
   onGo: () => void;
 }) {
@@ -738,16 +745,18 @@ function Done({
       </Animated.View>
       <View style={{ gap: space[2], alignItems: "center" }}>
         <Txt variant={small ? "title" : "heading"} style={{ textAlign: "center" }}>
-          {entry ? "Sei nei Provini." : "Pubblicato."}
+          {review ? "In revisione." : entry ? "Sei nei Provini." : "Pubblicato."}
         </Txt>
         <Txt
           variant="body"
           tone={color.paperDim}
           style={{ textAlign: "center", maxWidth: 320 }}
         >
-          {entry
-            ? "Da adesso il tuo post arriva a un primo pubblico. Se piace, sale di gradino."
-            : "Lo trovi nel tuo profilo e lo vedono i tuoi follower."}
+          {review
+            ? IN_REVIEW
+            : entry
+              ? "Da adesso il tuo post arriva a un primo pubblico. Se piace, sale di gradino."
+              : "Lo trovi nel tuo profilo e lo vedono i tuoi follower."}
         </Txt>
         {contestError ? (
           <Txt

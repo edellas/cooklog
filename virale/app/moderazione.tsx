@@ -26,6 +26,26 @@ import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 
 const label = (r: string) => REPORT_REASONS.find((x) => x.key === r)?.label ?? r;
+/** Le categorie del controllo automatico (OpenAI) dette in italiano. */
+const CHECK_LABEL: [RegExp, string][] = [
+  [/^sexual\/minors$/, 'minori'],
+  [/^sexual/, 'contenuti sessuali'],
+  [/^violence\/graphic$/, 'violenza esplicita'],
+  [/^violence/, 'violenza'],
+  [/^self-harm/, 'autolesionismo'],
+  [/^hate/, 'odio'],
+  [/^harassment/, 'molestie'],
+  [/^illicit/, 'attività illecite'],
+];
+const NOTE_LABEL: Record<string, string> = {
+  non_disponibile: 'controllo automatico non disponibile',
+  senza_fotogrammi: 'video senza fotogrammi da controllare',
+  troppo_grande: 'file troppo grande da controllare',
+  formato: 'formato non controllabile',
+};
+const reviewWhy = (r: NonNullable<ModItem['review']>) =>
+  [...new Set([...r.categories.map((c) => CHECK_LABEL.find(([re]) => re.test(c))?.[1] ?? c), ...r.notes.map((n) => NOTE_LABEL[n] ?? n)])].join(', ') ||
+  'da controllare';
 type Action = 'dismiss' | 'remove' | 'ban';
 type Tab = 'post' | 'altro';
 
@@ -34,6 +54,8 @@ type Tab = 'post' | 'altro';
  * Gli store chiedono di agire entro 24 ore: “Va bene” lascia tutto com'è (il post torna visibile e in gara),
  * “Rimuovi” toglie il contenuto (il profilo viene azzerato), “Espelli” rimuove e blocca l'autore per sempre.
  * L'autore riceve una notifica con il motivo.
+ * L'amministratore vede in cima i post messi in revisione dal controllo automatico (nascosti): “Approva” li
+ * rende visibili, “Rimuovi” li toglie.
  */
 export default function Moderation() {
   const insets = useSafeAreaInsets();
@@ -90,7 +112,13 @@ export default function Moderation() {
       item.post.id,
       action,
       () => modResolve(item.post.id, action),
-      action === 'dismiss' ? 'Post ripristinato.' : action === 'remove' ? 'Post rimosso.' : `@${item.post.author.username} espulso.`,
+      action === 'dismiss'
+        ? item.review
+          ? 'Post approvato: ora è visibile.'
+          : 'Post ripristinato.'
+        : action === 'remove'
+          ? 'Post rimosso.'
+          : `@${item.post.author.username} espulso.`,
       () => setItems((list) => (list ?? []).filter((x) => x.post.id !== item.post.id)),
     );
   const actOther = (item: UserReportItem, action: Action) => {
@@ -110,11 +138,12 @@ export default function Moderation() {
     );
   };
 
-  const buttons = (key: string, onAct: (a: Action) => void) => (
+  /** review: post in revisione dal controllo automatico, solo "Approva" (diventa visibile) e "Rimuovi". */
+  const buttons = (key: string, onAct: (a: Action) => void, review = false) => (
     <View style={styles.actions}>
       <Press style={[styles.btn, styles.ok]} onPress={() => onAct('dismiss')} disabled={busy !== null} accessibilityRole="button">
         <Txt variant="meta" tone={color.canvas} style={styles.bold}>
-          Va bene
+          {review ? 'Approva' : 'Va bene'}
         </Txt>
       </Press>
       <Press style={[styles.btn, styles.rm]} onPress={() => onAct('remove')} disabled={busy !== null} accessibilityRole="button">
@@ -122,11 +151,13 @@ export default function Moderation() {
           Rimuovi
         </Txt>
       </Press>
-      <Press style={[styles.btn, styles.ban, confirmBan === key && styles.banOn]} onPress={() => onAct('ban')} disabled={busy !== null} accessibilityRole="button">
-        <Txt variant="meta" tone={confirmBan === key ? color.paper : color.matita} style={styles.bold}>
-          {confirmBan === key ? 'Conferma: espelli per sempre' : 'Espelli'}
-        </Txt>
-      </Press>
+      {review ? null : (
+        <Press style={[styles.btn, styles.ban, confirmBan === key && styles.banOn]} onPress={() => onAct('ban')} disabled={busy !== null} accessibilityRole="button">
+          <Txt variant="meta" tone={confirmBan === key ? color.paper : color.matita} style={styles.bold}>
+            {confirmBan === key ? 'Conferma: espelli per sempre' : 'Espelli'}
+          </Txt>
+        </Press>
+      )}
     </View>
   );
 
@@ -145,7 +176,7 @@ export default function Moderation() {
   const empty = (
     <View style={{ alignItems: 'center', gap: space[2], marginTop: space[10] }}>
       <Icon name="check" size={32} color={color.verde} />
-      <Txt variant="title">Nessuna segnalazione aperta</Txt>
+      <Txt variant="title">{tab === 'post' ? 'Niente da controllare' : 'Nessuna segnalazione aperta'}</Txt>
     </View>
   );
   const demoNote = isDemo ? (
@@ -202,8 +233,19 @@ export default function Moderation() {
                   <Txt variant="small" tone={color.paperDim} numberOfLines={2}>
                     {item.post.caption || 'Senza didascalia'}
                   </Txt>
-                  {reportLine(item.reports, item.reasons, item.firstAt, item.hidden ? ' · già nascosto' : '')}
-                  {buttons(item.post.id, (a) => actPost(item, a))}
+                  {item.review ? (
+                    <>
+                      <Txt variant="meta" tone={color.matita}>
+                        In revisione · {reviewWhy(item.review)}
+                      </Txt>
+                      <Txt variant="meta" tone={color.paperFaint}>
+                        Pubblicato {timeAgo(item.firstAt) === 'ora' ? 'adesso' : `${timeAgo(item.firstAt)} fa`} · nascosto finché non decidi
+                      </Txt>
+                    </>
+                  ) : (
+                    reportLine(item.reports, item.reasons, item.firstAt, item.hidden ? ' · già nascosto' : '')
+                  )}
+                  {buttons(item.post.id, (a) => actPost(item, a), Boolean(item.review))}
                 </View>
               </View>
             )}

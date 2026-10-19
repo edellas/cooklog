@@ -28,6 +28,27 @@ Questa versione aggiunge foto profilo, ricerca, segnalazione di commenti e profi
 password, notifiche push, pulizia automatica dei file e pagina per i link condivisi. Si fa tutto dal browser
 (anche del telefono): supabase.com, expo.dev, GitHub, Firebase.
 
+**Controllo automatico dei contenuti (OpenAI) — fallo per primo, in quest'ordine.** Prima di pubblicare, foto,
+fotogrammi dei video, didascalie e foto profilo passano dal servizio di moderazione di OpenAI (modello
+`omni-moderation-latest`, **gratuito**: non consuma credito). Lo chiama solo la funzione `verifica-eta`: nell'app
+non c'è nessuna chiave.
+
+1. Su <https://platform.openai.com> (accedi o crea l'account) → **API keys** → **Create new secret key**: nome
+   "Virale", progetto di default. Se scegli permessi limitati ("Restricted"), basta l'accesso a **Moderations**.
+   Copia la chiave (`sk-…`): si vede una volta sola.
+2. **Supabase → Edge Functions → Secrets** → aggiungi `OPENAI_API_KEY` con quella chiave.
+3. **Supabase → Edge Functions → `verifica-eta`**: incolla di nuovo tutto `supabase/functions/verifica-eta/index.ts`
+   e ripubblica ("Verify JWT" resta **spento**). Va fatto **prima** dello schema: con lo schema nuovo il database
+   accetta solo post controllati dalla funzione nuova.
+4. **Supabase → SQL Editor**: riesegui `supabase/schema.sql` (crea la tabella `media_checks` e le regole; non perde dati).
+5. Controllo: apri `https://<il-tuo-progetto>.supabase.co/functions/v1/verifica-eta/stato` → `controllo_contenuti`
+   deve dire "attivo (OpenAI accetta la chiave)". Poi pubblica dall'app un post di prova: deve uscire subito
+   (se dice "in revisione", la chiave non va: guarda Edge Functions → `verifica-eta` → Logs).
+
+Senza la chiave (o se OpenAI non risponde) nessun post esce senza controllo: va **in revisione**, nascosto, e compare
+in cima a Impostazioni → Moderazione (scheda Post) con **Approva** / **Rimuovi**; le foto profilo nuove non si
+possono salvare. Regole e soglie sono all'inizio della sezione "Controllo automatico" in `index.ts`.
+
 1. **Supabase → piano Pro** (Organization → Billing). Valuta lo "Spend cap".
 2. **Supabase → SQL Editor**:
    1. incolla ed esegui il nuovo `supabase/schema.sql` (aggiorna senza perdere dati; si può rieseguire);
@@ -77,7 +98,8 @@ password, notifiche push, pulizia automatica dei file e pagina per i link condiv
     falla rileggere all'avvocato.
 11. **Schede degli store**: aggiorna le risposte privacy secondo `store/privacy-store.md` e carica i nuovi screenshot.
 12. **Moderazione ogni giorno**: Impostazioni → Segnalazioni da rivedere, **entrambe** le schede (Post; Commenti e
-    profili), entro 24 ore. Le notifiche push allo staff ti avvisano (al massimo una all'ora).
+    profili), entro 24 ore. In cima alla scheda Post ci sono i post messi in revisione dal controllo automatico:
+    restano nascosti (e fuori dalla gara) finché non tocchi **Approva** o **Rimuovi**. Le notifiche push allo staff ti avvisano (al massimo una all'ora).
 13. **Nome utente ufficiale**: i nomi che cominciano con `virale` sono riservati. Per avere `@virale`, registrati con
     un altro nome e rinomina dal SQL Editor (anche l'email interna, che segue il nome utente):
     ```sql
@@ -176,6 +198,10 @@ contenuti degli utenti, aperto dai 14 anni.
    La stessa funzione fa anche da **link di condivisione**: quando qualcuno condivide un post, il messaggio
    contiene `https://<il-tuo-progetto>.supabase.co/functions/v1/verifica-eta/apri/post/<id>`, che apre il
    post nell'app di chi lo riceve. Anche se non usi Didit, pubblica la funzione (passo 5) perché i link funzionino.
+8. **Controllo automatico dei contenuti (OpenAI)** — obbligatorio: la stessa funzione `verifica-eta` controlla foto,
+   video e didascalie prima che escano, e senza la funzione pubblicata **nessuno può pubblicare**. Crea la chiave e
+   aggiungi il segreto `OPENAI_API_KEY` come spiegato nella sezione 0 ("Controllo automatico dei contenuti").
+   Senza chiave i post escono solo dopo la tua approvazione (Impostazioni → Moderazione).
    **Ogni volta che il file `index.ts` cambia**, aprila su Supabase, incolla di nuovo tutto il file e ripubblica.
 8. **Project Settings → API** (o *API Keys*): copia
    - **Project URL** (tipo `https://abcd1234.supabase.co`)

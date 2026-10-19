@@ -87,6 +87,7 @@ npm run check:release   # dati del titolare, sito, pagine legali: cosa manca pri
   - segnalazione di commenti e profili, coda di moderazione, notifiche di rimozione con il motivo;
   - commenti coerenti (conteggi, blocchi, espulsi), ricerca di persone, Archivio a pagine con il numero dell'uscita;
   - Esplora che non finisce, pulizia dei file programmata (solo con la chiave di servizio);
+  - controllo automatico dei contenuti: niente post senza esito del controllo (né con quello di un altro utente o con una didascalia diversa), "review" pubblica nascosto e fuori gara fino ad "Approva", gli esiti li scrive solo la chiave di servizio;
   - codice di recupero (solo l'impronta, una volta sola, 5 tentativi l'ora), notifiche push (preferenze, ore di silenzio 22–8, raggruppamento), "Non mi interessa", completamento dei video con un tempo minimo.
 
   Lo schema si può rieseguire su un database esistente: aggiorna senza perdere dati.
@@ -97,7 +98,7 @@ npm run check:release   # dati del titolare, sito, pagine legali: cosa manca pri
   ```
 - **Carico**: con 20.000 post in gara, servire 10 Provini (già composti in JSON) e registrare 10 voti richiede circa 20 ms su un core (Postgres 16 locale, senza tuning).
 - **App web**: percorsi verificati in Chromium automatizzato (registrazione e codice di recupero, copertina, provini, cerchio, commenti, segnalazioni, ricerca, modifica del profilo, pubblicazione con foto e video e annullamento, profilo, archivio, regole, mezzanotte simulata, schermi piccoli, orizzontale e tablet). Quel Chromium non ha il codec H.264: nei test i video demo si servono come WebM.
-- **Funzione `verifica-eta`** (Deno): le rotte `/lavori` (pulizia dei file e invio delle notifiche push a blocchi di 100), `/apri` e `/recupero` sono provate con richieste finte (supabase-js locale, senza rete).
+- **Funzione `verifica-eta`** (Deno): le rotte `/lavori` (pulizia dei file e invio delle notifiche push a blocchi di 100), `/apri`, `/recupero` e l'azione `modera` (controllo dei contenuti con OpenAI: soglie, fotogrammi dei video, didascalia, OpenAI assente o senza chiave) sono provate con richieste finte (supabase-js locale, senza rete).
 - **Sul telefono** vanno provati a mano: un video da 60 s (oltre 48 MB l'app chiede di accorciarlo), notifiche push, link condivisi aperti da WhatsApp, "Password dimenticata?", tastiera su iPhone (vedi PUBBLICARE.md, §6).
 
 ## Produzione (milioni di utenti)
@@ -105,7 +106,7 @@ npm run check:release   # dati del titolare, sito, pagine legali: cosa manca pri
 La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](PUBBLICARE.md)**. In breve:
 
 1. Crea un progetto **Supabase** in UE (piano Pro: con i video il piano gratuito non regge) ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, `documenti` e `avatars`, permessi sui file, chiusura della gara all'orario della copertina, pulizie e lavori ogni minuto con `pg_cron` e `pg_net`).
-2. Nel **Vault** i segreti `virale_url` e `virale_cron_secret`; nella funzione `verifica-eta` i segreti `VIRALE_CRON_SECRET` (lo stesso valore), `VIRALE_SITO` e, facoltativo, `EXPO_ACCESS_TOKEN`.
+2. Nel **Vault** i segreti `virale_url` e `virale_cron_secret`; nella funzione `verifica-eta` i segreti `VIRALE_CRON_SECRET` (lo stesso valore), `VIRALE_SITO`, `OPENAI_API_KEY` (controllo automatico dei contenuti prima della pubblicazione, gratuito) e, facoltativo, `EXPO_ACCESS_TOKEN`.
 3. **Authentication → Providers**: Email attivo con *Confirm email* spento (si accede con nome utente e password), accessi anonimi spenti.
 4. Variabili d'ambiente EAS: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, i dati del titolare `EXPO_PUBLIC_OWNER_*` e, per le notifiche su Android, il file `GOOGLE_SERVICES_JSON` (lo legge `app.config.js`; senza, la build riesce ma Android non riceve notifiche).
 5. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.

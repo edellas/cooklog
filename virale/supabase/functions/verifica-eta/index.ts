@@ -15,12 +15,16 @@
 //                                  notifiche push (servizio di Expo).
 //   POST /verifica-eta/recupero  → password dimenticata: { username, code, password } con il codice di
 //                                  recupero (vale una volta sola). Cambia la password e scollega i dispositivi.
+//   POST /verifica-eta           con { "action": "modera", paths, frames, caption } (utente connesso): controllo
+//                                  automatico dei contenuti PRIMA di pubblicare (OpenAI Moderation, gratuito).
+//                                  Salva un esito per file in media_checks; senza esito il database non crea il post.
 //
 // Segreti da impostare in Supabase → Edge Functions → Secrets:
 //   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET (verifica automatica dell'età)
 //   VIRALE_CRON_SECRET (lo stesso valore di "virale_cron_secret" nel Vault: vedi setup-produzione.sql)
 //   VIRALE_SITO (facoltativo: l'indirizzo del sito con apri.html, es. https://nome.github.io/cooklog)
 //   EXPO_ACCESS_TOKEN (facoltativo: serve solo se su expo.dev è attivo "Enhanced Security for Push Notifications")
+//   OPENAI_API_KEY (controllo automatico di foto, video e didascalie; senza, ogni post va in revisione)
 // (SUPABASE_URL e la chiave di servizio ci sono già.)
 // La funzione va creata con "Verify JWT" SPENTO: Didit non ha un utente Supabase. L'utente dell'app lo
 // controlla il codice qui sotto.
@@ -108,6 +112,17 @@ async function diditProblem(res: Response, what: string): Promise<string> {
 /** Ultimo controllo della chiave: al massimo uno al minuto, così questa pagina pubblica non consuma i limiti di Didit. */
 let keyCheck: { at: number; result: string } | null = null;
 
+/** Ultimo controllo della chiave di OpenAI (anche questo al massimo uno al minuto). */
+let openaiCheck: { at: number; result: string } | null = null;
+
+async function openaiStatus(): Promise<string> {
+  if (!env('OPENAI_API_KEY')) return 'manca OPENAI_API_KEY: i post nuovi vanno in revisione';
+  if (openaiCheck && Date.now() - openaiCheck.at < 60_000) return openaiCheck.result;
+  const result = (await scan({ text: 'ciao' })) ? 'attivo (OpenAI accetta la chiave)' : 'OpenAI RIFIUTA la chiave o non risponde: i post nuovi vanno in revisione';
+  openaiCheck = { at: Date.now(), result };
+  return result;
+}
+
 /** Controllo dal browser del telefono: https://<progetto>.supabase.co/functions/v1/verifica-eta/stato */
 async function stato(): Promise<Response> {
   const missing = missingSecrets();
@@ -129,21 +144,28 @@ async function stato(): Promise<Response> {
     chiave_didit: chiave,
     database: error ? `non raggiungibile: ${error.message}` : 'raggiungibile',
     metodo_nell_app: cfg?.id_provider ?? 'sconosciuto',
+    controllo_contenuti: await openaiStatus(),
     webhook_da_impostare_su_didit: `${SELF}/webhook`,
   });
 }
 
 /** L'app chiede di iniziare: si controlla chi è, poi si apre (o si riprende) la sessione su Didit. */
 async function start(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as { action?: string };
+  // Il controllo dei contenuti non dipende da Didit: funziona anche senza i suoi segreti.
+  if (body.action === 'modera') {
+    if (!serviceKey()) return json({ error: 'Controllo dei contenuti non configurato: su Supabase manca la chiave di servizio.' }, 500);
+    const who = await caller(req);
+    if (!who) return json({ error: 'Accedi di nuovo e riprova.' }, 401);
+    return await modera(who, body as ModeraBody);
+  }
+
   const missing = missingSecrets().filter((k) => k !== 'DIDIT_WEBHOOK_SECRET');
   if (missing.length) return json({ error: `Verifica automatica non configurata: su Supabase mancano i segreti ${missing.join(', ')}.` }, 500);
 
-  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
-  const { data: auth } = token ? await admin.auth.getUser(token) : { data: { user: null } };
-  const user = auth.user;
+  const user = await caller(req);
   if (!user) return json({ error: 'Accedi di nuovo e riprova.' }, 401);
 
-  const body = (await req.json().catch(() => ({}))) as { action?: string };
   if (body.action === 'diagnosi') return await diagnosi(user.id);
   if (body.action === 'esito') return await esito(user.id);
 
@@ -162,6 +184,14 @@ async function start(req: Request): Promise<Response> {
   const { error } = await admin.rpc('identity_provider_start', { p_user_id: user.id, p_session: session.session_id });
   if (error) throw error;
   return json({ url: session.url });
+}
+
+/** L'utente dell'app che chiama (dal suo token), o null. */
+async function caller(req: Request): Promise<{ id: string } | null> {
+  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+  if (!token) return null;
+  const { data } = await admin.auth.getUser(token);
+  return data.user ? { id: data.user.id } : null;
 }
 
 function createSession(vendorData: string): Promise<Response> {
@@ -190,6 +220,9 @@ async function diagnosi(userId: string): Promise<Response> {
     }
   }
   checks.push(`Indirizzo del webhook da mettere su Didit: ${SELF}/webhook`);
+  // Controllo automatico dei contenuti: una prova con un testo innocuo.
+  if (!env('OPENAI_API_KEY')) checks.push('✗ Manca il segreto OPENAI_API_KEY: ogni post nuovo va in revisione');
+  else checks.push((await scan({ text: 'ciao' })) ? '✓ OpenAI accetta la chiave (controllo dei contenuti)' : '✗ OpenAI non accetta OPENAI_API_KEY o non risponde: i post nuovi vanno in revisione');
   return json({ ok: !checks.some((c) => c.startsWith('✗')), checks });
 }
 
@@ -463,4 +496,230 @@ function safeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Controllo automatico dei contenuti, prima della pubblicazione (azione "modera").
+// Servizio: OpenAI Moderation, modello omni-moderation-latest (gratuito), chiave nel segreto OPENAI_API_KEY.
+// I contenuti si mandano a OpenAI solo per questo controllo. Le regole qui sotto decidono l'esito di ogni file:
+//   blocked → il post non esce e i file si cancellano subito;
+//   review  → il post esce nascosto e finisce nella coda dell'amministratore (Moderazione: Approva / Rimuovi);
+//   ok      → il post esce subito.
+// Senza chiave, o se OpenAI non risponde, l'esito è "review": mai pubblicare senza controllo.
+// ---------------------------------------------------------------------------------------------------------
+const OPENAI_MODERATION = 'https://api.openai.com/v1/moderations';
+const MODERATION_MODEL = 'omni-moderation-latest';
+
+/** Bloccato se OpenAI segnala (flagged) il contenuto in una di queste categorie. */
+const BLOCK_IF_FLAGGED = ['sexual/minors', 'sexual', 'violence/graphic', 'self-harm/intent', 'self-harm/instructions'];
+/** Bloccato anche se il punteggio (0-1) arriva a queste soglie, segnalato o no. Sui minori si è severissimi. */
+const BLOCK_SCORES: Record<string, number> = {
+  'sexual/minors': 0.2,
+  sexual: 0.8,
+  'violence/graphic': 0.8,
+  'self-harm/intent': 0.7,
+  'self-harm/instructions': 0.7,
+};
+/** In revisione (una persona decide) dai punteggi intermedi in su. */
+const REVIEW_SCORES: Record<string, number> = {
+  'sexual/minors': 0.05,
+  sexual: 0.3,
+  violence: 0.5,
+  'violence/graphic': 0.3,
+  'self-harm': 0.3,
+  'self-harm/intent': 0.2,
+  'self-harm/instructions': 0.2,
+};
+/** Solo per la didascalia: segnalata per odio, molestie, minacce o attività illecite violente → in revisione. */
+const REVIEW_IF_FLAGGED_TEXT = ['hate', 'hate/threatening', 'harassment', 'harassment/threatening', 'violence', 'illicit/violent'];
+/** Fotogrammi per video (li genera l'app lungo la durata) e limiti della richiesta. */
+const MAX_FRAMES_PER_VIDEO = 6;
+const MAX_PATHS = 20;
+/** Oltre questo peso un'immagine non si manda a OpenAI: va in revisione. */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** Richieste a OpenAI in parallelo, e quanto si aspetta ciascuna. */
+const MODERATION_CONCURRENCY = 4;
+const MODERATION_TIMEOUT_MS = 20_000;
+
+type Verdict = 'ok' | 'review' | 'blocked';
+type ModeraBody = { action: 'modera'; bucket?: unknown; paths?: unknown; frames?: unknown; caption?: unknown };
+/** Esito di OpenAI per un contenuto (null = controllo non riuscito). */
+type Scan = { flagged: string[]; scores: Record<string, number> } | null;
+type Outcome = { verdict: Verdict; categories: string[]; scores: Record<string, number>; note: string | null };
+
+const RANK: Record<Verdict, number> = { ok: 0, review: 1, blocked: 2 };
+const worst = (a: Verdict, b: Verdict): Verdict => (RANK[a] >= RANK[b] ? a : b);
+const VIDEO = /\.(mp4|mov|m4v)$/i;
+const IMAGE_TYPE: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+
+/** Decide l'esito dai risultati di OpenAI (per un video: tutti i fotogrammi insieme). */
+function judge(scans: Scan[], text: boolean): Outcome {
+  if (!scans.length || scans.some((s) => s === null)) return { verdict: 'review', categories: [], scores: {}, note: 'non_disponibile' };
+  const flagged = new Set<string>();
+  const scores: Record<string, number> = {};
+  for (const s of scans as NonNullable<Scan>[]) {
+    s.flagged.forEach((c) => flagged.add(c));
+    for (const [c, v] of Object.entries(s.scores)) if (typeof v === 'number' && v > (scores[c] ?? 0)) scores[c] = v;
+  }
+  const over = (limits: Record<string, number>) => Object.keys(limits).filter((c) => (scores[c] ?? 0) >= limits[c]);
+  // Si salvano solo i punteggi che contano (arrotondati): servono all'amministratore per capire il perché.
+  const kept: Record<string, number> = {};
+  for (const [c, v] of Object.entries(scores)) if (v >= 0.01) kept[c] = Math.round(v * 1000) / 1000;
+  const blocked = [...new Set([...BLOCK_IF_FLAGGED.filter((c) => flagged.has(c)), ...over(BLOCK_SCORES)])];
+  if (blocked.length) return { verdict: 'blocked', categories: blocked, scores: kept, note: null };
+  const review = [...new Set([...over(REVIEW_SCORES), ...(text ? REVIEW_IF_FLAGGED_TEXT.filter((c) => flagged.has(c)) : [])])];
+  if (review.length) return { verdict: 'review', categories: review, scores: kept, note: null };
+  return { verdict: 'ok', categories: [], scores: kept, note: null };
+}
+
+/** Una richiesta a OpenAI: un'immagine (data URL) o un testo. null se la chiave manca o OpenAI non risponde. */
+async function scan(input: { image: string } | { text: string }): Promise<Scan> {
+  const key = env('OPENAI_API_KEY');
+  if (!key) return null;
+  try {
+    const res = await fetch(OPENAI_MODERATION, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MODERATION_MODEL,
+        input: 'image' in input ? [{ type: 'image_url', image_url: { url: input.image } }] : input.text,
+      }),
+      signal: AbortSignal.timeout(MODERATION_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.error('verifica-eta: OpenAI moderation', res.status, (await res.text()).slice(0, 300));
+      return null;
+    }
+    const out = (await res.json()) as { results?: { categories?: Record<string, boolean>; category_scores?: Record<string, number> }[] };
+    const r = out.results?.[0];
+    if (!r?.categories || !r.category_scores) return null;
+    return { flagged: Object.keys(r.categories).filter((c) => r.categories![c]), scores: r.category_scores };
+  } catch (e) {
+    console.error('verifica-eta: OpenAI moderation', e);
+    return null;
+  }
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/** Scarica un'immagine dallo Storage (con la chiave di servizio, non dalla cache pubblica) e la fa controllare. */
+async function scanFile(bucket: string, path: string): Promise<Scan | 'troppo_grande' | 'formato'> {
+  const type = IMAGE_TYPE[path.split('.').pop()?.toLowerCase() ?? ''];
+  if (!type) return 'formato';
+  if (!env('OPENAI_API_KEY')) return null;
+  const { data, error } = await admin.storage.from(bucket).download(path);
+  if (error || !data) {
+    console.error('verifica-eta: modera, download', path, error?.message);
+    return null;
+  }
+  if (data.size > MAX_IMAGE_BYTES) return 'troppo_grande';
+  return await scan({ image: `data:${type};base64,${toBase64(new Uint8Array(await data.arrayBuffer()))}` });
+}
+
+/** Esegue i lavori al massimo n alla volta, nell'ordine. */
+async function pool<T>(jobs: (() => Promise<T>)[], n: number): Promise<T[]> {
+  const out = new Array<T>(jobs.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(n, jobs.length) }, async () => {
+      while (next < jobs.length) {
+        const i = next++;
+        out[i] = await jobs[i]();
+      }
+    }),
+  );
+  return out;
+}
+
+/**
+ * Controllo prima della pubblicazione. Chiede l'app, dopo aver caricato i file e prima di creare il post:
+ *   { action: 'modera', paths: [...file del post e anteprime], frames: { <video>: [<fotogrammi>] }, caption }
+ *   con bucket: 'avatars' e un solo percorso, per la foto profilo.
+ * Risponde { verdict: 'ok' | 'review' | 'blocked', unchecked } (unchecked: il controllo non era disponibile).
+ */
+async function modera(user: { id: string }, body: ModeraBody): Promise<Response> {
+  const bad = (why: string) => json({ error: `Richiesta di controllo non valida (${why}).` }, 400);
+  const avatar = body.bucket === 'avatars';
+  const bucket = avatar ? 'avatars' : 'media';
+  const own = (p: unknown): p is string => typeof p === 'string' && p.startsWith(`${user.id}/`) && /^[^/]+\/[A-Za-z0-9._-]{1,100}$/.test(p);
+
+  const paths = Array.isArray(body.paths) ? body.paths : [];
+  if (!paths.length || paths.length > MAX_PATHS || !paths.every(own) || new Set(paths).size !== paths.length) return bad('file');
+  if (avatar && (paths.length !== 1 || !/\/avatar-\d{10,16}\.jpg$/.test(paths[0]))) return bad('foto profilo');
+
+  const frames: Record<string, string[]> = {};
+  const rawFrames = body.frames && typeof body.frames === 'object' && !avatar ? (body.frames as Record<string, unknown>) : {};
+  for (const [video, list] of Object.entries(rawFrames)) {
+    if (!paths.includes(video) || !VIDEO.test(video) || !Array.isArray(list) || list.length > MAX_FRAMES_PER_VIDEO) return bad('fotogrammi');
+    if (!list.every((f) => own(f) && /\.jpg$/i.test(f) && !paths.includes(f))) return bad('fotogrammi');
+    frames[video] = list as string[];
+  }
+  const allFrames = [...new Set(Object.values(frames).flat())];
+
+  const caption = !avatar && typeof body.caption === 'string' ? body.caption : '';
+  if ([...caption].length > 300) return bad('didascalia');
+
+  // Fotogrammi: file temporanei, si cancellano comunque alla fine (se resta qualcosa, la pulizia notturna).
+  const dropFrames = async () => {
+    if (allFrames.length) await admin.storage.from('media').remove(allFrames).catch(() => undefined);
+  };
+
+  // Chi chiama può pubblicare, non esagera, i file sono suoi e non già pubblicati; l'id di ogni file si
+  // legge adesso, prima del controllo (se il file cambia dopo, il database rifiuta il post).
+  const started = await admin.rpc('media_check_start', { p_owner: user.id, p_kind: avatar ? 'avatar' : 'file', p_paths: paths });
+  if (started.error) {
+    await dropFrames();
+    const m = started.error.message;
+    if (/Troppe/.test(m)) return json({ error: m }, 429);
+    if (/verifica dell|già pubblicato|non trovato|non valida/i.test(m)) return json({ error: m }, 409);
+    throw started.error;
+  }
+  const objectIds = (started.data ?? {}) as Record<string, string | null>;
+
+  type Job = { path: string; text: boolean; run: () => Promise<Scan | 'troppo_grande' | 'formato'> };
+  const jobs: Job[] = [];
+  for (const path of paths) {
+    if (VIDEO.test(path)) for (const f of frames[path] ?? []) jobs.push({ path, text: false, run: () => scanFile('media', f) });
+    else jobs.push({ path, text: false, run: () => scanFile(bucket, path) });
+  }
+  if (caption !== '') jobs.push({ path: '', text: true, run: () => scan({ text: caption }) });
+  const results = await pool(jobs.map((j) => j.run), MODERATION_CONCURRENCY);
+  await dropFrames();
+
+  const outcomeFor = (path: string, text: boolean): Outcome => {
+    const mine = results.filter((_, i) => jobs[i].path === path && jobs[i].text === text);
+    if (!text && VIDEO.test(path) && !mine.length) return { verdict: 'review', categories: [], scores: {}, note: 'senza_fotogrammi' };
+    const special = mine.find((r) => r === 'troppo_grande' || r === 'formato');
+    if (typeof special === 'string') return { verdict: 'review', categories: [], scores: {}, note: special };
+    return judge(mine as Scan[], text);
+  };
+
+  const items: Record<string, unknown>[] = [];
+  let verdict: Verdict = 'ok';
+  let unchecked = false;
+  for (const path of paths) {
+    const o = outcomeFor(path, false);
+    verdict = worst(verdict, o.verdict);
+    unchecked ||= o.note === 'non_disponibile';
+    items.push({ kind: avatar ? 'avatar' : 'file', path, verdict: o.verdict, categories: o.categories, scores: o.scores, note: o.note, object_id: objectIds[path] ?? null });
+  }
+  if (caption !== '') {
+    const o = outcomeFor('', true);
+    verdict = worst(verdict, o.verdict);
+    unchecked ||= o.note === 'non_disponibile';
+    items.push({ kind: 'caption', caption, verdict: o.verdict, categories: o.categories, scores: o.scores, note: o.note });
+  }
+  const saved = await admin.rpc('media_check_save', { p_owner: user.id, p_items: items });
+  if (saved.error) throw saved.error;
+
+  // Bloccato: niente post, e i file non restano raggiungibili dal loro indirizzo pubblico.
+  if (verdict === 'blocked') {
+    const { error } = await admin.storage.from(bucket).remove(paths);
+    if (error) console.error('verifica-eta: modera, cancellazione', error.message);
+  }
+  return json({ verdict, unchecked });
 }
