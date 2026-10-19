@@ -984,3 +984,32 @@ do $$ declare paths text[]; begin
   raise notice 'ok, pulizia programmata: solo i file non più usati, poi tolti dalla coda';
 end $$;
 reset role;
+
+-- ---------- Numero dell'uscita, Archivio a pagine, copertina di un giorno (W13) ----------
+reset role;
+do $$ declare d date := arena_today(); begin
+  -- Due copertine uscite in giorni diversi (oltre a quelle dei test precedenti).
+  delete from daily_viral;
+  insert into daily_viral (featured_on, contest_day, post_id, author_id, final_score, total_entries, total_views)
+  values (d - 1, d - 2, '50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000101', 0, 3, 10),
+         (d, d - 1, '40000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000a3', 0, 2, 5),
+         (d + 1, d, '40000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000a3', 0, 2, 5);
+end $$;
+update posts set hidden_at = null where id in ('40000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000002', '50000000-0000-0000-0000-000000000001');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+do $$ declare a jsonb[]; p jsonb[]; begin
+  select array_agg(x) into a from get_cover_archive(60) x;
+  if array_length(a, 1) <> 2 or (a[1] ->> 'issue')::int <> 2 or (a[2] ->> 'issue')::int <> 1 then raise exception 'numeri delle uscite sbagliati: %', a; end if;
+  if (get_today_cover() ->> 'issue')::int <> 2 then raise exception 'numero della copertina di oggi sbagliato'; end if;
+  select array_agg(x) into p from get_cover_archive(60, (a[1] ->> 'featured_on')::date) x;
+  if array_length(p, 1) <> 1 or p[1] ->> 'featured_on' <> a[2] ->> 'featured_on' then raise exception 'pagina successiva dell''Archivio sbagliata'; end if;
+  raise notice 'ok, uscite numerate dal server (N. 1, N. 2) e Archivio a pagine';
+end $$;
+do $$ declare d date := (get_today_cover() ->> 'featured_on')::date; begin
+  if get_cover(d + 1) is not null then raise exception 'copertina di domani visibile in anticipo'; end if;
+  if get_cover(d - 30) is not null then raise exception 'copertina inesistente'; end if;
+  if (get_cover(d - 1) ->> 'issue')::int <> 1 then raise exception 'copertina di ieri sbagliata'; end if;
+  raise notice 'ok, la copertina di un giorno: solo se è già uscita';
+end $$;
+reset role;

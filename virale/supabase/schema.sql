@@ -1667,10 +1667,22 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 7) Il virale di oggi: identico per tutti => cacheabile su CDN, costo trascurabile anche con milioni di utenti
 -- ---------------------------------------------------------------------------
+-- Il numero dell'uscita: quante copertine sono uscite fino a quel giorno compreso (la prima vera è la N. 1).
+create or replace function public.cover_issue(p_day date)
+returns bigint language sql stable security definer set search_path = public, pg_temp as $$
+  select count(*) from daily_viral where featured_on <= p_day;
+$$;
+
+create or replace function public.cover_json(d public.daily_viral)
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object('featured_on', d.featured_on, 'issue', public.cover_issue(d.featured_on),
+                            'total_entries', d.total_entries, 'total_views', d.total_views,
+                            'post', public.post_json(d.post_id, auth.uid()));
+$$;
+
 create or replace function public.get_today_cover()
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
-  select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
-                            'post', public.post_json(d.post_id, auth.uid()))
+  select public.cover_json(d)
   from daily_viral d
   -- La più recente già uscita: se la gara appena chiusa non ha avuto candidati, resta quella di prima.
   where d.featured_on <= public.cover_day() and public.can_see(d.post_id, auth.uid())
@@ -1678,15 +1690,24 @@ returns jsonb language sql stable security definer set search_path = public, pg_
   limit 1;
 $$;
 
--- L'Archivio: le copertine uscite, dalla più recente.
-create or replace function public.get_cover_archive(p_limit int default 60)
+-- L'Archivio: le copertine uscite, dalla più recente, a pagine (p_before = il giorno dell'ultima già mostrata).
+drop function if exists public.get_cover_archive(int);
+create or replace function public.get_cover_archive(p_limit int default 60, p_before date default null)
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
-  select jsonb_build_object('featured_on', d.featured_on, 'total_entries', d.total_entries, 'total_views', d.total_views,
-                            'post', public.post_json(d.post_id, auth.uid()))
+  select public.cover_json(d)
   from daily_viral d
   where d.featured_on <= public.cover_day() and public.can_see(d.post_id, auth.uid())
+    and d.featured_on < coalesce(p_before, 'infinity'::date)
   order by d.featured_on desc
   limit least(greatest(p_limit, 1), 120);
+$$;
+
+-- La copertina di un giorno (link o Archivio), se è già uscita ed è visibile a chi guarda.
+create or replace function public.get_cover(p_day date)
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select public.cover_json(d)
+  from daily_viral d
+  where d.featured_on = p_day and d.featured_on <= public.cover_day() and public.can_see(d.post_id, auth.uid());
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -2863,7 +2884,8 @@ grant execute on function public.get_post(uuid) to authenticated;
 grant execute on function public.get_profile(text) to authenticated;
 grant execute on function public.register_share(uuid) to authenticated;
 grant execute on function public.get_today_cover() to authenticated;
-grant execute on function public.get_cover_archive(int) to authenticated;
+grant execute on function public.get_cover_archive(int, date) to authenticated;
+grant execute on function public.get_cover(date) to authenticated;
 grant execute on function public.get_comments(uuid) to authenticated;
 grant execute on function public.report_post(uuid, text, text) to authenticated;
 grant execute on function public.block_user(uuid) to authenticated;

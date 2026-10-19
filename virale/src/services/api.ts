@@ -15,7 +15,7 @@ import {
   type EntryStatus,
   type ViewSignal,
 } from '../engine/engine';
-import { COMMENTERS, CREATORS, DEMO_FOLLOWING, LAUNCH_DAY, PAST_COVERS, SEED_POSTS, TODAY_COVER } from '../data/seed';
+import { COMMENTERS, CREATORS, DEMO_FOLLOWING, PAST_COVERS, SEED_POSTS, TODAY_COVER } from '../data/seed';
 import type {
   AppNotification,
   Author,
@@ -64,9 +64,6 @@ export function contestOpen(revealMinutes = 0, now = new Date()): boolean {
   return isDemo || submissionsOpen(now, DEFAULT_ARENA_CONFIG, revealMinutes);
 }
 
-export function issueNumber(day: string): number {
-  return Math.round((Date.parse(`${day}T12:00:00Z`) - Date.parse(`${LAUNCH_DAY}T12:00:00Z`)) / 86400000) + 1;
-}
 
 // ===========================================================================
 // Supabase (produzione): le RPC restituiscono post già composti in JSON.
@@ -664,8 +661,10 @@ function postViews(demo: DemoDb, sp: StoredPost): number {
   return base + (sp.authorId === demo.me?.id ? (entry?.stats.views ?? 0) : 0);
 }
 
+/** Demo: il numero dell'uscita è la posizione fra le copertine demo, dalla più vecchia (N. 1). */
 function toCover(demo: DemoDb, cv: DemoDb['covers'][number]): Cover {
-  return { featuredOn: cv.featuredOn, issue: issueNumber(cv.featuredOn), totalEntries: cv.totalEntries, totalViews: cv.totalViews, post: toPost(demo, cv.postId) };
+  const issue = demo.covers.filter((x) => x.featuredOn <= cv.featuredOn).length;
+  return { featuredOn: cv.featuredOn, issue, totalEntries: cv.totalEntries, totalViews: cv.totalViews, post: toPost(demo, cv.postId) };
 }
 
 // ===========================================================================
@@ -1053,8 +1052,8 @@ export async function changePassword(current: string, next: string): Promise<voi
 /** La copertina di oggi: identica per tutti. */
 export async function getTodayCover(): Promise<Cover | null> {
   if (!isDemo) {
-    const row = await rpc<{ featured_on: string; total_entries: number; total_views: number; post: PostJson } | null>('get_today_cover');
-    return row ? { featuredOn: row.featured_on, issue: issueNumber(row.featured_on), totalEntries: row.total_entries, totalViews: Number(row.total_views), post: fromJson(row.post) } : null;
+    const row = await rpc<CoverJson | null>('get_today_cover');
+    return row ? coverFromJson(row) : null;
   }
   return withDemo((demo) => {
     // La più recente già uscita (se l'ultima gara non ha avuto candidati resta quella di prima).
@@ -1064,14 +1063,37 @@ export async function getTodayCover(): Promise<Cover | null> {
   });
 }
 
-export async function getArchive(): Promise<Cover[]> {
+type CoverJson = { featured_on: string; issue?: number; total_entries: number; total_views: number; post: PostJson };
+function coverFromJson(r: CoverJson): Cover {
+  return { featuredOn: r.featured_on, issue: Number(r.issue ?? 0), totalEntries: r.total_entries, totalViews: Number(r.total_views), post: fromJson(r.post) };
+}
+
+/** L'Archivio, dalla più recente, a pagine: `before` è il giorno dell'ultima copertina già mostrata. */
+export async function getArchive(before?: string, limit = 30): Promise<Cover[]> {
   if (!isDemo) {
-    const rows = await rpc<{ featured_on: string; total_entries: number; total_views: number; post: PostJson }[]>('get_cover_archive', { p_limit: 60 });
-    return rows.map((r) => ({ featuredOn: r.featured_on, issue: issueNumber(r.featured_on), totalEntries: r.total_entries, totalViews: Number(r.total_views), post: fromJson(r.post) }));
+    const rows = await rpc<CoverJson[]>('get_cover_archive', { p_limit: limit, p_before: before ?? null });
+    return rows.map(coverFromJson);
   }
   return withDemo((demo) =>
-    demo.covers.filter((cv) => cv.featuredOn <= coverDay(demo.settings!.revealMinutes) && visible(demo, cv.postId)).map((cv) => toCover(demo, cv)),
+    demo.covers
+      .filter((cv) => cv.featuredOn <= coverDay(demo.settings!.revealMinutes) && (!before || cv.featuredOn < before) && visible(demo, cv.postId))
+      .sort((a, b) => b.featuredOn.localeCompare(a.featuredOn))
+      .slice(0, limit)
+      .map((cv) => toCover(demo, cv)),
   );
+}
+
+/** La copertina di un giorno (Archivio, link): null se non esiste, non è ancora uscita o non è visibile. */
+export async function getCover(day: string): Promise<Cover | null> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(`${day}T12:00:00Z`))) return null;
+  if (!isDemo) {
+    const row = await rpc<CoverJson | null>('get_cover', { p_day: day });
+    return row ? coverFromJson(row) : null;
+  }
+  return withDemo((demo) => {
+    const cv = demo.covers.find((x) => x.featuredOn === day && day <= coverDay(demo.settings!.revealMinutes) && visible(demo, x.postId));
+    return cv ? toCover(demo, cv) : null;
+  });
 }
 
 /**

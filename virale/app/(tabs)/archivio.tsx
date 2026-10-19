@@ -1,5 +1,5 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -22,11 +22,15 @@ export default function ArchiveTab() {
   const [failed, setFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [tick, setTick] = useState(0);
+  /** Pagine più vecchie, arrivati in fondo: l'Archivio non si ferma alle ultime copertine. */
+  const loadingMore = useRef(false);
+  const ended = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
       void version; // ricarica quando altrove cambia qualcosa (nuovo post, nuova copertina)
       void tick;
+      ended.current = false;
       getArchive()
         .then((all) => {
           setCovers(all);
@@ -36,6 +40,26 @@ export default function ArchiveTab() {
         .finally(() => setRefreshing(false));
     }, [version, tick]),
   );
+
+  const loadMore = () => {
+    const last = covers?.at(-1)?.featuredOn;
+    if (!last || loadingMore.current || ended.current) return;
+    loadingMore.current = true;
+    getArchive(last)
+      .then((page) => {
+        if (!page.length) ended.current = true;
+        setCovers((list) => {
+          const have = new Set((list ?? []).map((c) => c.featuredOn));
+          return [...(list ?? []), ...page.filter((c) => !have.has(c.featuredOn))];
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        loadingMore.current = false;
+      });
+  };
+  // Le uscite finora: il numero della più recente (l'elenco arriva a pagine).
+  const issues = covers?.[0]?.issue ?? 0;
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + space[3] }]}>
@@ -50,6 +74,8 @@ export default function ArchiveTab() {
           data={covers}
           keyExtractor={(c) => `${c.featuredOn}-${c.post.id}`}
           numColumns={2}
+          onEndReachedThreshold={0.8}
+          onEndReached={loadMore}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -68,7 +94,7 @@ export default function ArchiveTab() {
             <View style={styles.head}>
               <Txt variant="heading">Archivio</Txt>
               <Txt variant="body" tone={color.paperDim}>
-                Una copertina al giorno, scelta da chi guarda. {covers.length} {covers.length === 1 ? 'uscita' : 'uscite'} finora.
+                {`Una copertina al giorno, scelta da chi guarda. ${issues} ${issues === 1 ? 'uscita' : 'uscite'} finora.`}
               </Txt>
             </View>
           }

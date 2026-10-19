@@ -7,7 +7,7 @@ import { Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
 import { color, space } from '../../src/design/tokens';
 import { CoverView } from '../../src/screens/CoverView';
-import { getArchive } from '../../src/services/api';
+import { getCover } from '../../src/services/api';
 import { useNav } from '../../src/state/nav';
 import type { Cover } from '../../src/types';
 import { friendlyError } from '../../src/services/errors';
@@ -21,8 +21,8 @@ export default function ArchivedCover() {
   useEffect(() => {
     let alive = true;
     setCover(undefined);
-    getArchive()
-      .then((all) => alive && setCover(all.find((c) => c.featuredOn === day) ?? null))
+    getCover(day)
+      .then((c) => alive && setCover(c))
       .catch((e: unknown) => alive && setError(friendlyError(e)));
     return () => {
       alive = false;
