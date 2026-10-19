@@ -168,6 +168,13 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         ],
       },
       { heading: 'Minori', body: [`Virale non è destinato a chi ha meno di ${MIN_AGE} anni. Se scopriamo un account di una persona più giovane lo eliminiamo.`] },
+      {
+        heading: 'Sito web e beta',
+        body: [
+          'Il sito di Virale non usa cookie, né strumenti di analisi o di tracciamento, né risorse di altri siti: il fornitore che lo ospita (GitHub, negli Stati Uniti, con le garanzie del Data Privacy Framework) registra solo i dati tecnici necessari a mostrare le pagine.',
+          'Se ci scrivi per entrare nella beta, usiamo il tuo indirizzo email solo per aggiungerti ai tester su Google Play (base: la tua richiesta) e lo cancelliamo dai nostri messaggi al termine della beta. Se entri nel gruppo dei tester su Google Gruppi, quel dato lo tratta Google secondo la sua informativa; puoi uscire dal gruppo e dal test quando vuoi.',
+        ],
+      },
     ],
   },
 
