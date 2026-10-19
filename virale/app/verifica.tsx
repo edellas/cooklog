@@ -12,7 +12,7 @@ import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { Field } from '../src/components/Field';
-import { completePrivateData, getStatus, startAgeCheck, submitIdentity } from '../src/services/api';
+import { completePrivateData, getStatus, pollAgeCheck, startAgeCheck, submitIdentity } from '../src/services/api';
 import { getJson, removeKey, setJson } from '../src/services/storage';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
@@ -94,7 +94,7 @@ export default function VerifyScreen() {
    */
   const polling = useRef(false);
   const checkResult = useCallback(
-    async (rounds = 10) => {
+    async (rounds = 20) => {
       // Il controllo si prende subito, prima di qualsiasi attesa: ritorno nell'app e link arrivano insieme.
       if (polling.current) return;
       polling.current = true;
@@ -109,6 +109,8 @@ export default function VerifyScreen() {
       setChecking(true);
       try {
         for (let i = 0; i < rounds && alive.current; i += 1) {
+          // Prima si fa leggere l'esito direttamente da Didit (non si aspetta solo il suo avviso), poi si rilegge lo stato.
+          await pollAgeCheck();
           const now = await getStatus().catch(() => null);
           if (now?.identity && marker(now.identity) !== pending.before) {
             await removeKey(DIDIT_KEY);

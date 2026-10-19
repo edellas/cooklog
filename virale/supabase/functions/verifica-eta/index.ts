@@ -3,6 +3,7 @@
 // Indirizzi:
 //   POST /verifica-eta           → l'app (utente connesso) chiede una sessione: risponde con il link di Didit.
 //                                  Con { "action": "diagnosi" } (solo amministratori) prova tutto il collegamento.
+//                                  Con { "action": "esito" } legge da Didit l'esito della propria sessione aperta.
 //   POST /verifica-eta/webhook   → Didit avvisa che la verifica è finita (richiesta firmata con il segreto).
 //   GET  /verifica-eta/ritorno   → finita la verifica il browser torna qui e viene rimandato nell'app.
 //   GET  /verifica-eta/stato     → controllo dal browser: quali segreti ci sono e se Didit accetta la chiave.
@@ -144,6 +145,7 @@ async function start(req: Request): Promise<Response> {
 
   const body = (await req.json().catch(() => ({}))) as { action?: string };
   if (body.action === 'diagnosi') return await diagnosi(user.id);
+  if (body.action === 'esito') return await esito(user.id);
 
   const { data: cfg } = await admin.from('arena_config').select('id_provider').limit(1).maybeSingle();
   if (cfg?.id_provider !== 'didit') return json({ error: 'La verifica automatica non è attiva: carica le foto del documento.' }, 409);
@@ -216,20 +218,44 @@ async function webhook(req: Request): Promise<Response> {
   const res = await fetch(`${DIDIT}/session/${encodeURIComponent(event.session_id)}/decision/`, { headers: { 'x-api-key': env('DIDIT_API_KEY') } });
   // Se Didit non risponde, un errore fa ripetere l'avviso più tardi.
   if (!res.ok) return json({ error: await diditProblem(res, 'decision') }, 502);
-  const decision = (await res.json()) as {
-    status: string;
-    vendor_data?: string;
-    id_verifications?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string }[];
-    id_verification?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string };
-  };
+  const decision = (await res.json()) as Decision;
   if (decision.vendor_data && decision.vendor_data !== event.vendor_data) return json({ ok: true });
+  const outcome = await applyDecision(event.vendor_data, event.session_id, decision);
+  return json({ ok: true, outcome });
+}
+
+type Decision = {
+  status: string;
+  vendor_data?: string;
+  id_verifications?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string }[];
+  id_verification?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string };
+};
+
+/**
+ * L'app chiede l'esito appena torna da Didit: si legge la decisione direttamente da Didit per la sessione aperta
+ * di chi chiama. Così l'esito arriva anche se l'avviso (webhook) di Didit tarda o non è configurato bene.
+ */
+async function esito(userId: string): Promise<Response> {
+  const { data: check } = await admin.from('identity_checks').select('status, provider_session').eq('user_id', userId).maybeSingle();
+  if (!check?.provider_session || check.status === 'approved') return json({ outcome: 'none' });
+  const res = await fetch(`${DIDIT}/session/${encodeURIComponent(check.provider_session)}/decision/`, { headers: { 'x-api-key': env('DIDIT_API_KEY') } });
+  if (!res.ok) return json({ error: await diditProblem(res, 'decision') }, 502);
+  const decision = (await res.json()) as Decision;
+  if (decision.vendor_data && decision.vendor_data !== userId) return json({ outcome: 'none' });
+  // Didit sta ancora lavorando (o l'utente non ha finito): si riprova fra poco.
+  if (!['Approved', 'Declined', 'In Review'].includes(decision.status)) return json({ outcome: 'waiting', status: decision.status });
+  return json({ outcome: await applyDecision(userId, check.provider_session, decision) });
+}
+
+/** Registra la decisione di Didit e, se è definitiva, cancella la sessione su Didit. Usata dal webhook e da "esito". */
+async function applyDecision(userId: string, sessionId: string, decision: Decision): Promise<string> {
   const doc = decision.id_verifications?.[0] ?? decision.id_verification;
   // Una data illeggibile non deve far fallire la chiamata (Didit ripeterebbe l'avviso all'infinito).
   const birth = /^\d{4}-\d{2}-\d{2}$/.test(doc?.date_of_birth ?? '') ? doc!.date_of_birth! : null;
 
   const { data: outcome, error } = await admin.rpc('identity_provider_result', {
-    p_user_id: event.vendor_data,
-    p_session: event.session_id,
+    p_user_id: userId,
+    p_session: sessionId,
     p_status: decision.status,
     p_birth_date: birth,
     p_first_name: doc?.first_name ?? null,
@@ -242,9 +268,9 @@ async function webhook(req: Request): Promise<Response> {
   // Decisione presa: su Didit non serve più nulla, si cancellano sessione, foto e video.
   // Se invece decide una persona ('review'), la sessione resta finché l'amministratore non l'ha vista.
   if (['approved', 'rejected', 'underage'].includes(String(outcome))) {
-    await fetch(`${DIDIT}/session/${encodeURIComponent(event.session_id)}/delete/`, { method: 'DELETE', headers: { 'x-api-key': env('DIDIT_API_KEY') } }).catch(() => undefined);
+    await fetch(`${DIDIT}/session/${encodeURIComponent(sessionId)}/delete/`, { method: 'DELETE', headers: { 'x-api-key': env('DIDIT_API_KEY') } }).catch(() => undefined);
   }
-  return json({ ok: true, outcome });
+  return String(outcome);
 }
 
 /**
