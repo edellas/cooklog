@@ -68,6 +68,8 @@ export default function CreateScreen() {
   phaseRef.current = phase;
   const busyRef = useRef(false);
   busyRef.current = busy;
+  /** Il post è uscito: anche se nel frattempo si era chiesto di annullare, non si esce senza mostrarlo. */
+  const published = useRef(false);
   const abort = useRef<AbortController | null>(null);
   /** La pubblicazione in corso: uscendo dopo un annullamento si aspetta che abbia finito di pulire. */
   const running = useRef<Promise<unknown> | null>(null);
@@ -97,7 +99,8 @@ export default function CreateScreen() {
   // Durante la pubblicazione uscire vuol dire annullarla: i file caricati si cancellano, il post non esce.
   const navigation = useNavigation();
   const allowLeave = useRef(false);
-  usePreventRemove(media.length > 0 && !done, ({ data }) => {
+  // Anche durante la pubblicazione (la bozza è bloccata, ma uscire deve sempre passare dall'annullamento).
+  usePreventRemove((media.length > 0 || busy) && !done, ({ data }) => {
     if (allowLeave.current) return navigation.dispatch(data.action);
     const leave = () => {
       allowLeave.current = true;
@@ -117,6 +120,13 @@ export default function CreateScreen() {
         abort.current?.abort();
         // Si aspetta la pulizia dei file caricati (al massimo 5 secondi), poi si esce.
         await Promise.race([running.current?.catch(() => undefined), new Promise((r) => setTimeout(r, 5000))]);
+        // Troppo tardi: il post è uscito prima dell'annullamento. Si resta sull'esito, e lo si dice.
+        if (published.current) {
+          const msg = "Il post era già stato pubblicato: non si può più annullare. Se vuoi, puoi eliminarlo dal tuo profilo.";
+          if (Platform.OS === "web") globalThis.alert?.(msg);
+          else Alert.alert("Post già pubblicato", msg, [{ text: "OK" }]);
+          return stay();
+        }
         leave();
       };
       if (Platform.OS === "web") {
@@ -239,6 +249,8 @@ export default function CreateScreen() {
    * (su Android la fotocamera che accetta "foto o video" scatta solo foto).
    */
   const pick = async (source: "gallery" | "photo" | "video") => {
+    // Mentre si pubblica la bozza non cambia: si pubblica quella confermata.
+    if (busyRef.current) return;
     setError(null);
     const room = MAX - media.length;
     if (room <= 0) return setError(`Al massimo ${MAX} foto e video per post.`);
@@ -281,6 +293,7 @@ export default function CreateScreen() {
   };
 
   const move = (dir: -1 | 1) => {
+    if (busyRef.current) return;
     setMedia((m) => {
       const j = selected + dir;
       if (j < 0 || j >= m.length) return m;
@@ -291,6 +304,7 @@ export default function CreateScreen() {
     setSelected((s) => Math.max(0, Math.min(media.length - 1, s + dir)));
   };
   const remove = () => {
+    if (busyRef.current) return;
     setMedia((m) => m.filter((_, i) => i !== selected));
     setSelected((s) => Math.max(0, Math.min(s, media.length - 2)));
   };
@@ -317,6 +331,7 @@ export default function CreateScreen() {
       );
       running.current = job;
       const res = await job;
+      published.current = true;
       haptic("success");
       bump();
       setDone(res);
@@ -504,7 +519,7 @@ export default function CreateScreen() {
                   />
                 </Press>
               ))}
-              {media.length < MAX ? (
+              {media.length < MAX && !busy ? (
                 <Press
                   style={[styles.thumb, styles.add]}
                   onPress={() => void pick("gallery")}
@@ -521,15 +536,15 @@ export default function CreateScreen() {
                 icon="sinistra"
                 label="Prima"
                 onPress={() => move(-1)}
-                disabled={selected === 0}
+                disabled={busy || selected === 0}
               />
               <Tool
                 icon="destra"
                 label="Dopo"
                 onPress={() => move(1)}
-                disabled={selected >= media.length - 1}
+                disabled={busy || selected >= media.length - 1}
               />
-              <Tool icon="cestino" label="Togli" onPress={remove} />
+              <Tool icon="cestino" label="Togli" onPress={remove} disabled={busy} />
               <Txt
                 variant="meta"
                 tone={color.paperFaint}
@@ -543,12 +558,12 @@ export default function CreateScreen() {
             <Press
               style={styles.contest}
               scaleTo={0.99}
-              onPress={() => canJoin && setJoin((j) => !j)}
-              disabled={!canJoin}
+              onPress={() => canJoin && !busy && setJoin((j) => !j)}
+              disabled={!canJoin || busy}
               accessibilityRole="switch"
               accessibilityState={{
                 checked: join && canJoin,
-                disabled: !canJoin,
+                disabled: !canJoin || busy,
               }}
             >
               <View style={{ flex: 1, gap: 4 }}>
@@ -573,6 +588,7 @@ export default function CreateScreen() {
                 value={caption}
                 // Limite in caratteri come il server (un'emoji è uno): niente maxLength, che la conta doppia.
                 onChangeText={(t) => setCaption(clampChars(t, CAPTION_MAX))}
+                editable={!busy}
                 placeholder="Scrivi una didascalia"
                 accessibilityLabel="Didascalia"
                 multiline

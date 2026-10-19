@@ -786,6 +786,12 @@ export function validateRegistration(input: RegisterInput, again?: string): Regi
   if (!input.lastName.trim()) return bad('last', 'Scrivi nome e cognome.');
   if (input.firstName.trim().length > 60) return bad('first', 'Nome e cognome: al massimo 60 caratteri.');
   if (input.lastName.trim().length > 60) return bad('last', 'Nome e cognome: al massimo 60 caratteri.');
+  if (NAME_BAD_CHARS.test(input.firstName.trim())) return bad('first', 'Nome e cognome contengono caratteri non validi.');
+  if (NAME_BAD_CHARS.test(input.lastName.trim())) return bad('last', 'Nome e cognome contengono caratteri non validi.');
+  // Il nome mostrato ("Nome I.") non può spacciarsi per l'app o per chi la gestisce (come complete_registration).
+  if (displayNameReserved(`${input.firstName.trim().slice(0, 36)} ${input.lastName.trim().slice(0, 1)}`)) {
+    return bad('first', 'Questo nome non è disponibile: scrivi il tuo nome e cognome veri.');
+  }
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.birthDate);
   const d = m ? new Date(`${input.birthDate}T12:00:00Z`) : null;
   if (!m || !d || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== input.birthDate || input.birthDate < '1900-01-01' || input.birthDate > arenaDay()) {
@@ -1116,8 +1122,11 @@ export async function changePassword(current: string, next: string): Promise<voi
     if (check.error) throw new Error('La password attuale non è corretta.');
     const { error } = await db().auth.updateUser({ password: next });
     if (error) throw new Error(authMessage(error.message));
-    // Gli altri dispositivi collegati con la vecchia password vengono disconnessi.
+    // Gli altri dispositivi collegati con la vecchia password vengono disconnessi, e non ricevono più le notifiche
+    // (un telefono perso o rubato): resta solo questo.
     await db().auth.signOut({ scope: 'others' }).catch(() => undefined);
+    const keep = await getJson<string | null>(PUSH_TOKEN_KEY, null);
+    await rpc('drop_other_push_tokens', { p_keep: keep }).catch(() => undefined);
     return;
   }
   const meName = (await getMe())?.username ?? '';
@@ -1227,12 +1236,26 @@ export async function recoverPassword(username: string, code: string, password: 
   return login(u, password);
 }
 
+/** Come display_name_reserved (schema.sql): nomi da staff anche con spazi, punti, accenti o numeri al posto delle lettere. */
+export function displayNameReserved(name: string): boolean {
+  const from = '0134578@$!|àáâäãèéêëìíîïòóôöõùúûü';
+  const to = 'oieastbasiiaaaaaeeeeiiiiooooouuuu';
+  const flat = Array.from(name.toLowerCase())
+    .map((c) => (from.includes(c) ? to[from.indexOf(c)] : c))
+    .join('')
+    .replace(/[^a-z]/g, '');
+  return /(v[il]ra[il]e|staff|adm[il]n|amm[il]n[il]stra|moderat|support|ass[il]stenza|uff[il]c[il]a[il]e|off[il]c[il]a[il])/.test(flat);
+}
+
+/** Come name_bad_chars (schema.sql): caratteri di controllo e invisibili. */
+const NAME_BAD_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]/;
+
 /** Stesse regole di update_my_profile (schema.sql): nome da 1 a 30 caratteri senza nomi da staff, bio fino a 160. */
 function profileProblem(name: string | undefined, bio: string | undefined): string | null {
   if (name !== undefined) {
     if (charCount(name) < 1 || charCount(name) > 30) return 'Il nome può avere da 1 a 30 caratteri.';
-    if (/[\u0000-\u001f\u007f]/.test(name)) return 'Il nome contiene caratteri non validi.';
-    if (/(virale|staff|moderat|amministrat|supporto)/i.test(name)) return 'Questo nome non è disponibile.';
+    if (NAME_BAD_CHARS.test(name)) return 'Il nome contiene caratteri non validi.';
+    if (displayNameReserved(name)) return 'Questo nome non è disponibile.';
   }
   if (bio !== undefined) {
     if (charCount(bio) > 160) return 'La bio può avere al massimo 160 caratteri.';
@@ -2218,7 +2241,9 @@ export async function modResolveUserReport(kind: 'comment' | 'profile', target: 
       authorId = cm?.authorId ?? authorId;
       if (action !== 'dismiss' && postId) demo.comments[postId] = demo.comments[postId].filter((c) => c.id !== target);
     } else if (action !== 'dismiss' && demo.people[target]) {
+      // Come sul server: niente bio e un nome neutro (quello di prima potrebbe essere il motivo della segnalazione).
       demo.people[target].bio = '';
+      demo.people[target].displayName = 'Utente';
     }
     demo.userReports = reports.filter((r) => !match(r));
     if (action === 'ban' && authorId) {

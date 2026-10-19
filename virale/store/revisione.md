@@ -16,6 +16,9 @@ login screen lets users choose a new password without email. A new code can be c
 Note for the reviewer: a new account must confirm its age within 7 days by uploading a photo of an ID
 document and a selfie; until the deadline every feature works. New accounts cannot vote in the daily
 contest for their first 24 hours (anti-fraud). Reporting, blocking and account deletion work immediately.
+If automatic verification (Didit) is enabled, the app first asks for the user's explicit consent: Didit compares the
+selfie with the photo on the ID (a single 1:1 face match, used only to check the age, images deleted after the
+decision). Users who do not consent upload the photos instead and a person checks them.
 
 ## User-generated content (Guideline 1.2)
 - Terms of Service and Community Guidelines must be accepted before creating an account

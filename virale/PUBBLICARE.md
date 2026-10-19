@@ -51,7 +51,11 @@ password, notifiche push, pulizia automatica dei file e pagina per i link condiv
    (passo 2), `EXPO_PUBLIC_APPSTORE_URL` appena esiste la scheda App Store, e le chiavi di Supabase (passo 5).
    **Senza i dati del titolare la build di produzione si apre su "Configurazione mancante"**: è voluto.
 6. **GitHub → repository → Settings → Secrets and variables → Actions → Variables**: crea le stesse
-   `EXPO_PUBLIC_OWNER_*` e `EXPO_PUBLIC_APPSTORE_URL`, poi **Actions → "Virale · pagine legali" → Run workflow**.
+   `EXPO_PUBLIC_OWNER_*` e `EXPO_PUBLIC_APPSTORE_URL`. Poi fai il **merge di questo branch in `master`** (il ramo
+   predefinito del repository: GitHub esegue e mostra il lavoro "Virale · pagine legali" solo se il file
+   `.github/workflows/virale-pagine-legali.yml` è lì), attiva **Settings → Pages → Source: GitHub Actions** e infine
+   **Actions → "Virale · pagine legali" → Run workflow**. Da allora il sito si ripubblica da solo a ogni modifica
+   dei testi legali su `master`.
    Controllo: `…/privacy.html` mostra i tuoi dati e `…/apri.html?p=00000000-0000-0000-0000-000000000000`
    mostra la pagina di Virale.
 7. **Notifiche push su Android (Firebase)**:
@@ -185,7 +189,8 @@ Ti servono al passo 5.
 Apple e Google chiedono gli indirizzi web di Privacy ed Eliminazione account.
 
 **Con GitHub Pages (già configurato):**
-1. Fai il merge del branch su `main` (o chiedimelo e apro la pull request).
+1. Fai il merge del branch in `master`, il ramo predefinito del repository (o chiedimelo e apro la pull request):
+   il lavoro che pubblica il sito parte solo da lì.
 2. Su GitHub: **Settings → Pages → Source: GitHub Actions**.
 3. **Actions → "Virale · pagine legali" → Run workflow**.
 4. Gli indirizzi saranno:
@@ -336,7 +341,7 @@ La release arriva come bozza nel canale interno: la promuovi tu dalla console.
 4. Su App Store Connect crea la nuova versione, scrivi le novità e inviala in revisione.
 
 Se modifichi i testi legali, aggiorna `LEGAL_UPDATED` in `src/legal/docs.ts`: le pagine web si
-ripubblicano da sole al merge su `main`.
+ripubblicano da sole al merge in `master`.
 
 ## Rigenerare la grafica
 

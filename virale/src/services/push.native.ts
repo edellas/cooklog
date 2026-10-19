@@ -5,10 +5,12 @@ import { useEffect, useRef } from 'react';
 import { Linking, Platform } from 'react-native';
 
 import { isDemo, registerPushToken } from './api';
+import { getJson, setJson } from './storage';
 
 /**
  * Notifiche push sul telefono. Il permesso non si chiede all'avvio: lo si chiede dopo la prima candidatura
- * ("Vuoi sapere quando il tuo post sale di gradino?") o dalle Impostazioni. Nessun errore qui blocca l'app.
+ * ("Vuoi sapere quando il tuo post sale di gradino?") o dalle Impostazioni, e il telefono si registra solo
+ * dopo quel sì, su ogni versione di Android e iOS. Nessun errore qui blocca l'app.
  */
 export type PushState = 'granted' | 'undetermined' | 'denied' | 'unavailable' | 'unsupported';
 
@@ -36,15 +38,29 @@ function ensureChannel(): Promise<unknown> {
 /** Il token non è arrivato (per esempio una build Android senza Firebase): lo si dice nelle Impostazioni. */
 let unavailable = false;
 
-function stateOf(p: Notifications.NotificationPermissionsStatus): PushState {
-  if (p.granted || p.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) return unavailable ? 'unavailable' : 'granted';
+/**
+ * Il sì dato nell'app ("Avvisami", "Attiva" nelle Impostazioni). Su iPhone e da Android 13 il permesso lo chiede
+ * il sistema, quindi è già un consenso; fino ad Android 12 il permesso c'è da subito: senza questo sì il
+ * telefono non si registra.
+ */
+const CONSENT_KEY = 'virale.push.consenso';
+const systemAsks = Platform.OS === 'ios' || (Platform.OS === 'android' && Number(Platform.Version) >= 33);
+async function hasConsent(): Promise<boolean> {
+  return systemAsks || (await getJson<boolean>(CONSENT_KEY, false));
+}
+
+function stateOf(p: Notifications.NotificationPermissionsStatus, consent: boolean): PushState {
+  if (p.granted || p.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) {
+    if (!consent) return 'undetermined';
+    return unavailable ? 'unavailable' : 'granted';
+  }
   return p.canAskAgain ? 'undetermined' : 'denied';
 }
 
 export async function pushPermission(): Promise<PushState> {
   if (isDemo) return 'unsupported';
   try {
-    return stateOf(await Notifications.getPermissionsAsync());
+    return stateOf(await Notifications.getPermissionsAsync(), await hasConsent());
   } catch {
     return 'unavailable';
   }
@@ -67,9 +83,11 @@ export async function registerPush(): Promise<PushState> {
   if (isDemo) return 'unsupported';
   try {
     await ensureChannel();
+    // Chi arriva qui ha toccato "Avvisami" o "Attiva": è il consenso (anche dove il sistema non chiede nulla).
+    await setJson(CONSENT_KEY, true);
     let p = await Notifications.getPermissionsAsync();
     if (!p.granted && p.canAskAgain) p = await Notifications.requestPermissionsAsync();
-    if (!p.granted && p.ios?.status !== Notifications.IosAuthorizationStatus.PROVISIONAL) return stateOf(p);
+    if (!p.granted && p.ios?.status !== Notifications.IosAuthorizationStatus.PROVISIONAL) return stateOf(p, true);
     return await syncToken();
   } catch {
     return 'unavailable';
@@ -80,7 +98,8 @@ export async function refreshPushToken(): Promise<void> {
   if (isDemo) return;
   try {
     const p = await Notifications.getPermissionsAsync();
-    if (!p.granted) return;
+    // Fino ad Android 12 il permesso c'è già all'installazione: si registra solo dopo il sì nell'app.
+    if (!p.granted || !(await hasConsent())) return;
     await ensureChannel();
     await syncToken();
   } catch {

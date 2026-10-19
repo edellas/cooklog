@@ -20,7 +20,7 @@ import { friendlyError } from '../../src/services/errors';
 import { useToast } from '../../src/components/Toast';
 import { useNav } from '../../src/state/nav';
 import { alreadySeen, markSeen } from '../../src/state/hints';
-import { onPostGone } from '../../src/state/postEvents';
+import { onFollowChange, onPostGone } from '../../src/state/postEvents';
 import { onSectionRequest, takeSection } from '../../src/state/sections';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
@@ -271,11 +271,43 @@ export default function ProviniTab() {
     return () => sub.remove();
   }, []);
 
+  // Un follow cambiato altrove ("Trova persone da seguire", un profilo, Esplora): la lista di Seguiti ricordata
+  // non vale più; se Seguiti era vuota ("Non segui ancora nessuno.") si ricarica tornando qui.
+  const followsChanged = useRef(false);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(
+    () =>
+      onFollowChange(() => {
+        followsChanged.current = true;
+        delete saved.current.seguiti;
+      }),
+    [],
+  );
+  const followReload = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (followReload.current) clearTimeout(followReload.current);
+    },
+    [],
+  );
+
   // Uscendo dal tab (o aprendo commenti e azioni) la vista corrente si registra e i video si fermano;
   // tornando, la vista del post sullo schermo riprende a contare.
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
+      if (followsChanged.current && modeRef.current === 'seguiti' && !cardsRef.current.length) {
+        followsChanged.current = false;
+        setLoading(true);
+        // Un attimo di margine: il follow appena toccato potrebbe essere ancora in viaggio verso il server.
+        if (followReload.current) clearTimeout(followReload.current);
+        followReload.current = setTimeout(() => {
+          if (modeRef.current === 'seguiti') void loadRef.current(true);
+        }, 400);
+      }
       const visible = cardsRef.current.find((c) => c.key === activeKeyRef.current);
       if (visible && !current.current && !introRef.current) current.current = { card: visible, since: Date.now() };
       // Una sezione chiesta da un'altra schermata mentre i Provini erano già aperti.

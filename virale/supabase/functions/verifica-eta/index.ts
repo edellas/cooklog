@@ -264,33 +264,52 @@ const EXPO_PUSH = 'https://exp.host/--/api/v2/push/send';
 type PushMessage = { to: string; title: string; body: string; data: { url: string | null }; channelId: string };
 type PushTicket = { status?: 'ok' | 'error'; message?: string; details?: { error?: string } };
 
+/** Il formato dei token di Expo (lo stesso controllo di register_push_token in schema.sql). */
+const EXPO_TOKEN = /^Expo(nent)?PushToken\[[A-Za-z0-9_-]+\]$/;
+
+/** Una richiesta a Expo: lo stato HTTP (0 se Expo non risponde) e un esito per messaggio. */
+async function expoPost(messages: PushMessage[], headers: Record<string, string>): Promise<{ status: number; tickets: PushTicket[] }> {
+  try {
+    const res = await fetch(EXPO_PUSH, { method: 'POST', headers, body: JSON.stringify(messages) });
+    if (res.ok) return { status: res.status, tickets: ((await res.json()) as { data?: PushTicket[] }).data ?? [] };
+    console.error('verifica-eta: push', res.status, (await res.text()).slice(0, 300));
+    return { status: res.status, tickets: [] };
+  } catch (e) {
+    // Expo non risponde: si riprova al prossimo giro (al massimo 5 volte per notifica).
+    console.error('verifica-eta: push', e);
+    return { status: 0, tickets: [] };
+  }
+}
+
 /**
  * Invia a Expo a blocchi di 100 (il massimo per richiesta). Per ogni messaggio dice se è partito; i telefoni
- * che Expo dà per non più registrati (app disinstallata) si raccolgono per dimenticarli.
+ * che Expo dà per non più registrati (app disinstallata) o con un token non valido si raccolgono per dimenticarli.
+ * Se Expo rifiuta un blocco intero (per esempio un token di un altro progetto Expo in mezzo agli altri), i
+ * messaggi di quel blocco si inviano uno per uno: un token sbagliato non ferma le notifiche degli altri.
  */
 async function expoSend(messages: PushMessage[]): Promise<{ sent: boolean[]; dead: string[]; delivered: number }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
   if (env('EXPO_ACCESS_TOKEN')) headers.Authorization = `Bearer ${env('EXPO_ACCESS_TOKEN')}`;
-  const sent: boolean[] = [];
+  const sent: boolean[] = new Array<boolean>(messages.length).fill(false);
   const dead: string[] = [];
   let delivered = 0;
-  for (let i = 0; i < messages.length; i += 100) {
-    const chunk = messages.slice(i, i + 100);
-    let tickets: PushTicket[] = [];
-    try {
-      const res = await fetch(EXPO_PUSH, { method: 'POST', headers, body: JSON.stringify(chunk) });
-      if (res.ok) tickets = ((await res.json()) as { data?: PushTicket[] }).data ?? [];
-      else console.error('verifica-eta: push', res.status, (await res.text()).slice(0, 300));
-    } catch (e) {
-      // Expo non risponde: si riprova al prossimo giro (al massimo 5 volte per notifica).
-      console.error('verifica-eta: push', e);
+  const valid: number[] = [];
+  messages.forEach((m, i) => (EXPO_TOKEN.test(m.to) ? valid.push(i) : dead.push(m.to)));
+  for (let i = 0; i < valid.length; i += 100) {
+    const idx = valid.slice(i, i + 100);
+    const chunk = idx.map((k) => messages[k]);
+    const first = await expoPost(chunk, headers);
+    let tickets = first.tickets;
+    if (first.status === 400 && chunk.length > 1) {
+      tickets = [];
+      for (const m of chunk) tickets.push((await expoPost([m], headers)).tickets[0] ?? {});
     }
-    chunk.forEach((m, j) => {
+    idx.forEach((k, j) => {
       const t = tickets[j];
-      if (t?.details?.error === 'DeviceNotRegistered') dead.push(m.to);
+      if (t?.details?.error === 'DeviceNotRegistered') dead.push(messages[k].to);
       if (t?.status === 'ok') delivered += 1;
       // Un telefono che non c'è più non va ritentato: per lui la notifica è chiusa.
-      sent.push(t?.status === 'ok' || t?.details?.error === 'DeviceNotRegistered');
+      sent[k] = t?.status === 'ok' || t?.details?.error === 'DeviceNotRegistered';
     });
   }
   return { sent, dead, delivered };

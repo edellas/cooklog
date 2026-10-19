@@ -1197,6 +1197,7 @@ declare
   v_uid uuid := auth.uid();
   v_c comments;
   v_author profiles;
+  v_body text;
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
   select * into v_c from comments where id = p_comment_id;
@@ -1205,9 +1206,13 @@ begin
   end if;
   if v_c.user_id = v_uid then raise exception 'Non puoi segnalare un tuo commento.'; end if;
   select * into v_author from profiles where id = v_c.user_id;
+  -- La copia del testo come prova: senza spazi in coda e mai oltre il limite della colonna (2000 caratteri
+  -- in JSON, dove un carattere speciale ne occupa fino a 6).
+  v_body := left(btrim(v_c.body), 300);
+  if length(to_jsonb(v_body)::text) > 1600 then v_body := left(v_body, 200); end if;
   insert into user_reports (kind, comment_id, post_id, target_user_id, reporter_id, reason, note, snapshot)
   values ('comment', v_c.id, v_c.post_id, v_c.user_id, v_uid, p_reason, nullif(trim(coalesce(p_note, '')), ''),
-          jsonb_build_object('body', v_c.body, 'username', v_author.username, 'created_at', v_c.created_at))
+          jsonb_build_object('body', v_body, 'username', v_author.username, 'created_at', v_c.created_at))
   on conflict (comment_id, reporter_id) where kind = 'comment' do nothing;
 end;
 $$;
@@ -1257,16 +1262,15 @@ begin
 end;
 $$;
 
--- Profilo azzerato dalla moderazione: niente bio né foto, il nome torna "Nome I." (se ci sono i dati privati).
+-- Profilo azzerato dalla moderazione: niente bio né foto, il nome diventa "Utente" (neutro: quello di prima,
+-- o quello della registrazione, potrebbe essere proprio il motivo della segnalazione).
 create or replace function public.mod_reset_profile(p_user uuid)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   insert into storage_purge (bucket, path) select 'avatars', avatar_path from profiles where id = p_user and avatar_path is not null
   on conflict do nothing;
   update profiles
-     set bio = '', avatar_path = null, name_changed_at = now(),
-         display_name = coalesce((select left(trim(v.first_name), 36) || ' ' || upper(left(trim(v.last_name), 1)) || '.'
-                                    from profile_private v where v.id = p_user), display_name)
+     set bio = '', avatar_path = null, name_changed_at = now(), display_name = 'Utente'
    where id = p_user;
 end;
 $$;
@@ -1750,6 +1754,20 @@ returns boolean language sql immutable as $$
                   or p ~ '^(virale|admin)', false);
 $$;
 
+-- Nomi visualizzati da staff ("Virale", "Staff", "Admin", "Moderatore"…) anche scritti con spazi, punti,
+-- accenti o numeri al posto delle lettere ("V1rale", "S.t.a.f.f", "Àdmin", "M0deratore").
+create or replace function public.display_name_reserved(p text)
+returns boolean language sql immutable as $$
+  select regexp_replace(translate(lower(coalesce(p, '')), '0134578@$!|àáâäãèéêëìíîïòóôöõùúûü', 'oieastbasiiaaaaaeeeeiiiiooooouuuu'), '[^a-z]', '', 'g')
+         ~ '(v[il]ra[il]e|staff|adm[il]n|amm[il]n[il]stra|moderat|support|ass[il]stenza|uff[il]c[il]a[il]e|off[il]c[il]a[il])';
+$$;
+
+-- Caratteri di controllo e invisibili (a capo, tabulazioni, spazi di larghezza zero, inversione del testo).
+create or replace function public.name_bad_chars(p text)
+returns boolean language sql immutable as $$
+  select coalesce(p, '') ~ '[[:cntrl:]\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]';
+$$;
+
 create or replace function public.username_ok(p text)
 returns boolean language sql immutable as $$
   select public.username_format_ok(p) and not public.username_reserved(p);
@@ -1792,6 +1810,11 @@ begin
   end if;
   if exists (select 1 from banned_usernames where username = v_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
   if length(v_first) not between 1 and 60 or length(v_last) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
+  if public.name_bad_chars(v_first) or public.name_bad_chars(v_last) then raise exception 'Nome e cognome contengono caratteri non validi.'; end if;
+  -- Il nome mostrato ("Nome I.") non può spacciarsi per l'app o per chi la gestisce.
+  if public.display_name_reserved(left(v_first, 36) || ' ' || left(v_last, 1)) then
+    raise exception 'Questo nome non è disponibile: scrivi il tuo nome e cognome veri.';
+  end if;
   if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.rome_today() then
     raise exception 'Data di nascita non valida.';
   end if;
@@ -2192,13 +2215,28 @@ returns boolean language sql stable security definer set search_path = public, p
   select exists (select 1 from profiles where avatar_path = p_path);
 $$;
 
+-- Un file che un post visibile (o che può tornare visibile) usa ancora. Un post rimosso dalla moderazione o
+-- di un utente espulso non torna più: i suoi file si cancellano anche se la riga del post resta.
+create or replace function public.media_kept(p_path text)
+returns boolean language sql stable security definer set search_path = public, pg_temp as $$
+  select split_part(p_path, '/', 1) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     and exists (
+       select 1 from posts p join profiles a on a.id = p.author_id, jsonb_array_elements(p.media) m
+        where p.author_id = split_part(p_path, '/', 1)::uuid
+          and a.banned_at is null
+          and p.hidden_reason is distinct from 'moderazione' and p.hidden_reason is distinct from 'utente espulso'
+          and (public.media_path(m->>'url') = p_path or public.media_path(m->>'poster') = p_path)
+     );
+$$;
+revoke all on function public.media_kept(text) from public, anon, authenticated;
+
 -- I file da cancellare davvero: un file che un post (o un profilo) usa ancora non si cancella mai,
--- chiunque l'abbia messo in coda.
+-- chiunque l'abbia messo in coda; quelli dei post rimossi dalla moderazione e degli espulsi sì.
 create or replace function public.storage_purge_pending(p_limit int)
 returns table (bucket text, path text) language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
   return query select q.bucket, q.path from storage_purge q
-   where not (q.bucket = 'media' and public.media_in_use(q.path))
+   where not (q.bucket = 'media' and public.media_kept(q.path))
      and not (q.bucket = 'avatars' and public.avatar_in_use(q.path))
    order by q.queued_at limit least(greatest(p_limit, 1), 1000);
 end;
@@ -2891,9 +2929,9 @@ begin
   if p_display_name is not null then
     v_name := regexp_replace(trim(p_display_name), '\s+', ' ', 'g');
     if length(v_name) not between 1 and 30 then raise exception 'Il nome può avere da 1 a 30 caratteri.'; end if;
-    if v_name ~ '[[:cntrl:]]' then raise exception 'Il nome contiene caratteri non validi.'; end if;
-    -- Nessuno si spaccia per l'app o per chi la gestisce.
-    if lower(v_name) ~ '(virale|staff|moderat|amministrat|supporto)' then raise exception 'Questo nome non è disponibile.'; end if;
+    if public.name_bad_chars(v_name) then raise exception 'Il nome contiene caratteri non validi.'; end if;
+    -- Nessuno si spaccia per l'app o per chi la gestisce (nemmeno con spazi, accenti o numeri al posto delle lettere).
+    if public.display_name_reserved(v_name) then raise exception 'Questo nome non è disponibile.'; end if;
     if v_name is distinct from v_pr.display_name then
       if v_pr.name_changed_at > now() - interval '7 days' then raise exception 'Puoi cambiare il nome una volta ogni 7 giorni.'; end if;
     end if;
@@ -3026,13 +3064,15 @@ begin
 end;
 $$;
 
--- Dopo il cambio di password con il codice: tutti i dispositivi collegati escono (anche quello di chi l'aveva rubata).
+-- Dopo il cambio di password con il codice: tutti i dispositivi collegati escono (anche quello di chi l'aveva rubata)
+-- e nessun telefono riceve più le notifiche dell'account (un telefono perso non mostra più niente).
 create or replace function public.revoke_sessions(p_user_id uuid)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   if to_regclass('auth.sessions') is not null then
     execute 'delete from auth.sessions where user_id = $1' using p_user_id;
   end if;
+  delete from push_tokens where user_id = p_user_id;
 end;
 $$;
 
@@ -3090,6 +3130,9 @@ create table if not exists public.push_outbox (
   sent_at timestamptz,
   attempts int not null default 0
 );
+-- Chi ha fatto l'azione e su quale post: all'invio si ricontrolla che la notifica abbia ancora senso.
+alter table public.push_outbox add column if not exists actor_id uuid;
+alter table public.push_outbox add column if not exists post_id uuid;
 create index if not exists idx_push_outbox_due on public.push_outbox (not_before, id) where sent_at is null;
 create index if not exists idx_push_outbox_dedup on public.push_outbox (user_id, dedup, created_at desc);
 alter table public.push_outbox enable row level security;
@@ -3184,8 +3227,8 @@ begin
     v_body := 'Un tuo contenuto è stato rimosso perché viola le linee guida.';
     v_url := '/notifiche';
   end if;
-  insert into push_outbox (user_id, kind, title, body, url, dedup, not_before)
-  values (new.user_id, new.kind, v_title, v_body, v_url, v_dedup, public.push_not_before(v_at));
+  insert into push_outbox (user_id, kind, title, body, url, dedup, not_before, actor_id, post_id)
+  values (new.user_id, new.kind, v_title, v_body, v_url, v_dedup, public.push_not_before(v_at), new.actor_id, new.post_id);
   return null;
 end;
 $$;
@@ -3236,6 +3279,12 @@ returns void language sql security definer set search_path = public, pg_temp as 
   delete from public.push_tokens where token = p_token and user_id = auth.uid();
 $$;
 
+-- Cambio della password (gli altri dispositivi escono): solo questo telefono continua a ricevere le notifiche.
+create or replace function public.drop_other_push_tokens(p_keep text default null)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  delete from public.push_tokens where user_id = auth.uid() and token is distinct from p_keep;
+$$;
+
 create or replace function public.get_push_prefs()
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('cover', coalesce(pp.cover, true), 'contest', coalesce(pp.contest, true), 'social', coalesce(pp.social, true))
@@ -3273,6 +3322,14 @@ begin
   if v_ids is null then return; end if;
   update push_outbox o set sent_at = now()
    where o.id = any(v_ids) and not exists (select 1 from push_tokens t where t.user_id = o.user_id);
+  -- Notifiche che nel frattempo hanno perso senso: commento cancellato o rimosso, autore bloccato da chi la
+  -- riceverebbe (o che l'ha bloccato), autore espulso. Si chiudono senza inviarle.
+  update push_outbox o set sent_at = now()
+   where o.id = any(v_ids) and o.sent_at is null and o.actor_id is not null
+     and (exists (select 1 from profiles a where a.id = o.actor_id and a.banned_at is not null)
+          or exists (select 1 from blocks b where (b.blocker_id = o.user_id and b.blocked_id = o.actor_id)
+                                               or (b.blocker_id = o.actor_id and b.blocked_id = o.user_id))
+          or (o.kind = 'comment' and not exists (select 1 from comments c where c.post_id = o.post_id and c.user_id = o.actor_id)));
   update push_outbox o set attempts = o.attempts + 1 where o.id = any(v_ids) and o.sent_at is null;
   return query
   with r as (select o.id, o.user_id, o.title, o.body, o.url from push_outbox o where o.id = any(v_ids) and o.sent_at is null),
@@ -3429,6 +3486,8 @@ grant execute on function public.push_drop_tokens(text[]) to service_role;
 grant execute on function public.push_broadcast_take(int) to service_role;
 revoke all on function public.recovery_redeem(text, text, boolean) from public, anon, authenticated;
 revoke all on function public.revoke_sessions(uuid) from public, anon, authenticated;
+revoke all on function public.drop_other_push_tokens(text) from public, anon;
+grant execute on function public.drop_other_push_tokens(text) to authenticated;
 grant execute on function public.recovery_redeem(text, text, boolean) to service_role;
 grant execute on function public.revoke_sessions(uuid) to service_role;
 -- Pulizia dei file dal lavoro programmato: solo con la chiave di servizio.
@@ -3455,6 +3514,41 @@ revoke all on function public.identity_apply(uuid, text, text, uuid) from public
 grant execute on function public.identity_provider_start(uuid, text) to service_role;
 grant execute on function public.identity_provider_result(uuid, text, text, date, text, text, text) to service_role;
 grant execute on function public.profile_posts(text, text, timestamptz, int) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 23) Segnalazioni: conservate al massimo 12 mesi (informativa privacy), niente copie di chi se ne va
+-- ---------------------------------------------------------------------------
+-- Le segnalazioni chiuse da più di 12 mesi si cancellano (la chiama la pulizia notturna, setup-produzione.sql).
+create or replace function public.reports_retention()
+returns void language sql security definer set search_path = public, pg_temp as $$
+  delete from public.reports where status <> 'open' and coalesce(resolved_at, created_at) < now() - interval '12 months';
+  delete from public.user_reports where status <> 'open' and coalesce(resolved_at, created_at) < now() - interval '12 months';
+$$;
+revoke all on function public.reports_retention() from public, anon, authenticated;
+
+-- Un account eliminato non lascia copie dei suoi dati nelle segnalazioni: quando il database toglie il
+-- riferimento all'account (on delete set null) si cancellano anche la copia del commento o del profilo
+-- (snapshot) e la nota di chi aveva segnalato. Resta solo che c'è stata una segnalazione, e la decisione.
+create or replace function public.forget_reports_of()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if new.reporter_id is null and old.reporter_id is not null then
+    new.note := null;
+    if tg_table_name = 'user_reports' then new.snapshot := '{}'::jsonb; end if;
+  end if;
+  if tg_table_name = 'user_reports' then
+    if new.target_user_id is null and old.target_user_id is not null then new.snapshot := '{}'::jsonb; end if;
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trg_profiles_forget_reports on public.profiles;
+drop trigger if exists trg_user_reports_forget on public.user_reports;
+create trigger trg_user_reports_forget before update of reporter_id, target_user_id on public.user_reports
+  for each row execute function public.forget_reports_of();
+drop trigger if exists trg_reports_forget on public.reports;
+create trigger trg_reports_forget before update of reporter_id on public.reports
+  for each row execute function public.forget_reports_of();
 
 -- ---------------------------------------------------------------------------
 -- 8-9) Pianificazione di mezzanotte e Storage: vedi setup-produzione.sql

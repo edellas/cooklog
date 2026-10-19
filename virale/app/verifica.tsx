@@ -303,6 +303,10 @@ export default function VerifyScreen() {
                   fai un breve selfie. Legge solo la data di nascita e controlla che il volto sia il tuo. Finita la verifica, i dati vengono cancellati anche da
                   Didit.
                 </Txt>
+                <Txt variant="small" tone={color.paperDim}>
+                  Toccando “Verifica ora” acconsenti espressamente al confronto biometrico del tuo volto con la foto del documento, fatto da Didit solo per
+                  verificare l’età (art. 9 GDPR). Se non vuoi, manda le foto a un amministratore: le guarda una persona.
+                </Txt>
                 <Press style={[styles.cta, checking && styles.off]} onPress={() => void runAuto()} disabled={checking} accessibilityRole="button">
                   {checking ? (
                     <ActivityIndicator color={color.canvas} />

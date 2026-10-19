@@ -2,11 +2,12 @@
 # eliminazione account: gli store chiedono indirizzi pubblici), pagina iniziale con i link agli store e
 # apri.html, la pagina che apre i link condivisi.
 # Attivazione una tantum: Settings → Pages → Source: "GitHub Actions".
+# Il file deve stare sul ramo predefinito (master): solo da lì GitHub mostra "Run workflow".
 name: Virale · pagine legali
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths: ['virale/src/legal/**', 'virale/scripts/export-legal.ts', 'virale/assets/icon.png', '.github/workflows/virale-pagine-legali.yml']
   workflow_dispatch:
 

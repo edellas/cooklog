@@ -110,6 +110,8 @@ select cron.schedule(
      -- Notifiche push inviate (o abbandonate dopo 5 tentativi) da più di 7 giorni; copertine annunciate da più di 30.
      delete from public.push_outbox where coalesce(sent_at, created_at) < now() - interval '7 days';
      delete from public.push_broadcasts where featured_on < current_date - 30;
+     -- Segnalazioni chiuse da più di 12 mesi (l'informativa promette "fino a 12 mesi").
+     select public.reports_retention();
      -- File caricati da più di un giorno e mai usati in un post (pubblicazione interrotta): in pulizia.
      insert into public.storage_purge (bucket, path)
      select o.bucket_id, o.name from storage.objects o

@@ -885,7 +885,7 @@ do $$ declare d jsonb; begin
   if d ->> 'what' <> 'comment' or d ->> 'reason' not in ('spam', 'odio') or d ->> 'body' <> 'Commento brutto' then raise exception 'notifica di rimozione senza motivo: %', d; end if;
   raise notice 'ok, commento rimosso e autore avvisato con il motivo';
 end $$;
--- Rimozione del profilo: bio e foto azzerate, nome di nuovo "Nome I.".
+-- Rimozione del profilo: bio e foto azzerate, nome neutro "Utente".
 update profiles set avatar_path = '00000000-0000-0000-0000-000000000102/avatar-1700000000000.jpg', display_name = 'Moderatore Ufficiale' where username = 'mod2';
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000105', false);
@@ -893,9 +893,9 @@ select mod_resolve_user_report('profile', '00000000-0000-0000-0000-000000000102'
 reset role;
 do $$ declare pr profiles; begin
   select * into pr from profiles where username = 'mod2';
-  if pr.bio <> '' or pr.avatar_path is not null or pr.display_name <> 'Carla N.' then raise exception 'profilo non azzerato: % % %', pr.bio, pr.avatar_path, pr.display_name; end if;
+  if pr.bio <> '' or pr.avatar_path is not null or pr.display_name <> 'Utente' then raise exception 'profilo non azzerato: % % %', pr.bio, pr.avatar_path, pr.display_name; end if;
   if not exists (select 1 from storage_purge where bucket = 'avatars' and path = '00000000-0000-0000-0000-000000000102/avatar-1700000000000.jpg') then raise exception 'foto non messa in pulizia'; end if;
-  raise notice 'ok, profilo rimosso: bio e foto azzerate, nome ripristinato';
+  raise notice 'ok, profilo rimosso: bio e foto azzerate, nome neutro';
 end $$;
 -- Un moderatore non espelle un amministratore (nemmeno da una segnalazione di profilo).
 set role authenticated;
@@ -1285,3 +1285,149 @@ do $$ begin
   end if;
   raise notice 'ok, "Non mi interessa" abbassa il gusto per l''autore e toglie il post da Esplora';
 end $$;
+
+-- ---------- Rilascio: file dei post rimossi, notifiche, segnalazioni, nomi ----------
+reset role;
+insert into auth.users (id) values ('00000000-0000-0000-0000-000000007ee1'), ('00000000-0000-0000-0000-000000007ee2'),
+  ('00000000-0000-0000-0000-000000007ee3'), ('00000000-0000-0000-0000-000000007ee4');
+insert into profiles (id, username, display_name) values
+  ('00000000-0000-0000-0000-000000007ee1', 'relea', 'Rel A'), ('00000000-0000-0000-0000-000000007ee2', 'releb', 'Rel B'),
+  ('00000000-0000-0000-0000-000000007ee3', 'relec', 'Rel C'), ('00000000-0000-0000-0000-000000007ee4', 'reled', 'Rel D');
+update profiles set created_at = now() - interval '10 days' where username in ('relea', 'releb', 'relec', 'reled');
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username in ('relea', 'releb', 'relec', 'reled');
+insert into posts (id, author_id, media, caption) values
+  ('10000000-0000-0000-0000-000000007ee1', '00000000-0000-0000-0000-000000007ee1', test_media('00000000-0000-0000-0000-000000007ee1', 'rimosso.jpg'), 'Da rimuovere'),
+  ('10000000-0000-0000-0000-000000007ee2', '00000000-0000-0000-0000-000000007ee2', test_media('00000000-0000-0000-0000-000000007ee2', 'espulso.jpg'), 'Di un espulso'),
+  ('10000000-0000-0000-0000-000000007ee3', '00000000-0000-0000-0000-000000007ee3', test_media('00000000-0000-0000-0000-000000007ee3', 'nascosto.jpg'), 'Nascosto in attesa di revisione'),
+  ('10000000-0000-0000-0000-000000007ee4', '00000000-0000-0000-0000-000000007ee3', test_media('00000000-0000-0000-0000-000000007ee3', 'visibile.jpg'), 'Visibile');
+-- Post rimosso dalla moderazione, utente espulso, post nascosto solo dalle segnalazioni (può tornare visibile).
+do $$ begin
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', true);
+  perform mod_resolve('10000000-0000-0000-0000-000000007ee1', 'remove');
+  perform mod_ban_user('00000000-0000-0000-0000-000000007ee2');
+  update posts set hidden_at = now(), hidden_reason = 'segnalazioni' where id = '10000000-0000-0000-0000-000000007ee3';
+  insert into storage_purge (bucket, path) values ('media', '00000000-0000-0000-0000-000000007ee3/nascosto.jpg'), ('media', '00000000-0000-0000-0000-000000007ee3/visibile.jpg');
+end $$;
+set role service_role;
+do $$ declare paths text[]; begin
+  select array_agg(path) into paths from storage_purge_take(1000);
+  if not ('00000000-0000-0000-0000-000000007ee1/rimosso.jpg' = any (paths)) then raise exception 'file del post rimosso non cancellato: %', paths; end if;
+  if not ('00000000-0000-0000-0000-000000007ee2/espulso.jpg' = any (paths)) then raise exception 'file dell''espulso non cancellato: %', paths; end if;
+  if '00000000-0000-0000-0000-000000007ee3/nascosto.jpg' = any (paths) or '00000000-0000-0000-0000-000000007ee3/visibile.jpg' = any (paths) then
+    raise exception 'cancellato il file di un post che può tornare visibile';
+  end if;
+  raise notice 'ok, la pulizia programmata cancella i file dei post rimossi e degli espulsi, non quelli in revisione';
+end $$;
+reset role;
+
+-- Notifiche push che hanno perso senso prima dell'invio: commento cancellato, autore bloccato o espulso.
+insert into push_tokens (token, user_id, platform) values ('ExponentPushToken[telefonoE3]', '00000000-0000-0000-0000-000000007ee3', 'android');
+insert into comments (id, post_id, user_id, body) values ('51000000-0000-0000-0000-000000007ee1', '10000000-0000-0000-0000-000000007ee4', '00000000-0000-0000-0000-000000007ee1', 'Ciao');
+insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-000000007ee4', '00000000-0000-0000-0000-000000007ee3');
+select notify('00000000-0000-0000-0000-000000007ee3', 'follow', '00000000-0000-0000-0000-000000007ee2', null);
+insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-000000007ee1', '00000000-0000-0000-0000-000000007ee3');
+delete from comments where id = '51000000-0000-0000-0000-000000007ee1';
+insert into blocks (blocker_id, blocked_id) values ('00000000-0000-0000-0000-000000007ee3', '00000000-0000-0000-0000-000000007ee4');
+update push_outbox set not_before = now() - interval '1 minute' where user_id = '00000000-0000-0000-0000-000000007ee3';
+do $$ begin
+  if (select count(*) from push_outbox where user_id = '00000000-0000-0000-0000-000000007ee3' and sent_at is null) <> 4 then
+    raise exception 'notifiche in coda: %', (select jsonb_agg(o) from push_outbox o where user_id = '00000000-0000-0000-0000-000000007ee3');
+  end if;
+end $$;
+set role service_role;
+create temp table claimed2 as select * from push_claim(500);
+reset role;
+do $$ begin
+  if (select count(*) from claimed2 where tokens = array['ExponentPushToken[telefonoE3]']) <> 1
+     or not exists (select 1 from claimed2 where tokens = array['ExponentPushToken[telefonoE3]'] and body = '@relea ha iniziato a seguirti.') then
+    raise exception 'inviate: %', (select jsonb_agg(c) from claimed2 c);
+  end if;
+  if exists (select 1 from push_outbox where user_id = '00000000-0000-0000-0000-000000007ee3' and sent_at is null
+               and actor_id <> '00000000-0000-0000-0000-000000007ee1') then raise exception 'notifiche saltate non chiuse'; end if;
+  raise notice 'ok, all''invio si saltano commenti cancellati, autori bloccati ed espulsi';
+end $$;
+drop table claimed2;
+-- Password cambiata con il codice: nessun telefono riceve più le notifiche; cambio dall'app: resta solo questo.
+do $$ begin
+  perform revoke_sessions('00000000-0000-0000-0000-000000007ee3');
+  if exists (select 1 from push_tokens where user_id = '00000000-0000-0000-0000-000000007ee3') then raise exception 'token rimasti dopo il recupero'; end if;
+end $$;
+insert into push_tokens (token, user_id, platform) values ('ExponentPushToken[questo]', '00000000-0000-0000-0000-000000007ee3', 'android'),
+  ('ExponentPushToken[perso]', '00000000-0000-0000-0000-000000007ee3', 'ios');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000007ee3', false);
+select drop_other_push_tokens('ExponentPushToken[questo]');
+reset role;
+do $$ begin
+  if (select array_agg(token) from push_tokens where user_id = '00000000-0000-0000-0000-000000007ee3') <> array['ExponentPushToken[questo]'] then
+    raise exception 'token dopo il cambio di password: %', (select array_agg(token) from push_tokens where user_id = '00000000-0000-0000-0000-000000007ee3');
+  end if;
+  raise notice 'ok, cambiando la password i telefoni degli altri accessi non ricevono più notifiche';
+end $$;
+
+-- Un commento con spazi in coda si segnala (la copia del testo resta entro il limite).
+insert into comments (id, post_id, user_id, body) values ('51000000-0000-0000-0000-000000007ee2', '10000000-0000-0000-0000-000000007ee4',
+  '00000000-0000-0000-0000-000000007ee1', 'Brutto' || repeat(' ', 2500));
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000007ee3', false);
+select report_comment('51000000-0000-0000-0000-000000007ee2', 'spam', 'Nota di chi segnala');
+reset role;
+do $$ begin
+  if (select snapshot ->> 'body' from user_reports where comment_id = '51000000-0000-0000-0000-000000007ee2') is distinct from 'Brutto' then
+    raise exception 'copia del commento: %', (select snapshot from user_reports where comment_id = '51000000-0000-0000-0000-000000007ee2');
+  end if;
+  raise notice 'ok, commento con spazi in coda segnalabile, copia senza spazi';
+end $$;
+-- Account eliminato: la copia del suo commento nelle segnalazioni sparisce.
+delete from auth.users where id = '00000000-0000-0000-0000-000000007ee1';
+do $$ begin
+  if exists (select 1 from user_reports where reporter_id = '00000000-0000-0000-0000-000000007ee3' and kind = 'comment' and snapshot <> '{}'::jsonb) then
+    raise exception 'copia rimasta dopo l''eliminazione dell''account';
+  end if;
+  raise notice 'ok, eliminando l''account si cancellano le copie nelle segnalazioni';
+end $$;
+-- Segnalazioni chiuse da più di 12 mesi: cancellate; quelle aperte o recenti restano.
+insert into reports (id, post_id, reporter_id, reason, status, resolved_at) values
+  ('7e000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000007ee4', '00000000-0000-0000-0000-000000007ee4', 'spam', 'dismissed', now() - interval '13 months'),
+  ('7e000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000007ee3', '00000000-0000-0000-0000-000000007ee4', 'spam', 'dismissed', now() - interval '1 month'),
+  ('7e000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000007ee2', '00000000-0000-0000-0000-000000007ee4', 'spam', 'open', null);
+update user_reports set status = 'dismissed', resolved_at = now() - interval '13 months' where reporter_id = '00000000-0000-0000-0000-000000007ee3' and kind = 'comment';
+do $$ begin
+  perform reports_retention();
+  if exists (select 1 from reports where id = '7e000000-0000-0000-0000-000000000001')
+     or exists (select 1 from user_reports where reporter_id = '00000000-0000-0000-0000-000000007ee3' and kind = 'comment') then
+    raise exception 'segnalazione chiusa da più di 12 mesi rimasta';
+  end if;
+  if (select count(*) from reports where id in ('7e000000-0000-0000-0000-000000000002', '7e000000-0000-0000-0000-000000000003')) <> 2 then
+    raise exception 'cancellata una segnalazione recente o aperta';
+  end if;
+  raise notice 'ok, segnalazioni chiuse da più di 12 mesi cancellate';
+end $$;
+
+-- Nomi da staff e caratteri invisibili: né alla registrazione né cambiando il nome.
+insert into auth.users (id, email) values ('00000000-0000-0000-0000-000000007ee5', 'nomi.veri@utenti.virale.invalid');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000007ee5', false);
+do $$ declare n text[]; begin
+  foreach n slice 1 in array array[['Staff', 'Rossi'], ['V1rale', 'Rossi'], ['Ad.min', 'Bianchi'], ['Moderatore', 'Verdi'], ['Àmministratore', 'Neri']] loop
+    begin
+      perform complete_registration('nomi.veri', n[1], n[2], '1990-01-01', true);
+      raise exception 'NON DOVEVA PASSARE: %', n;
+    exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  end loop;
+  foreach n slice 1 in array array[[E'Ma​rio', 'Rossi'], [E'Mario\nStaff', 'Rossi'], ['Mario', E'‮Rossi']] loop
+    begin
+      perform complete_registration('nomi.veri', n[1], n[2], '1990-01-01', true);
+      raise exception 'NON DOVEVA PASSARE: %', n;
+    exception when others then if sqlerrm not like '%caratteri non validi%' then raise; end if; end;
+  end loop;
+  perform complete_registration('nomi.veri', 'Mario', 'Rossi', '1990-01-01', true);
+  foreach n slice 1 in array array[['S t a f f', 'x'], ['M0derat0re', 'x'], ['Vìrale ufficiale', 'x']] loop
+    begin
+      perform update_my_profile(n[1]);
+      raise exception 'NON DOVEVA PASSARE: %', n;
+    exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  end loop;
+  raise notice 'ok, niente nomi da staff né caratteri invisibili, alla registrazione e dopo';
+end $$;
+reset role;
