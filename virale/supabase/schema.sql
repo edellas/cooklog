@@ -361,12 +361,12 @@ create policy "profiles insert own" on public.profiles for insert to authenticat
 revoke select, insert on public.profiles from anon, authenticated;
 grant select (id, username, display_name, bio, created_at) on public.profiles to authenticated;
 revoke insert on public.profiles from authenticated;
+-- Il profilo non si modifica dalla tabella: nome, bio e foto passano da update_my_profile (regole, limiti,
+-- moderazione). Prima nome e bio si potevano scrivere liberamente (a capo, caratteri di controllo,
+-- "Moderatore Virale"): permesso e regola tolti anche dai database esistenti.
 drop policy if exists "profiles update own" on public.profiles;
-create policy "profiles update own" on public.profiles for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
--- Ruolo di moderatore ed espulsione non si cambiano dal client: dal client si aggiornano solo nome e bio.
--- (Una revoca per colonna non basta se esiste il permesso sull'intera tabella, quindi si revoca tutto e si riconcede.)
+-- (Una revoca per colonna non basta se esiste il permesso sull'intera tabella, quindi si revoca tutto.)
 revoke update on public.profiles from anon, authenticated;
-grant update (display_name, bio) on public.profiles to authenticated;
 drop policy if exists "posts readable" on public.posts;
 -- Un post nascosto, rimosso, di un utente espulso o bloccato non si legge nemmeno interrogando la tabella.
 create policy "posts readable" on public.posts for select to authenticated using (author_id = auth.uid() or public.can_see(id, auth.uid()));
@@ -1488,9 +1488,30 @@ create or replace function public.min_age_years() returns int language sql immut
 -- Dominio dell'email interna usata per l'accesso (nomeutente@dominio): deve coincidere con EXPO_PUBLIC_LOGIN_DOMAIN.
 create or replace function public.login_domain() returns text language sql immutable as $$ select 'utenti.virale.invalid' $$;
 
+-- Regole dei nomi utente per le iscrizioni nuove (il check della tabella resta quello largo: i nomi già
+-- registrati restano validi). Da 3 a 24 caratteri a-z 0-9 _ . con almeno una lettera o un numero, senza
+-- punti all'inizio, alla fine o di fila.
+create or replace function public.username_format_ok(p text)
+returns boolean language sql immutable as $$
+  select coalesce(p ~ '^[a-z0-9_.]{3,24}$' and p ~ '[a-z0-9]' and left(p, 1) <> '.' and right(p, 1) <> '.' and position('..' in p) = 0, false);
+$$;
+
+-- Nomi che sembrerebbero dello staff o dell'app: nessuno se li prende (l'account ufficiale lo crea il titolare).
+create or replace function public.username_reserved(p text)
+returns boolean language sql immutable as $$
+  select coalesce(p in ('virale', 'admin', 'amministratore', 'moderatore', 'moderazione', 'supporto', 'assistenza', 'staff',
+                        'ufficiale', 'official', 'help', 'aiuto', 'copertina', 'provini', 'sistema', 'root')
+                  or p ~ '^(virale|admin)', false);
+$$;
+
+create or replace function public.username_ok(p text)
+returns boolean language sql immutable as $$
+  select public.username_format_ok(p) and not public.username_reserved(p);
+$$;
+
 create or replace function public.username_available(p_username text)
 returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
-  select lower(p_username) ~ '^[a-z0-9_.]{3,24}$'
+  select public.username_ok(lower(p_username))
      and not exists (select 1 from profiles where username = lower(p_username))
      and not exists (select 1 from banned_usernames where username = lower(p_username))
      and not exists (select 1 from auth.users where lower(email) = lower(p_username) || '@' || public.login_domain());
@@ -1515,7 +1536,10 @@ begin
   if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
   if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
   if not coalesce(p_accept_terms, false) then raise exception 'Per registrarti devi accettare termini e linee guida.'; end if;
-  if v_user !~ '^[a-z0-9_.]{3,24}$' then raise exception 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso.'; end if;
+  if not public.username_format_ok(v_user) then
+    raise exception 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso, con almeno una lettera o un numero. Il punto non può stare all’inizio, alla fine o due volte di fila.';
+  end if;
+  if public.username_reserved(v_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
   -- Il nome utente è legato all'email interna di accesso: non si registra "alice" con l'accesso di "bob".
   if (select lower(email) from auth.users where id = v_uid) is distinct from v_user || '@' || public.login_domain() then
     raise exception 'Nome utente non valido per questo accesso.';
@@ -1529,10 +1553,11 @@ begin
     raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
   end if;
 
-  insert into profiles (id, username, display_name) values (v_uid, v_user, left(v_first, 38) || ' ' || upper(left(v_last, 1)) || '.');
+  -- "Nome I.": al massimo 36 + 3 = 39 caratteri, dentro il limite di 40 anche con un nome lunghissimo.
+  insert into profiles (id, username, display_name) values (v_uid, v_user, left(v_first, 36) || ' ' || upper(left(v_last, 1)) || '.');
   insert into profile_private (id, first_name, last_name, birth_date) values (v_uid, v_first, v_last, p_birth_date);
   insert into identity_checks (user_id, deadline) values (v_uid, now() + make_interval(days => v_cfg.id_grace_days));
-  return jsonb_build_object('id', v_uid, 'username', v_user, 'display_name', left(v_first, 38) || ' ' || upper(left(v_last, 1)) || '.');
+  return jsonb_build_object('id', v_uid, 'username', v_user, 'display_name', left(v_first, 36) || ' ' || upper(left(v_last, 1)) || '.');
 exception when unique_violation then
   raise exception 'Questo nome utente è già preso.';
 end;

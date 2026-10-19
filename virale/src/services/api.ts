@@ -615,7 +615,18 @@ export async function getMe(): Promise<Me | null> {
  */
 const LOGIN_DOMAIN = process.env.EXPO_PUBLIC_LOGIN_DOMAIN || 'utenti.virale.invalid';
 const loginEmail = (username: string) => `${username.trim().toLowerCase().replace(/^@/, '')}@${LOGIN_DOMAIN}`;
+/** Stesse regole di username_format_ok / username_reserved in schema.sql (solo per le iscrizioni nuove). */
 const USERNAME = /^[a-z0-9_.]{3,24}$/;
+const RESERVED_USERNAMES = ['virale', 'admin', 'amministratore', 'moderatore', 'moderazione', 'supporto', 'assistenza', 'staff', 'ufficiale', 'official', 'help', 'aiuto', 'copertina', 'provini', 'sistema', 'root'];
+export const USERNAME_RULES =
+  'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso, con almeno una lettera o un numero. Il punto non può stare all’inizio, alla fine o due volte di fila.';
+export const USERNAME_RESERVED = 'Questo nome utente non è disponibile.';
+export function usernameFormatOk(u: string): boolean {
+  return USERNAME.test(u) && /[a-z0-9]/.test(u) && !u.startsWith('.') && !u.endsWith('.') && !u.includes('..');
+}
+export function usernameReserved(u: string): boolean {
+  return RESERVED_USERNAMES.includes(u) || /^(virale|admin)/.test(u);
+}
 export const MIN_AGE_YEARS = 14;
 export const PASSWORD_MIN = 8;
 
@@ -637,7 +648,8 @@ export function validateRegistration(input: RegisterInput): string | null {
     return 'Data di nascita non valida.';
   }
   if (ageOn(input.birthDate) < MIN_AGE_YEARS) return `Per usare Virale devi avere almeno ${MIN_AGE_YEARS} anni.`;
-  if (!USERNAME.test(u)) return 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso.';
+  if (!usernameFormatOk(u)) return USERNAME_RULES;
+  if (usernameReserved(u)) return USERNAME_RESERVED;
   if (input.password.length < PASSWORD_MIN) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
   if (!/[A-Za-z]/.test(input.password) || !/\d/.test(input.password)) return 'La password deve contenere almeno una lettera e un numero.';
   if (input.password.toLowerCase().includes(u)) return 'La password non può contenere il nome utente.';
@@ -787,7 +799,7 @@ function demoExplore(demo: DemoDb, limit: number, exclude: string[]): Post[] {
 
 export async function usernameAvailable(username: string): Promise<boolean> {
   const u = username.trim().toLowerCase();
-  if (!USERNAME.test(u)) return false;
+  if (!usernameFormatOk(u) || usernameReserved(u)) return false;
   if (!isDemo) return rpc<boolean>('username_available', { p_username: u });
   return withDemo((demo) => !Object.values(demo.people).some((p) => p.username === u) && !demo.accounts?.[u]);
 }
@@ -841,7 +853,8 @@ export async function register(input: RegisterInput): Promise<Me> {
     saveDemoUser(demo);
     const first = input.firstName.trim();
     const last = input.lastName.trim();
-    const me: Me = { id: `me-${username}`, username, displayName: `${first.slice(0, 38)} ${last.slice(0, 1).toUpperCase()}.` };
+    // Come sul server: "Nome I.", contando i caratteri (un'emoji è uno solo, non due).
+    const me: Me = { id: `me-${username}`, username, displayName: `${Array.from(first).slice(0, 36).join('')} ${(Array.from(last)[0] ?? '').toUpperCase()}.` };
     const deadline = new Date(Date.now() + demo.settings!.idGraceDays * 86400_000).toISOString();
     demo.accounts![username] = { me, passwordHash, firstName: first, lastName: last, birthDate: input.birthDate, identity: { status: 'missing', deadline, reason: null } };
     demo.people[me.id] = { ...me, bio: '', followers: 0, following: 0 };

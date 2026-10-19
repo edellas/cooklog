@@ -750,3 +750,46 @@ do $$ begin
   end if;
   raise notice 'ok, si cancellano solo i file che nessun post usa';
 end $$;
+
+-- ---------- Rilascio 1.0: registrazione e profilo (W6) ----------
+reset role;
+insert into auth.users (id, email) values
+  ('00000000-0000-0000-0000-0000000000a1', 'nome.lungo@utenti.virale.invalid'),
+  ('00000000-0000-0000-0000-0000000000a2', 'mario.rossi_2@utenti.virale.invalid');
+set role authenticated;
+-- Un nome di 60 caratteri: registrazione riuscita, nome mostrato entro i 40 caratteri.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a1', false);
+do $$ declare d text; begin
+  d := complete_registration('nome.lungo', left(repeat('Mariagiovanna', 5), 60), 'Bianchi', '1999-09-09', true) ->> 'display_name';
+  if length(d) > 40 or (select length(display_name) from profiles where username = 'nome.lungo') > 40 then raise exception 'nome troppo lungo: %', d; end if;
+  raise notice 'ok, nome di 60 caratteri registrato, mostrato in % caratteri', length(d);
+end $$;
+-- Nomi utente senza lettere o numeri, con punti all'inizio, alla fine o di fila, e nomi riservati: rifiutati.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a2', false);
+do $$ declare u text; begin
+  foreach u in array array['...', '.abc', 'abc.', 'a..b', '___'] loop
+    begin
+      perform complete_registration(u, 'Mario', 'Rossi', '1990-01-01', true);
+      raise exception 'NON DOVEVA PASSARE: %', u;
+    exception when others then if sqlerrm not like '%almeno una lettera o un numero%' then raise; end if; end;
+  end loop;
+  foreach u in array array['virale', 'viraleitalia', 'admin2', 'supporto', 'moderatore'] loop
+    begin
+      perform complete_registration(u, 'Mario', 'Rossi', '1990-01-01', true);
+      raise exception 'NON DOVEVA PASSARE: %', u;
+    exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  end loop;
+  if username_available('virale') or username_available('adminitalia') or username_available('a..b') then raise exception 'nome riservato o non valido disponibile'; end if;
+  raise notice 'ok, nomi utente non validi o riservati rifiutati';
+end $$;
+do $$ begin
+  perform complete_registration('mario.rossi_2', 'Mario', 'Rossi', '1990-01-01', true);
+  if not exists (select 1 from profiles where username = 'mario.rossi_2') then raise exception 'mario.rossi_2 non registrato'; end if;
+  raise notice 'ok, nome utente con punto e trattino basso accettato';
+end $$;
+-- Nome e bio non si cambiano più direttamente dalla tabella (niente controlli lì): solo da update_my_profile.
+do $$ begin
+  update profiles set bio = 'x' where id = auth.uid();
+  raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, modifica diretta del profilo rifiutata'; end $$;
+reset role;
