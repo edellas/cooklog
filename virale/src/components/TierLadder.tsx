@@ -10,9 +10,13 @@ import { useSession } from '../state/session';
 import type { MyEntry } from '../types';
 import { Txt } from './Txt';
 
-export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>, revealMinutes = 0): string {
+export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views' | 'reason'>, revealMinutes = 0): string {
   const n = entry.views.toLocaleString('it-IT');
-  if (entry.status === 'disqualified') return 'Fuori gara: troppe segnalazioni.';
+  if (entry.status === 'disqualified') {
+    if (entry.reason === 'segnalazioni') return 'Fuori gara: troppe segnalazioni.';
+    if (entry.reason === 'moderazione') return 'Fuori gara: rimosso dalla moderazione.';
+    return 'Fuori gara.';
+  }
   const views = entry.views === 1 ? 'visualizzazione' : 'visualizzazioni';
   if (entry.status === 'finalist') return `In finale con ${n} ${views}. Si decide ${atTime(revealMinutes)}.`;
   if (entry.status === 'parked') return `Fermo a “${TIER_NAMES[entry.tier]}” con ${n} ${views}. Alla prossima gara si riparte.`;
@@ -24,7 +28,7 @@ export function describeEntry(entry: Pick<MyEntry, 'tier' | 'status' | 'views'>,
  * Il riempimento del gradino corrente si anima (stato che cambia, 600 ms ease-out): è un elemento
  * assoluto senza figli, quindi animarne la larghezza non ricalcola il layout di nessun altro.
  */
-export function TierLadder({ entry, compact, example }: { entry: Pick<MyEntry, 'tier' | 'status' | 'views'>; compact?: boolean; example?: boolean }) {
+export function TierLadder({ entry, compact, example }: { entry: Pick<MyEntry, 'tier' | 'status' | 'views' | 'reason'>; compact?: boolean; example?: boolean }) {
   const reduced = useReducedMotion();
   const revealMinutes = useSession().status?.settings.revealMinutes ?? 0;
   const reached = entry.status === 'finalist' ? TIER_NAMES.length - 1 : entry.tier;

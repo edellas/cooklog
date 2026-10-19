@@ -1378,7 +1378,8 @@ begin
                                order by created_at desc limit 30) s), '[]')
              else '[]'::jsonb end,
     'entry', (select jsonb_build_object('entry_id', e.id, 'post_id', e.post_id, 'tier', e.tier, 'status', e.status,
-                                        'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day)
+                                        'views', (public.arena_entry_totals(e.id)).views, 'contest_day', e.contest_day,
+                                        'reason', e.disqualified_reason)
               -- La propria candidatura è privata: degli altri non si vedono livello e viste.
               -- Anche la candidatura ritirata (post eliminato): l'app spiega che per oggi è fatta.
               from arena_entries e where e.author_id = v_pr.id and v_pr.id = v_uid

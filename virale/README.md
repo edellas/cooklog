@@ -12,22 +12,23 @@ App mobile multipiattaforma (iOS, Android e web dallo stesso codice) in Expo SDK
 
 | Schermata | Cosa succede |
 |---|---|
-| **Copertina** | Il post vincitore di ieri a tutta pagina, con testata, numero dell'uscita e data. È identico per tutti. Alla prima apertura del giorno la foto "si sviluppa" da sfocata a nitida. In basso il conto alla rovescia per la prossima copertina. |
-| **Provini** | Il feed verticale. "Per te" mostra i post in gara oggi, scelti dal server alla cieca; "Seguiti" mostra le persone che segui. Doppio tocco = cerchia (mi piace), poi commenti, salva, condividi, segui. Caroselli di foto e video, con audio a richiesta. |
-| **Pubblica** (pulsante giallo) | Da 1 a 10 foto e/o video dalla galleria o dalla fotocamera. Si possono riordinare e togliere, si scrive la didascalia e si sceglie se candidarsi per la copertina di domani (uno al giorno). |
-| **Archivio** | Tutte le copertine uscite, con il loro numero. |
-| **Profilo** | Follower, seguiti, copertine vinte; il tuo post in gara oggi con i cinque gradini; i tuoi post e i salvati. |
-| **Commenti / Regole** | Fogli nativi (form sheet) che si aprono a metà schermo. |
+| **Benvenuto** | Registrazione con nome, cognome, data di nascita, nome utente e password (niente email). Gli errori compaiono sotto il campo giusto; il nome utente si controlla mentre lo scrivi. Dopo l'iscrizione si riceve il **codice di recupero** della password ("Password dimenticata?"). |
+| **Copertina** | Il post vincitore della gara appena chiusa, a tutta pagina, con testata, numero dell'uscita e data. È identica per tutti. Il pulsante "Guarda i provini di oggi" porta alla gara; sotto, quando esce la prossima. Se vinci, una festa ("Hai vinto!") da condividere. |
+| **Provini** | Il feed verticale, in tre sezioni: **In gara** (i post candidati oggi, scelti dal server alla cieca: si vota guardando, ognuno lo vedi una volta sola), **Esplora** (tutti gli altri post, secondo i tuoi gusti, senza fine) e **Seguiti**. Doppio tocco = cerchio (il nostro mi piace), poi commenti, salva, condividi, segui, "Non mi interessa". Lente per cercare persone. |
+| **Pubblica** (pulsante giallo) | Da 1 a 10 foto e/o video dalla galleria o dalla fotocamera. I video pesanti si comprimono sul telefono prima del caricamento; la pubblicazione si può annullare. Si sceglie se candidarsi per la prossima copertina (un post al giorno). |
+| **Archivio** | Tutte le copertine uscite, con il loro numero, a pagine. |
+| **Profilo** | Foto, nome e bio modificabili; follower, seguiti, copertine vinte; il tuo post in gara oggi con i cinque gradini; i tuoi post e i salvati; notifiche; impostazioni (password, codice di recupero, notifiche push, utenti bloccati, eliminazione dell'account). |
+| **Commenti / Azioni / Regole** | Fogli nativi (form sheet). Commenti e profili si possono segnalare; i moderatori hanno una coda con due schede (post; commenti e profili). |
 
 ## Come si sceglie la copertina
 
-1. Ogni post candidato parte da un piccolo pubblico: **Provino**, 50 viste.
+1. Ogni post candidato parte da un piccolo pubblico: **Provino**, 50 visualizzazioni.
 2. Al raggiungimento della soglia viene valutato. Sale solo se batte l'80% dei post che hanno completato lo stesso gradino quel giorno: **Bozza** (300) → **Impaginato** (1.800) → **In macchina** (10.000) → **Finale**.
 3. Il voto è il modo in cui si guarda. Punti per vista:
 
    | Gesto | Punti |
    |---|---|
-   | Visto fino in fondo | +1 |
+   | Visto fino in fondo (un video almeno per il 60% della durata: trascinare la barra non conta) | +1 |
    | Riguardato | +1,5 |
    | Cerchiato (mi piace) | +2 |
    | Commentato | +3 |
@@ -36,7 +37,7 @@ App mobile multipiattaforma (iOS, Android e web dallo stesso codice) in Expo SDK
    | Scorso via subito | −1,5 |
    | Segnalato | −20 |
 
-   Il punteggio parte da una media di prudenza di 20 viste, così pochi spettatori fortunati non bastano.
+   Il punteggio parte da una media di prudenza di 20 visualizzazioni, così pochi spettatori fortunati non bastano.
 4. All'orario della copertina scelto dall'amministratore (ora di Roma, di norma mezzanotte) la gara chiude: vince chi è salito più in alto; a parità, il limite inferiore del punteggio più alto. Senza voti validi vince il post più apprezzato. La copertina esce subito.
 5. **Anti-trucchi**:
    - si vota solo ciò che il server ti ha mostrato, una volta e mai sul proprio post;
@@ -55,15 +56,20 @@ npx expo start        # i = iOS, a = Android, w = web, oppure il QR con Expo Go
 
 Senza configurazione parte in **modalità demo**:
 - creator, foto e video di esempio e un pubblico simulato che continua a guardare mentre usi l'app (anche il tuo post sale di gradino dal vivo);
-- il link "Demo: simula la fine della gara" sotto la copertina chiude subito la gara.
+- tutto resta sul dispositivo (anche più account, il codice di recupero e la verifica dell'età simulata);
+- il link "Demo: simula la mezzanotte" sotto la copertina chiude subito la gara;
+- niente notifiche push e niente compressione dei video (servono l'app per telefono e Supabase).
+
+Una build di **produzione** (`EXPO_PUBLIC_APP_ENV=production`) senza Supabase o senza i dati del titolare (`EXPO_PUBLIC_OWNER_*`) si apre su "Configurazione mancante" con l'elenco delle variabili: è voluto.
 
 ## Verifiche
 
 ```bash
-npm test            # 17 test del motore della gara
+npm test            # 28 test: motore della gara e misura onesta dei video (videoProgress)
 npm run simulate    # simulazione con migliaia di spettatori
 npm run typecheck
 npm run lint
+npm run check:release   # dati del titolare, sito, pagine legali: cosa manca prima di pubblicare
 ```
 
 - **Simulazione** (`npm run simulate -- 300 5000 30 10`): 300 post e 5.000 spettatori, con il 2% di spam acchiappa-click. Il vincitore è tra i 5 migliori per qualità reale in 10 giorni su 10 (il migliore in 7) e lo spam non vince mai.
@@ -76,23 +82,37 @@ npm run lint
   - mi piace a nome di altri rifiutato;
   - contatori corretti, feed "Seguiti", profilo;
   - promozione tra gradini, vincitore, chiusura idempotente;
-  - `anon` non può chiudere la giornata.
+  - `anon` non può chiudere la giornata;
+  - nomi utente riservati e regole del profilo (nome una volta ogni 7 giorni, bio, foto);
+  - segnalazione di commenti e profili, coda di moderazione, notifiche di rimozione con il motivo;
+  - commenti coerenti (conteggi, blocchi, espulsi), ricerca di persone, Archivio a pagine con il numero dell'uscita;
+  - Esplora che non finisce, pulizia dei file programmata (solo con la chiave di servizio);
+  - codice di recupero (solo l'impronta, una volta sola, 5 tentativi l'ora), notifiche push (preferenze, ore di silenzio 22–8, raggruppamento), "Non mi interessa", completamento dei video con un tempo minimo.
+
+  Lo schema si può rieseguire su un database esistente: aggiorna senza perdere dati.
 
   ```bash
   createdb virale_test
   psql -d virale_test -v ON_ERROR_STOP=1 -f supabase/tests/auth-stub.sql -f supabase/schema.sql -f supabase/tests/e2e.sql
   ```
 - **Carico**: con 20.000 post in gara, servire 10 Provini (già composti in JSON) e registrare 10 voti richiede circa 20 ms su un core (Postgres 16 locale, senza tuning).
-- **App web**: percorso completo verificato in Chromium automatizzato (benvenuto, copertina, provini, cerchia, commenti, seguiti, pubblicazione con foto e video, profilo, archivio, regole, mezzanotte simulata). Quel Chromium non ha il codec H.264, quindi lì i video demo non partono; su iOS, Android, Chrome e Safari sì. Su un telefono vero l'app non è ancora stata provata.
+- **App web**: percorsi verificati in Chromium automatizzato (registrazione e codice di recupero, copertina, provini, cerchio, commenti, segnalazioni, ricerca, modifica del profilo, pubblicazione con foto e video e annullamento, profilo, archivio, regole, mezzanotte simulata, schermi piccoli, orizzontale e tablet). Quel Chromium non ha il codec H.264: nei test i video demo si servono come WebM.
+- **Funzione `verifica-eta`** (Deno): le rotte `/lavori` (pulizia dei file e invio delle notifiche push a blocchi di 100), `/apri` e `/recupero` sono provate con richieste finte (supabase-js locale, senza rete).
+- **Sul telefono** vanno provati a mano: compressione di un video da 60 s, notifiche push, link condivisi aperti da WhatsApp, "Password dimenticata?", tastiera su iPhone (vedi PUBBLICARE.md, §6).
 
 ## Produzione (milioni di utenti)
 
 La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](PUBBLICARE.md)**. In breve:
 
-1. Crea un progetto **Supabase** in UE ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, permessi sui file, chiusura della gara all'orario della copertina con `pg_cron`).
-2. **Authentication → Providers**: Email attivo con *Confirm email* spento (si accede con nome utente e password), accessi anonimi spenti.
-3. Metti `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` nelle variabili d'ambiente EAS (o in `virale/.env.local` per lo sviluppo).
-4. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.
+1. Crea un progetto **Supabase** in UE (piano Pro: con i video il piano gratuito non regge) ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, `documenti` e `avatars`, permessi sui file, chiusura della gara all'orario della copertina, pulizie e lavori ogni minuto con `pg_cron` e `pg_net`).
+2. Nel **Vault** i segreti `virale_url` e `virale_cron_secret`; nella funzione `verifica-eta` i segreti `VIRALE_CRON_SECRET` (lo stesso valore), `VIRALE_SITO` e, facoltativo, `EXPO_ACCESS_TOKEN`.
+3. **Authentication → Providers**: Email attivo con *Confirm email* spento (si accede con nome utente e password), accessi anonimi spenti.
+4. Variabili d'ambiente EAS: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, i dati del titolare `EXPO_PUBLIC_OWNER_*` e, per le notifiche su Android, il file `GOOGLE_SERVICES_JSON` (lo legge `app.config.js`; senza, la build riesce ma Android non riceve notifiche).
+5. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.
+
+**Dipendenze native** (servono una build EAS nuova, non bastano gli aggiornamenti OTA): `react-native-compressor` (compressione dei video su Android; su iPhone la fa il sistema a 720p) ed `expo-notifications`.
+
+**Piano di ripiego per la compressione dei video**: se una build fallisse per `react-native-compressor`, togli `"react-native-compressor"` dai `plugins` di `app.json` e il pacchetto da `package.json` (`npm uninstall react-native-compressor`). L'app continua a funzionare: `src/services/video.native.ts` carica il modulo solo se c'è e, senza, carica il video originale se pesa fino a 48 MB, altrimenti chiede di accorciarlo. Su iPhone non cambia nulla (la conversione a 720p la fa il sistema).
 
 Perché regge il carico:
 - la copertina è una sola riga uguale per tutti, cacheabile per tutto il giorno;
@@ -100,20 +120,24 @@ Perché regge il carico:
 - i candidati si campionano da un punto casuale di un indice invece di ordinare la tabella;
 - le righe per-spettatore si cancellano dopo 7 giorni.
 
-Oltre le decine di milioni di viste al giorno: partizionare `arena_views` per giorno, mettere `arena_record_view` dietro una coda e servire i candidati da Redis.
+Oltre le decine di milioni di visualizzazioni al giorno: partizionare `arena_views` per giorno, mettere `arena_record_view` dietro una coda e servire i candidati da Redis.
 
-Già pronto per gli store: accettazione di termini ed età minima, segnalazione dei post con motivo, blocco degli utenti, coda di moderazione, eliminazione dell'account dall'app, documenti legali (in app e come pagine web), icone, splash, testi delle schede, screenshot. Da aggiungere più avanti: moderazione automatica di foto e video e notifiche push.
+Già pronto per gli store: accettazione di termini ed età minima, verifica dell'età, segnalazione di post, commenti e profili con motivo, blocco degli utenti, coda di moderazione (con notifica push allo staff), eliminazione dell'account dall'app, notifiche push, documenti legali (in app e come pagine web), pagina di atterraggio dei link condivisi, icone, splash, testi delle schede, screenshot. Da aggiungere più avanti: caricamenti riprendibili (TUS) e moderazione automatica di foto e video.
 
 ## Struttura
 
 | Percorso | Contenuto |
 |---|---|
-| `app/` | Le schermate (Expo Router): `(tabs)/` Copertina, Provini, Archivio, Profilo; `scatta`, `commenti/[postId]`, `azioni/[postId]`, `impostazioni`, `moderazione`, `legale/[doc]`, `regole`, `utente/[username]`, `post/[id]`, `copertina/[day]`, `benvenuto` |
+| `app/` | Le schermate (Expo Router): `(tabs)/` Copertina, Provini, Archivio, Profilo; `scatta`, `commenti/[postId]`, `azioni/[postId]`, `segnala-profilo/[username]`, `cerca`, `modifica-profilo`, `impostazioni`, `notifiche`, `moderazione`, `amministrazione`, `verifica`, `legale/[doc]`, `regole`, `utente/[username]`, `post/[id]`, `scorri/[username]`, `seguaci/[username]`, `copertina/[day]`, `benvenuto` |
 | `src/design/` | Token (colori OKLCH convertiti, tipografia, spaziature), motion, font |
 | `src/components/` | Cornice media con carosello, video e doppio tocco; segno di matita; striscia del post; icone SVG; scala dei gradini; toast; testata |
 | `src/engine/` | Motore della gara in TypeScript puro, test e simulazione |
 | `src/services/api.ts` | Dati: Supabase se configurato, altrimenti demo locale |
-| `supabase/` | Schema, RLS, RPC, configurazione di produzione, test end-to-end |
+| `src/services/` | Anche: errori in italiano (`errors.ts`), compressione dei video (`video.native.ts`), notifiche push (`push.native.ts`; sul web `push.ts` non fa nulla) |
+| `supabase/functions/verifica-eta/` | Funzione Edge: verifica dell'età con Didit, lavori programmati (pulizia dei file, notifiche push), link condivisi, recupero della password |
+| `supabase/` | Schema (rieseguibile), RLS, RPC, configurazione di produzione, test end-to-end |
+| `public/index.html` | Pagina web di partenza: lingua italiana e sfondo della rivista durante il caricamento |
+| `scripts/` | Pagine legali e sito (`export-legal.ts`: anche `apri.html`), controlli prima del rilascio, screenshot degli store |
 | `src/legal/` | Titolare, termini, privacy, linee guida, eliminazione account |
 | `store/` | Testi delle schede, note per la revisione, risposte privacy, screenshot e grafica |
 | `prototype/` | Sorgente e script di build del prototipo interattivo |

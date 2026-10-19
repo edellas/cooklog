@@ -1573,7 +1573,7 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
       };
       posts: PostJson[];
       saved: PostJson[];
-      entry: { entry_id: string; post_id: string; tier: number; status: MyEntry['status']; views: number; contest_day: string } | null;
+      entry: { entry_id: string; post_id: string; tier: number; status: MyEntry['status']; views: number; contest_day: string; reason?: string | null } | null;
     }>('get_profile', { p_username: username });
     const pr = res.profile;
     return {
@@ -1597,7 +1597,17 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
       },
       posts: res.posts.map(fromJson),
       saved: res.saved.map(fromJson),
-      entry: res.entry ? { entryId: res.entry.entry_id, postId: res.entry.post_id, tier: res.entry.tier, status: res.entry.status, views: res.entry.views, contestDay: res.entry.contest_day } : null,
+      entry: res.entry
+        ? {
+            entryId: res.entry.entry_id,
+            postId: res.entry.post_id,
+            tier: res.entry.tier,
+            status: res.entry.status,
+            views: res.entry.views,
+            contestDay: res.entry.contest_day,
+            reason: res.entry.reason ?? null,
+          }
+        : null,
     };
   }
   return withDemo((demo) => {
@@ -1636,7 +1646,16 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
       saved: isMe ? demo.saves.filter((id) => visible(demo, id)).map((id) => toPost(demo, id)) : [],
       entry:
         isMe && entry
-          ? { entryId: entry.id, postId: demo.posts[entry.postId] ? entry.postId : null, tier: entry.tier, status: entry.status, views: entry.stats.views, contestDay: entry.contestDay }
+          ? {
+              entryId: entry.id,
+              postId: demo.posts[entry.postId] ? entry.postId : null,
+              tier: entry.tier,
+              status: entry.status,
+              views: entry.stats.views,
+              contestDay: entry.contestDay,
+              // Nella demo si esce di gara solo per le segnalazioni (o ritirando il post, che allora non c'è più).
+              reason: entry.status === 'disqualified' ? (demo.posts[entry.postId] ? 'segnalazioni' : 'ritirato') : null,
+            }
           : null,
     };
   });

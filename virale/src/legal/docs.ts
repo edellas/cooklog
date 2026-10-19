@@ -116,7 +116,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Quali dati trattiamo',
         body: [
-          'Account: nome utente, password (conservata solo in forma cifrata, non la vediamo), nome visualizzato (il tuo nome e l’iniziale del cognome), eventuale bio, un identificativo tecnico dell’account, data di accettazione dei termini.',
+          'Account: nome utente, password (conservata solo in forma cifrata, non la vediamo), nome visualizzato (il tuo nome e l’iniziale del cognome, che puoi cambiare una volta ogni 7 giorni), eventuale bio, eventuale foto profilo (visibile a tutti), un identificativo tecnico dell’account, data di accettazione dei termini.',
+          'Ricerca: puoi cercare le persone per nome o nome utente. Non conserviamo le ricerche e la ricerca non mostra mai i post in gara.',
           'Dati privati, che non mostriamo agli altri utenti: nome, cognome e data di nascita.',
           'Verifica dell’età, in uno di due modi. Automatica: tramite Didit inquadri il documento d’identità e fai un breve selfie; Didit controlla che il documento sia autentico e che il volto corrisponda, e ci comunica l’esito con la data di nascita letta dal documento. Con le foto: carichi la foto del documento e un selfie con il documento, che vede soltanto un amministratore. In entrambi i casi le immagini vengono cancellate appena presa la decisione; conserviamo solo l’esito, la data di nascita, la data della verifica e chi ha deciso.',
           'Contenuti: foto e video che pubblichi (con le loro dimensioni e durata), didascalie, commenti.',
@@ -139,7 +140,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Chi riceve i dati',
         body: [
-          'Ciò che pubblichi è visibile agli altri utenti; la Copertina è visibile a chiunque apra l’app.',
+          'Ciò che pubblichi è visibile agli altri utenti; la Copertina è visibile a chiunque apra l’app. Nome, nome utente, foto profilo e bio sono visibili agli altri utenti.',
+          'Quando condividi un post, il link porta a una pagina del nostro sito che apre il post nell’app (o lo store): la pagina non usa cookie né servizi di terze parti.',
           'Fornitori che trattano i dati per nostro conto come responsabili del trattamento: Supabase (database, archiviazione dei file e autenticazione) e, per la verifica automatica dell’età, Didit (didit.me). Usiamo server situati nell’Unione Europea.',
           'Le notifiche sul telefono passano dal servizio di Expo (expo.dev) e da quelli di Apple e Google, che le recapitano al telefono: ricevono solo il token del telefono e il testo della notifica.',
           'Autorità, quando la legge lo impone.',
@@ -153,6 +155,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Le foto del documento e del selfie vengono cancellate appena presa la decisione (anche da Didit, se la verifica è automatica), e comunque eliminando l’account.',
           'I post già visti, usati per non riproporteli in Esplora, dopo 30 giorni; i punteggi dei gusti non aggiornati da 120 giorni vengono cancellati.',
           'Le segnalazioni e le decisioni di moderazione possono essere conservate fino a 12 mesi per gestire ricorsi e abusi ripetuti.',
+          'Le notifiche sul telefono già inviate si cancellano dopo 7 giorni; le notifiche nell’app dopo 90 giorni.',
         ],
       },
       {

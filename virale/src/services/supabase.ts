@@ -2,7 +2,7 @@ import 'react-native-url-polyfill/auto';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -22,3 +22,12 @@ export const supabase = isSupabaseConfigured
       },
     })
   : null;
+
+// Sul telefono il rinnovo automatico della sessione gira solo con l'app aperta (come chiede Supabase):
+// in background si ferma, tornando nell'app riparte subito (e rinnova il token se nel frattempo è scaduto).
+if (supabase && Platform.OS !== 'web') {
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') void supabase.auth.startAutoRefresh();
+    else void supabase.auth.stopAutoRefresh();
+  });
+}

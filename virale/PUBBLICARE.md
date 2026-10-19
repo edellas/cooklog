@@ -11,7 +11,7 @@ Non serve un Mac: le build iOS si fanno nel cloud con EAS (Expo).
 |---|---|
 | Apple Developer Program | 99 USD l'anno |
 | Google Play Console | 25 USD una volta |
-| Supabase (database e file) | gratis per iniziare, poi Pro 25 USD/mese |
+| Supabase (database e file) | **Pro, 25 USD/mese** (con i video il piano gratuito non regge: 1 GB di file, niente backup, pausa se inattivo) |
 | Expo EAS (build nel cloud) | gratis con code d'attesa, o piani a pagamento |
 
 Tempi realistici: 1 giorno di configurazione, 1–3 giorni per la revisione Apple;
@@ -21,6 +21,66 @@ Alla fine di ogni passo puoi lanciare `npm run check:release` (dalla cartella `v
 ti dice cosa manca ancora.
 
 ---
+
+## 0. Hai già Virale su Supabase? Aggiorna così (in quest'ordine)
+
+Questa versione aggiunge foto profilo, ricerca, segnalazione di commenti e profili, codice di recupero della
+password, notifiche push, pulizia automatica dei file e pagina per i link condivisi. Si fa tutto dal browser
+(anche del telefono): supabase.com, expo.dev, GitHub, Firebase.
+
+1. **Supabase → piano Pro** (Organization → Billing). Valuta lo "Spend cap".
+2. **Supabase → SQL Editor**:
+   1. incolla ed esegui il nuovo `supabase/schema.sql` (aggiorna senza perdere dati; si può rieseguire);
+   2. incolla ed esegui il nuovo `supabase/setup-produzione.sql` (crea il bucket `avatars` e i lavori ogni minuto);
+   3. esegui, mettendo i tuoi valori (la stringa segreta inventala lunga almeno 32 caratteri, per esempio con un generatore di password):
+      ```sql
+      select vault.create_secret('https://<il-tuo-progetto>.supabase.co', 'virale_url');
+      select vault.create_secret('<stringa segreta lunga>', 'virale_cron_secret');
+      ```
+   4. controllo: `select jobname, schedule from cron.job;` deve mostrare `arena-close-day`, `virale-pulizia` e `virale-lavori`.
+3. **Supabase → Edge Functions → `verifica-eta`**: incolla di nuovo tutto `supabase/functions/verifica-eta/index.ts`
+   e ripubblica ("Verify JWT" resta **spento**). In **Secrets** aggiungi:
+   - `VIRALE_CRON_SECRET`: la stessa stringa segreta del punto 2;
+   - `VIRALE_SITO`: l'indirizzo del sito, per esempio `https://edellas.github.io/cooklog` (senza barra finale);
+   - facoltativo `EXPO_ACCESS_TOKEN` (expo.dev → Account settings → Access tokens), poi su expo.dev → progetto
+     attiva "Enhanced security for push notifications".
+
+   Controllo: Edge Functions → `verifica-eta` → **Logs**: ogni minuto una chiamata a `/lavori` con stato 200.
+4. **Supabase → Authentication**: password minima 8 (passo 3.4); sul piano Pro attiva "Leaked password protection".
+5. **expo.dev → progetto → Environment variables** (ambienti preview e production, Plain text): i dati del titolare
+   (passo 2), `EXPO_PUBLIC_APPSTORE_URL` appena esiste la scheda App Store, e le chiavi di Supabase (passo 5).
+   **Senza i dati del titolare la build di produzione si apre su "Configurazione mancante"**: è voluto.
+6. **GitHub → repository → Settings → Secrets and variables → Actions → Variables**: crea le stesse
+   `EXPO_PUBLIC_OWNER_*` e `EXPO_PUBLIC_APPSTORE_URL`, poi **Actions → "Virale · pagine legali" → Run workflow**.
+   Controllo: `…/privacy.html` mostra i tuoi dati e `…/apri.html?p=00000000-0000-0000-0000-000000000000`
+   mostra la pagina di Virale.
+7. **Notifiche push su Android (Firebase)**:
+   1. su <https://console.firebase.google.com> crea un progetto e aggiungi un'app Android con pacchetto `app.virale.mobile`;
+   2. scarica `google-services.json`;
+   3. su expo.dev → Environment variables crea una variabile di tipo **File** chiamata `GOOGLE_SERVICES_JSON`
+      (ambienti preview e production) caricando quel file;
+   4. su Firebase → Impostazioni progetto → Account di servizio → "Genera nuova chiave privata" (un file JSON);
+   5. su expo.dev → progetto → Credentials → Android → `app.virale.mobile` → "FCM V1 service account key" → carica quel JSON.
+
+   Senza questi passi l'app funziona lo stesso, ma su Android non arrivano notifiche (le Impostazioni lo dicono).
+8. **Notifiche push su iPhone**: alla prima `eas build --platform ios --profile production` accetta quando EAS
+   propone di creare la chiave per le notifiche push (Apple Push Notifications key).
+9. **Build nuova** (servono le dipendenze native nuove: compressione dei video e notifiche):
+   `eas build --platform android --profile preview` (anche dal sito expo.dev). Se la build fallisce per
+   `react-native-compressor`, c'è un piano di ripiego nel README (sezione "Produzione"). Sul telefono prova:
+   un video da 60 secondi, la notifica "nuovo follower" con un secondo account, un link condiviso aperto da
+   WhatsApp, "Password dimenticata?" con il codice, la tastiera su iPhone mentre scrivi la didascalia.
+10. **Testi legali**: l'informativa privacy cambia (foto profilo, ricerca, codice di recupero, token delle notifiche):
+    falla rileggere all'avvocato.
+11. **Schede degli store**: aggiorna le risposte privacy secondo `store/privacy-store.md` e carica i nuovi screenshot.
+12. **Moderazione ogni giorno**: Impostazioni → Segnalazioni da rivedere, **entrambe** le schede (Post; Commenti e
+    profili), entro 24 ore. Le notifiche push allo staff ti avvisano (al massimo una all'ora).
+13. **Nome utente ufficiale**: i nomi che cominciano con `virale` sono riservati. Per avere `@virale`, registrati con
+    un altro nome e rinomina dal SQL Editor (anche l'email interna, che segue il nome utente):
+    ```sql
+    update public.profiles set username = 'virale' where username = 'il_tuo_nome';
+    update auth.users set email = 'virale@utenti.virale.invalid' where email = 'il_tuo_nome@utenti.virale.invalid';
+    ```
 
 ## 1. Crea gli account (oggi, perché le verifiche richiedono giorni)
 
@@ -66,8 +126,9 @@ contenuti degli utenti, aperto dai 14 anni.
    Scegli una password del database lunga e salvala.
 2. **SQL Editor → New query**: incolla tutto `supabase/schema.sql` → **Run**.
 3. Nuova query: incolla `supabase/setup-produzione.sql` → **Run**.
-   Crea i bucket `media` (foto e video, pubblico) e `documenti` (documenti d'identità, privato),
-   i permessi sui file e la chiusura automatica della gara: ogni minuto si controlla se è arrivato l'orario
+   Crea i bucket `media` (foto e video, pubblico), `documenti` (documenti d'identità, privato) e
+   `avatars` (foto profilo, pubblico), i permessi sui file, le pulizie quotidiane, i lavori ogni minuto
+   (pulizia dei file e notifiche push: partono dopo i segreti del Vault, passo 0.2) e la chiusura automatica della gara: ogni minuto si controlla se è arrivato l'orario
    della copertina (lo scegli nell'app, Impostazioni → Copertina e documenti); a quell'ora la gara chiude e
    la nuova copertina esce subito.
 4. **Authentication → Sign In / Providers**:
@@ -83,8 +144,10 @@ contenuti degli utenti, aperto dai 14 anni.
     where is_admin or is_moderator or username = 'il_tuo_username';
    ```
    L'amministratore è anche moderatore. Nessuno può darsi un ruolo dall'app: si cambia solo da qui.
-6. **Password dimenticata** di un utente (non c'è email per il recupero): dopo aver verificato che l'account è suo,
-   reimpostala dal SQL Editor e comunicagliela, chiedendogli di cambiarla da Impostazioni → Cambia password:
+6. **Password dimenticata**: di solito l'utente fa da solo con il **codice di recupero** che riceve all'iscrizione
+   (accesso → "Password dimenticata?"; un codice nuovo si crea da Impostazioni → Codice di recupero).
+   Se ha perso anche il codice, dopo aver verificato che l'account è suo, reimpostala dal SQL Editor e
+   comunicagliela, chiedendogli di cambiarla da Impostazioni → Cambia password:
    ```sql
    update auth.users set encrypted_password = crypt('NuovaPassword123', gen_salt('bf'))
    where email = 'nomeutente@utenti.virale.invalid';
@@ -173,8 +236,13 @@ eas build --platform android --profile preview
 ```
 
 Alla fine EAS ti dà un link/QR: aprilo dal telefono e installa l'APK. Controlla:
-- iscrizione con la casella dei termini;
-- pubblicazione di foto e video (con la percentuale di caricamento);
+- iscrizione con la casella dei termini, e il codice di recupero che compare subito dopo;
+- "Password dimenticata?" con quel codice (poi si entra e ne arriva uno nuovo);
+- pubblicazione di foto e video (con la percentuale di caricamento), anche un video da 60 secondi
+  (prima "Preparo il video…", poi "Carico…") e "Annulla" a metà;
+- dopo la prima candidatura, la richiesta delle notifiche; poi un secondo account che ti segue → notifica entro 2 minuti,
+  e toccandola si apre il suo profilo;
+- un link condiviso aperto da WhatsApp (apre l'app, o lo store se non c'è);
 - nei Provini: un tocco mette in pausa, la barra in basso si trascina, tenendo premuto si aprono le opzioni;
 - "···" sotto un post → Segnala e Blocca;
 - Profilo → impostazioni → Elimina account.
@@ -249,9 +317,13 @@ La release arriva come bozza nel canale interno: la promuovi tu dalla console.
 
 ## 10. Dopo il lancio (ogni giorno)
 
-- **Moderazione entro 24 ore**: apri Impostazioni → Moderazione. *Va bene* rimette il post,
-  *Rimuovi* lo toglie a tutti, *Espelli* toglie il post e blocca l'autore. Apple e Google
-  controllano che le segnalazioni abbiano risposta.
+- **Moderazione entro 24 ore**: apri Impostazioni → Segnalazioni da rivedere, **tutte e due le schede**
+  (Post; Commenti e profili). *Va bene* rimette il contenuto, *Rimuovi* lo toglie a tutti (per un profilo:
+  foto, nome e bio azzerati), *Espelli* blocca l'autore. Chi viene rimosso riceve una notifica con il motivo.
+  Le notifiche push allo staff ti avvisano delle segnalazioni nuove. Apple e Google controllano che le
+  segnalazioni abbiano risposta.
+- **Funzione `verifica-eta`**: ogni tanto guarda i Logs: `/lavori` ogni minuto con stato 200 (se manca, la
+  pulizia dei file e le notifiche push sono ferme: controlla i segreti del passo 0).
 - **Email di supporto**: rispondi a segnalazioni urgenti, richieste privacy (entro 30 giorni per il GDPR) e ricorsi.
 - **Contenuti illegali gravi** (in particolare abusi su minori): rimuovi subito, espelli l'account
   e segnala alla Polizia Postale (<https://www.commissariatodips.it>).

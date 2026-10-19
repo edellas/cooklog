@@ -87,6 +87,8 @@ export type MyEntry = {
   status: EntryStatus;
   views: number;
   contestDay: string;
+  /** Perché è fuori gara: 'segnalazioni', 'moderazione', 'ritirato' (solo per la propria candidatura). */
+  reason?: string | null;
 };
 
 export type Me = Author;

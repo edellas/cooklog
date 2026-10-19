@@ -16,7 +16,7 @@ recapitarle. Se aggiungi servizi (es. Sentry, analytics) **aggiorna queste rispo
 | Contatti → Nome (nome e cognome; agli altri si mostra nome e iniziale) | Sì | Sì | No | Funzionalità dell'app, Gestione account |
 | Altri dati → Data di nascita (Apple non ha una voce dedicata: "Altri tipi di dati") | Sì | Sì | No | Funzionalità dell'app (età minima) |
 | Altri dati → Documento d'identità e selfie (cancellati dopo la verifica) | Sì | Sì | No | Funzionalità dell'app (verifica dell'età) |
-| Contenuti utente → Foto o video | Sì | Sì | No | Funzionalità dell'app |
+| Contenuti utente → Foto o video (post e foto profilo facoltativa) | Sì | Sì | No | Funzionalità dell'app |
 | Contenuti utente → Altri contenuti utente (didascalie, commenti, bio) | Sì | Sì | No | Funzionalità dell'app |
 | Identificatori → ID utente | Sì | Sì | No | Funzionalità dell'app |
 | Identificatori → ID dispositivo (token per le notifiche push, solo se l'utente le attiva) | Sì | Sì | No | Funzionalità dell'app |
@@ -47,7 +47,7 @@ ricerca, diagnostica, dati sensibili, identificatori pubblicitari).
 | Informazioni personali → Altre informazioni (documento d'identità e selfie, solo per la verifica dell'età, cancellati dopo la decisione) | Sì | No | Obbligatorio per pubblicare | Prevenzione frodi, sicurezza e conformità |
 | Informazioni personali → ID utente | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
 | ID dispositivo o altri ID → ID dispositivo (token per le notifiche push) | Sì | No | Facoltativo (solo con le notifiche attive) | Funzionalità app (notifiche); non per pubblicità né tracciamento |
-| Foto e video → Foto | Sì | No | Facoltativo | Funzionalità app |
+| Foto e video → Foto (post e foto profilo) | Sì | No | Facoltativo | Funzionalità app |
 | Foto e video → Video | Sì | No | Facoltativo | Funzionalità app |
 | Attività nelle app → Interazioni con l'app | Sì | No | Obbligatorio | Funzionalità app, Prevenzione frodi |
 | Attività nelle app → Altri contenuti generati dagli utenti (commenti, didascalie, bio) | Sì | No | Facoltativo | Funzionalità app |
