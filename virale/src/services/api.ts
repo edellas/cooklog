@@ -2412,6 +2412,15 @@ export async function startAgeCheck(): Promise<string | null> {
   return null;
 }
 
+/**
+ * Chiede alla funzione di leggere da Didit l'esito della propria verifica aperta e di registrarlo.
+ * Non dipende dall'avviso (webhook) di Didit, che può tardare. Errori ignorati: si riprova al giro dopo.
+ */
+export async function pollAgeCheck(): Promise<void> {
+  if (isDemo) return;
+  await db().functions.invoke('verifica-eta', { body: { action: 'esito' } }).catch(() => undefined);
+}
+
 /** Solo amministratori: prova tutto il collegamento con Didit (segreti, chiave, workflow) e dice cosa manca. */
 export async function diagnoseAgeCheck(): Promise<{ ok: boolean; checks: string[] }> {
   if (isDemo) return { ok: true, checks: ['Demo: nessun servizio esterno da controllare.'] };
