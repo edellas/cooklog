@@ -20,6 +20,7 @@ import { friendlyError } from '../../src/services/errors';
 import { useToast } from '../../src/components/Toast';
 import { useNav } from '../../src/state/nav';
 import { alreadySeen, markSeen } from '../../src/state/hints';
+import { onPostGone } from '../../src/state/postEvents';
 import { onSectionRequest, takeSection } from '../../src/state/sections';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
@@ -295,6 +296,28 @@ export default function ProviniTab() {
   useEffect(() => {
     flushRef.current = flush;
   }, [flush]);
+
+  // Post spariti altrove ("Non mi interessa", eliminati, autore bloccato): via dalla lista senza ricaricarla
+  // (la posizione resta), anche dalle sezioni messe da parte.
+  useEffect(
+    () =>
+      onPostGone((g) => {
+        const drop = (c: Card) => ('postId' in g ? c.id === g.postId : c.author.id === g.authorId);
+        for (const keep of Object.values(saved.current)) if (keep) keep.cards = keep.cards.filter((c) => !drop(c));
+        const list = cardsRef.current;
+        if (!list.some(drop)) return;
+        const at = list.findIndex((c) => c.key === activeKeyRef.current);
+        const next = list.filter((c) => !drop(c));
+        if (current.current && drop(current.current.card)) flushRef.current();
+        cardsRef.current = next;
+        setCards(next);
+        if (activeKeyRef.current && !next.some((c) => c.key === activeKeyRef.current)) {
+          const after = list.slice(at + 1).find((c) => !drop(c)) ?? next.at(-1);
+          setActiveKey(after?.key ?? null);
+        }
+      }),
+    [],
+  );
   const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<Card>[] }) => {
     const visible = viewableItems[0]?.item;
     // Sulla pagina finale non c'è nessun post: si chiude la vista dell'ultimo (non deve contare il tempo lì).

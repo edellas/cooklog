@@ -16,7 +16,6 @@ import {
   createRecoveryCode,
   deleteAccount,
   getPushPrefs,
-  isDemo,
   listBlocked,
   logout,
   PASSWORD_MIN,
@@ -26,6 +25,7 @@ import {
   type PushPrefs,
 } from '../src/services/api';
 import { openPushSettings, pushMissingReason, pushPermission, registerPush, type PushState } from '../src/services/push';
+import { invite, inviteText } from '../src/services/share';
 import { RecoveryCodeCard } from '../src/components/RecoveryCode';
 import { flushViews } from '../src/state/views';
 import { Field } from '../src/components/Field';
@@ -186,6 +186,12 @@ export default function Settings() {
           <Row icon="info" label="Come si diventa copertina" onPress={() => nav.push('/regole')} />
         </Section>
 
+        {inviteText() ? (
+          <Section title="Amici">
+            <Row icon="persone" label="Invita amici" hint="Ogni giorno una sola copertina, scelta da chi guarda." onPress={() => void invite(toast)} />
+          </Section>
+        ) : null}
+
         {ownerEmail() ? (
           <Section title="Aiuto">
             <Row icon="posta" label="Scrivici" hint={ownerEmail() ?? ''} onPress={() => void Linking.openURL(`mailto:${ownerEmail()}?subject=Virale`).catch(() => undefined)} />
@@ -201,7 +207,7 @@ export default function Settings() {
               <ActivityIndicator color={color.paper} />
             ) : (
               <Txt variant="label" tone={confirm ? color.paper : color.matita}>
-                {confirm ? 'Tocca di nuovo per eliminare per sempre' : isDemo ? 'Elimina account (cancella la demo)' : 'Elimina account'}
+                {confirm ? 'Tocca di nuovo per eliminare per sempre' : 'Elimina account'}
               </Txt>
             )}
           </Press>

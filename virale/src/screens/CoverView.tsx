@@ -24,7 +24,7 @@ import { actionError } from '../services/errors';
 import { shareText } from '../services/share';
 import { useNav } from '../state/nav';
 import { emitPostChange, onPostChange, withRecentChanges } from '../state/postEvents';
-import { firstCircleHint } from '../state/hints';
+import { firstCircleHint, savedToast } from '../state/hints';
 import { requestSection } from '../state/sections';
 import { useActGuard } from '../state/useActGuard';
 import { useSession } from '../state/session';
@@ -113,6 +113,7 @@ export function CoverView({
     const saveCount = Math.max(0, post.saveCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, savedByMe: on, saveCount }));
     emitPostChange(post.id, { savedByMe: on, saveCount });
+    if (on) savedToast(toast, nav.push);
     toggleSave(post.id, on).catch((e: unknown) => {
       setPost((p) => ({ ...p, savedByMe: !on, saveCount: post.saveCount }));
       emitPostChange(post.id, { savedByMe: !on, saveCount: post.saveCount });

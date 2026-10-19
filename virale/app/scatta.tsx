@@ -47,6 +47,7 @@ const CAMERA_KEY = "virale.scatta.fotocamera";
 
 export default function CreateScreen() {
   const insets = useSafeAreaInsets();
+  const windowHeight = useWindowDimensions().height;
   const nav = useNav();
   const { bump, status } = useSession();
   // Scaduto il tempo per il documento si guarda soltanto: lo si dice subito, non dopo aver scelto le foto.
@@ -56,6 +57,8 @@ export default function CreateScreen() {
   const [caption, setCaption] = useState("");
   const [join, setJoin] = useState(true);
   const [alreadyIn, setAlreadyIn] = useState(false);
+  /** La candidatura di oggi è stata ritirata (post eliminato): per oggi non se ne fa un'altra. */
+  const [withdrawn, setWithdrawn] = useState(false);
   const [busy, setBusy] = useState(false);
   /** Avanzamento della preparazione e del caricamento dei file (0-1), mentre si pubblica. */
   const [progress, setProgress] = useState<number | null>(null);
@@ -178,6 +181,7 @@ export default function CreateScreen() {
     void getMyEntry()
       .then((e) => {
         setAlreadyIn(Boolean(e));
+        setWithdrawn(Boolean(e && !e.postId));
         if (e) setJoin(false);
       })
       .catch(() => undefined);
@@ -461,7 +465,7 @@ export default function CreateScreen() {
           </View>
         ) : (
           <>
-            <View style={styles.preview}>
+            <View style={[styles.preview, { height: Math.min(420, Math.round(windowHeight * 0.42)) }]}>
               <MediaFrame
                 media={preview}
                 active
@@ -535,6 +539,33 @@ export default function CreateScreen() {
               </Txt>
             </View>
 
+            {/* La candidatura prima della didascalia: si vede senza scorrere anche su un telefono normale. */}
+            <Press
+              style={styles.contest}
+              scaleTo={0.99}
+              onPress={() => canJoin && setJoin((j) => !j)}
+              disabled={!canJoin}
+              accessibilityRole="switch"
+              accessibilityState={{
+                checked: join && canJoin,
+                disabled: !canJoin,
+              }}
+            >
+              <View style={{ flex: 1, gap: 4 }}>
+                <Txt variant="label">Candidalo per la prossima copertina</Txt>
+                <Txt variant="small" tone={color.paperDim}>
+                  {alreadyIn
+                    ? withdrawn
+                      ? "Oggi hai ritirato la candidatura: se ne candida un post al giorno. Domani potrai di nuovo."
+                      : "Oggi hai già un post in gara: se ne candida uno al giorno."
+                    : closed
+                      ? `Le candidature di questa gara hanno chiuso ${atTime(reveal + (status?.settings.cutoffHour ?? 20) * 60)}. Riaprono ${atTime(reveal)}, quando esce la nuova copertina.`
+                      : `Entra nei Provini. Se vince, ${atTime(reveal)} diventa la copertina che vede chiunque apra Virale.`}
+                </Txt>
+              </View>
+              <Toggle on={join && canJoin} />
+            </Press>
+
             <View style={{ gap: 4 }}>
               <Field
                 containerStyle={{ alignItems: "flex-start" }}
@@ -554,30 +585,6 @@ export default function CreateScreen() {
                 {`${charCount(caption)}/${CAPTION_MAX}`}
               </Txt>
             </View>
-
-            <Press
-              style={styles.contest}
-              scaleTo={0.99}
-              onPress={() => canJoin && setJoin((j) => !j)}
-              disabled={!canJoin}
-              accessibilityRole="switch"
-              accessibilityState={{
-                checked: join && canJoin,
-                disabled: !canJoin,
-              }}
-            >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Txt variant="label">Candidalo per la prossima copertina</Txt>
-                <Txt variant="small" tone={color.paperDim}>
-                  {alreadyIn
-                    ? "Oggi hai già un post in gara: se ne candida uno al giorno."
-                    : closed
-                      ? `Le candidature di questa gara hanno chiuso ${atTime(reveal + (status?.settings.cutoffHour ?? 20) * 60)}. Riaprono ${atTime(reveal)}, quando esce la nuova copertina.`
-                      : `Entra nei Provini. Se vince, ${atTime(reveal)} diventa la copertina che vede chiunque apra Virale.`}
-                </Txt>
-              </View>
-              <Toggle on={join && canJoin} />
-            </Press>
           </>
         )}
 
@@ -865,7 +872,7 @@ const styles = StyleSheet.create({
     padding: space[5],
     gap: space[2],
   },
-  preview: { height: 420, borderRadius: 22, overflow: "hidden" },
+  preview: { borderRadius: 22, overflow: "hidden" },
   thumb: {
     width: 60,
     height: 90,

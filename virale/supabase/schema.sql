@@ -2047,7 +2047,7 @@ begin
   elsif tg_table_name = 'daily_viral' then
     -- La copertina esce nel momento in cui la gara chiude: il vincitore lo scopre insieme a tutti.
     perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on));
-    -- Notifica push "È uscita la nuova copertina" a tutti (la invia la funzione verifica-eta, sezione 21).
+    -- Notifica push "È uscita la nuova copertina" a tutti (la invia la funzione verifica-eta, sezione 22).
     insert into push_broadcasts (featured_on) values (new.featured_on) on conflict do nothing;
   end if;
   return null;
@@ -3036,7 +3036,23 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- 21) Notifiche push (sul telefono): poche e utili, mai di notte, raggruppate se sono tante
+-- 21) "Non mi interessa": meno post così (gusti) e quel post non torna in Esplora
+-- ---------------------------------------------------------------------------
+create or replace function public.not_interested(p_post_id uuid)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if not exists (select 1 from posts where id = p_post_id) then raise exception 'Questo post non è più disponibile.'; end if;
+  perform public.interest_bump(v_uid, p_post_id, -6);
+  insert into seen_posts (user_id, post_id, seen_at) values (v_uid, p_post_id, now())
+  on conflict (user_id, post_id) do update set seen_at = now();
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 22) Notifiche push (sul telefono): poche e utili, mai di notte, raggruppate se sono tante
 -- ---------------------------------------------------------------------------
 -- Le invia la funzione verifica-eta (rotta /lavori, ogni minuto) tramite il servizio di Expo. I mi piace
 -- restano solo nell'app: niente spam.
@@ -3396,6 +3412,7 @@ grant execute on function public.mod_resolve_user_report(text, uuid, text) to au
 grant execute on function public.update_my_profile(text, text, text, boolean) to authenticated;
 grant execute on function public.search_profiles(text, int) to authenticated;
 grant execute on function public.create_recovery_code() to authenticated;
+grant execute on function public.not_interested(uuid) to authenticated;
 grant execute on function public.register_push_token(text, text) to authenticated;
 grant execute on function public.unregister_push_token(text) to authenticated;
 grant execute on function public.get_push_prefs() to authenticated;

@@ -1,4 +1,6 @@
 import { getJson, setJson } from '../services/storage';
+import type { ToastAction } from '../components/Toast';
+import { currentMe } from './session';
 
 /**
  * Suggerimenti che compaiono una volta sola per persona (sul dispositivo): la spiegazione di In gara,
@@ -31,4 +33,10 @@ export function firstCircleHint(userId: string | undefined, toast: (text: string
   void firstTime(`virale.primo.cerchio.${userId}`).then((first) => {
     if (first) toast('Hai cerchiato: è il nostro mi piace.');
   });
+}
+
+/** Dopo "Salva": dove trovarlo, con "Vedi" che apre i propri Salvati. */
+export function savedToast(toast: (text: string, tone?: 'ok' | 'error', action?: ToastAction) => void, push: (to: string) => void) {
+  const me = currentMe();
+  toast('Salvato nei tuoi Salvati', 'ok', me ? { label: 'Vedi', onPress: () => push(`/scorri/${me.username}?tipo=saved`) } : undefined);
 }

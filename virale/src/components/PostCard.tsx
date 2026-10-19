@@ -10,7 +10,7 @@ import { actionError } from '../services/errors';
 import { shareText } from '../services/share';
 import { useNav } from '../state/nav';
 import { emitFollowChange, emitPostChange, onFollowChange, onPostChange, withRecentChanges } from '../state/postEvents';
-import { firstCircleHint } from '../state/hints';
+import { firstCircleHint, savedToast } from '../state/hints';
 import { useActGuard } from '../state/useActGuard';
 import { toggleMute, useMuted } from '../state/sound';
 import type { Post } from '../types';
@@ -102,7 +102,10 @@ export const PostCard = memo(function PostCard({
     const saveCount = Math.max(0, post.saveCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, savedByMe: on, saveCount }));
     emitPostChange(post.id, { savedByMe: on, saveCount });
-    if (on) onInteract?.(post.id, 'saved');
+    if (on) {
+      onInteract?.(post.id, 'saved');
+      savedToast(toast, nav.push);
+    }
     toggleSave(post.id, on).catch((e: unknown) => {
       const back = { savedByMe: !on, saveCount: post.saveCount };
       setPost((p) => ({ ...p, ...back }));
@@ -124,12 +127,21 @@ export const PostCard = memo(function PostCard({
       })
       .catch(() => undefined);
   };
+  // "Segui" diventa "Segui già" per 2 secondi (un riscontro), poi sparisce.
+  const [justFollowed, setJustFollowed] = useState(false);
+  useEffect(() => {
+    if (!justFollowed) return;
+    const id = setTimeout(() => setJustFollowed(false), 2000);
+    return () => clearTimeout(id);
+  }, [justFollowed]);
   const follow = () => {
     if (!canAct()) return;
+    setJustFollowed(true);
     setFollowing(true);
     emitFollowChange(post.author.id, true);
     haptic('light');
     toggleFollow(post.author.id, true).catch((e: unknown) => {
+      setJustFollowed(false);
       setFollowing(false);
       emitFollowChange(post.author.id, false);
       toast(actionError(e, `Non è stato possibile seguire @${post.author.username}. Riprova.`), 'error');
@@ -184,7 +196,14 @@ export const PostCard = memo(function PostCard({
               </Txt>
             </View>
           </Press>
-          {!isMine && !following ? (
+          {!isMine && following && justFollowed ? (
+            <View style={[styles.follow, styles.followed]} accessibilityLiveRegion="polite">
+              <Txt variant="meta" style={{ fontFamily: 'SchibstedGrotesk_700Bold' }}>
+                Segui già
+              </Txt>
+              <Icon name="check" size={14} strokeWidth={2.4} />
+            </View>
+          ) : !isMine && !following ? (
             <Press style={styles.follow} onPress={follow} accessibilityRole="button" accessibilityLabel={`Segui ${post.author.username}`}>
               <Txt variant="meta" style={{ fontFamily: 'SchibstedGrotesk_700Bold' }}>
                 Segui
@@ -293,12 +312,16 @@ const styles = StyleSheet.create({
   authorRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space[3] },
   author: { flexDirection: 'row', alignItems: 'center', gap: space[3], flexShrink: 1 },
   follow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     borderWidth: 1,
     borderColor: color.paper,
     borderRadius: radius.pill,
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
+  followed: { borderColor: color.line },
   actions: { flexDirection: 'row', alignItems: 'center', gap: space[5], marginTop: space[1] },
   action: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 32 },
   more: { marginLeft: 'auto', minHeight: 32, minWidth: 32, alignItems: 'center', justifyContent: 'center' },

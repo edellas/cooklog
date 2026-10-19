@@ -26,6 +26,12 @@ type Session = {
 
 const Ctx = createContext<Session | null>(null);
 
+/** L'utente attuale, per chi deve saperlo solo al momento di un tocco (senza ridisegnarsi a ogni cambio di stato). */
+let current: Me | null = null;
+export function currentMe(): Me | null {
+  return current;
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [me, setMeState] = useState<Me | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +95,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       sub.remove();
     };
   }, [me, version, refreshStatus]);
+
+  useEffect(() => {
+    current = me ?? null;
+  }, [me]);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const value = useMemo(

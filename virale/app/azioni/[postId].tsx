@@ -10,7 +10,7 @@ import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
 import { color, radius, space } from '../../src/design/tokens';
 import { ReportReasons } from '../../src/components/ReportReasons';
-import { blockUser, deletePost, getPost, reportPost } from '../../src/services/api';
+import { blockUser, deletePost, getPost, notInterested, reportPost } from '../../src/services/api';
 import { emitPostGone } from '../../src/state/postEvents';
 import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
@@ -41,14 +41,15 @@ export default function PostActions() {
       .catch((e: unknown) => setError(friendlyError(e)));
   }, [postId]);
 
-  const run = async (fn: () => Promise<void>, done: string, gone: Parameters<typeof emitPostGone>[0]) => {
+  /** `refresh`: le altre schermate si ricaricano (blocchi, segnalazioni); "Non mi interessa" toglie solo il post. */
+  const run = async (fn: () => Promise<void>, done: string, gone: Parameters<typeof emitPostGone>[0], refresh = true) => {
     try {
       setBusy(true);
       setError(null);
       await fn();
       haptic('success');
       emitPostGone(gone);
-      bump();
+      if (refresh) bump();
       goBack();
       toast(done);
     } catch (e) {
@@ -81,6 +82,13 @@ export default function PostActions() {
             <Row icon="cestino" label="Elimina post" hint="Sparisce dal tuo profilo, dai feed e dalla gara." danger onPress={() => setStep('elimina')} />
           ) : (
             <>
+              <Row
+                icon="meno"
+                label="Non mi interessa"
+                hint="Vedrai meno post come questo."
+                disabled={busy}
+                onPress={() => void run(() => notInterested(post.id), 'Ok: vedrai meno post come questo.', { postId: post.id }, false)}
+              />
               <Row icon="segnala" label="Segnala post" hint="Per te sparisce subito. Lo controlliamo entro 24 ore." danger onPress={() => setStep('segnala')} />
               <Row icon="blocca" label={`Blocca ${who}`} hint="Non vedrete più i contenuti l’uno dell’altro." onPress={() => setStep('blocca')} />
             </>

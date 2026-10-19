@@ -7,12 +7,13 @@ import { Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { ToastProvider } from '../src/components/Toast';
+import { ToastProvider, useToast } from '../src/components/Toast';
 import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { isDemo, logout } from '../src/services/api';
 import { ownerEmail, ownerMissing } from '../src/legal/docs';
 import { refreshPushToken, usePushNavigation } from '../src/services/push';
+import { onStorageFull } from '../src/services/storage';
 import { noteInAppNavigation } from '../src/state/nav';
 import { flushViews } from '../src/state/views';
 import { FONTS } from '../src/design/fonts';
@@ -48,6 +49,7 @@ export default function RootLayout() {
               <View style={[styles.frame, { maxWidth: frameMax }]}>
                 <Gate />
                 <PushBridge />
+                <StorageWarning />
                 <Offline />
                 <Banned />
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: color.canvas } }}>
@@ -180,6 +182,20 @@ function PushBridge() {
   useEffect(() => {
     if (id) void refreshPushToken();
   }, [id]);
+  return null;
+}
+
+/** Demo: se il telefono (o il browser) non ha più spazio, lo si dice una volta invece di perdere dati in silenzio. */
+function StorageWarning() {
+  const toast = useToast();
+  useEffect(
+    () =>
+      onStorageFull(() => {
+        // Un attimo dopo: non deve sparire sotto il riscontro dell'azione appena fatta ("Salvato…", "Hai cerchiato…").
+        if (isDemo) setTimeout(() => toast('Spazio della demo pieno: le ultime modifiche non verranno salvate.', 'error'), 1200);
+      }),
+    [toast],
+  );
   return null;
 }
 

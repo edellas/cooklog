@@ -1270,3 +1270,18 @@ do $$ begin
   if (select sum(rewatches) from arena_entry_stats where entry_id = '20000000-0000-0000-0000-00000000d0a3') <> 0 then raise exception 'rivisto senza un giro intero'; end if;
   raise notice 'ok, con 20 secondi su 30 il completamento conta (il rivisto no)';
 end $$;
+
+-- ---------- "Non mi interessa" (W33) ----------
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a1', false);
+select not_interested('10000000-0000-0000-0000-00000000d0a3');
+reset role;
+do $$ begin
+  if (select score from user_interests where user_id = '00000000-0000-0000-0000-00000000d0a1' and key = 'a:00000000-0000-0000-0000-00000000d0a3') >= 0 then
+    raise exception 'gusto per l''autore non sceso';
+  end if;
+  if not exists (select 1 from seen_posts where user_id = '00000000-0000-0000-0000-00000000d0a1' and post_id = '10000000-0000-0000-0000-00000000d0a3') then
+    raise exception 'post non segnato come visto';
+  end if;
+  raise notice 'ok, "Non mi interessa" abbassa il gusto per l''autore e toglie il post da Esplora';
+end $$;

@@ -393,6 +393,8 @@ type DemoDb = {
   interests?: Record<string, { s: number; at: number }>;
   /** Post passati sullo schermo (id → quando): Esplora non li ripropone per qualche giorno. */
   seen?: Record<string, number>;
+  /** Post già stati in gara (id → giorno): come sul server, ogni post partecipa una volta sola. */
+  contested?: Record<string, string>;
 };
 
 type DemoUserReport = {
@@ -421,6 +423,8 @@ type DemoAccount = {
   nameChangedAt?: string;
   /** Quando è stato creato l'account demo (il voto conta dopo 24 ore, come sul server). */
   createdAt?: string;
+  /** Account chiuso (verifica: età sotto il minimo), come profiles.banned_at sul server. */
+  bannedAt?: string;
   /** Impronta del codice di recupero (mai il codice) e tentativi sbagliati recenti, come sul server. */
   recoveryHash?: string | null;
   recoveryFails?: number[];
@@ -505,11 +509,20 @@ function seedDay(demo: DemoDb, day: string, seedKey = day): ArenaState {
   const rng = seededRng(hash(seedKey));
   const state = createArenaState(day);
   const blocked = new Set(recentWinners(demo, shiftDay(day, 1)));
+  const winners = new Set(demo.covers.map((cv) => cv.postId));
+  const contested = (demo.contested ??= {});
   demo.quality = {};
   let i = 0;
-  for (const post of Object.values(demo.posts)) {
-    // Un solo post in gara per persona; il tuo lo candidi tu.
-    if (blocked.has(post.authorId) || post.authorId === demo.me?.id || state.entries.some((e) => e.authorId === post.authorId)) continue;
+  // Prima i post mai stati in gara (ogni post partecipa una volta sola, come sul server). I creator della demo
+  // hanno pochi post: se uno li ha già usati tutti torna il suo meno recente, così la demo non si svuota.
+  const order = Object.values(demo.posts).sort(
+    (a, b) => Number(Boolean(contested[a.id])) - Number(Boolean(contested[b.id])) || (contested[a.id] ?? '').localeCompare(contested[b.id] ?? ''),
+  );
+  for (const post of order) {
+    // Un solo post in gara per persona; il tuo lo candidi tu; mai un post che è già stato copertina.
+    if (winners.has(post.id) || blocked.has(post.authorId) || post.authorId.startsWith('me-') || post.authorId === demo.me?.id) continue;
+    if (state.entries.some((e) => e.authorId === post.authorId)) continue;
+    contested[post.id] = day;
     const entryId = `e-${day}-${post.id}-${hash(seedKey) % 997}`;
     submitEntry(state, { id: entryId, postId: post.id, authorId: post.authorId, createdAt: new Date(Date.parse(`${day}T06:00:00Z`) + i++ * 60000).toISOString() });
     demo.quality[entryId] = rng() ** 1.3;
@@ -562,6 +575,17 @@ function notifyDemo(demo: DemoDb, kind: NotificationKind, actorId: string | null
   demo.notifications = [item, ...list.filter((n) => key(n) !== key(item))].slice(0, 100);
 }
 
+/**
+ * Fine di una giornata: le visualizzazioni raccolte in gara dai post creati sul dispositivo restano nel post
+ * (sul server le visualizzazioni non dipendono dalla gara). Vale anche per il vincitore.
+ */
+function keepViews(demo: DemoDb) {
+  for (const e of demo.state.entries) {
+    const sp = demo.posts[e.postId];
+    if (sp && sp.authorId.startsWith('me-')) sp.views = (sp.views ?? 0) + e.stats.views;
+  }
+}
+
 /** Chiude la gara: il vincitore diventa la copertina del giorno indicato. */
 function crown(demo: DemoDb, featuredOn: string): string | null {
   // Se tutti i migliori sono in pausa, vince comunque il migliore: in demo la copertina non resta mai vuota.
@@ -579,6 +603,13 @@ function crown(demo: DemoDb, featuredOn: string): string | null {
   return winner.postId;
 }
 
+/** Il giorno di gara della demo: come sul server (arena_closed_days) non torna mai indietro, nemmeno se
+ * l'amministratore sposta l'orario della copertina più avanti dopo la chiusura. */
+function demoDay(demo: DemoDb): string {
+  const natural = coverDay(demo.settings?.revealMinutes ?? 0);
+  return demo.state?.day && demo.state.day > natural ? demo.state.day : natural;
+}
+
 async function load(): Promise<DemoDb> {
   let demo = await getJson<DemoDb | null>(KEY, null);
   if (!demo) demo = freshDb();
@@ -587,8 +618,8 @@ async function load(): Promise<DemoDb> {
   demo.userReports ??= [];
   demo.accounts ??= {};
   demo.settings ??= { ...DEFAULT_SETTINGS };
-  // Come sul server: il giorno di gara va da un orario di copertina al successivo.
-  const today = coverDay(demo.settings.revealMinutes);
+  // Come sul server: il giorno di gara va da un orario di copertina al successivo, e non torna indietro.
+  const today = demoDay(demo);
   demo.notifications ??= [];
   demo.viewed ??= [];
   // Un profilo demo di prima delle password non ha un account con cui rientrare: si riparte dalla registrazione.
@@ -599,6 +630,7 @@ async function load(): Promise<DemoDb> {
     for (let guard = 0; day && day < today && guard < 60; guard += 1) {
       const next = shiftDay(day, 1);
       if (!demo.covers.some((cv) => cv.featuredOn === next)) crown(demo, next);
+      keepViews(demo);
       if (next < today) demo.state = seedDay(demo, next);
       day = next;
     }
@@ -676,7 +708,7 @@ function postViews(demo: DemoDb, sp: StoredPost): number {
   // I post degli account creati sul dispositivo partono da zero; quelli dei creator demo da una stima.
   const local = sp.authorId.startsWith('me-');
   const base = sp.views ?? (local ? 0 : sp.likes * 9 + (hash(sp.id) % 400));
-  return base + (sp.authorId === demo.me?.id ? (entry?.stats.views ?? 0) : 0);
+  return base + (local ? (entry?.stats.views ?? 0) : 0);
 }
 
 /** Demo: il numero dell'uscita è la posizione fra le copertine demo, dalla più vecchia (N. 1). */
@@ -1283,7 +1315,7 @@ export async function getTodayCover(): Promise<Cover | null> {
   }
   return withDemo((demo) => {
     // La più recente già uscita (se l'ultima gara non ha avuto candidati resta quella di prima).
-    const day = coverDay(demo.settings!.revealMinutes);
+    const day = demoDay(demo);
     const cv = demo.covers.filter((x) => x.featuredOn <= day && visible(demo, x.postId)).sort((a, b) => b.featuredOn.localeCompare(a.featuredOn))[0];
     return cv ? toCover(demo, cv) : null;
   });
@@ -1302,7 +1334,7 @@ export async function getArchive(before?: string, limit = 30): Promise<Cover[]> 
   }
   return withDemo((demo) =>
     demo.covers
-      .filter((cv) => cv.featuredOn <= coverDay(demo.settings!.revealMinutes) && (!before || cv.featuredOn < before) && visible(demo, cv.postId))
+      .filter((cv) => cv.featuredOn <= demoDay(demo) && (!before || cv.featuredOn < before) && visible(demo, cv.postId))
       .sort((a, b) => b.featuredOn.localeCompare(a.featuredOn))
       .slice(0, limit)
       .map((cv) => toCover(demo, cv)),
@@ -1317,7 +1349,7 @@ export async function getCover(day: string): Promise<Cover | null> {
     return row ? coverFromJson(row) : null;
   }
   return withDemo((demo) => {
-    const cv = demo.covers.find((x) => x.featuredOn === day && day <= coverDay(demo.settings!.revealMinutes) && visible(demo, x.postId));
+    const cv = demo.covers.find((x) => x.featuredOn === day && day <= demoDay(demo) && visible(demo, x.postId));
     return cv ? toCover(demo, cv) : null;
   });
 }
@@ -1576,7 +1608,7 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
       .filter((p) => p.authorId === person.id && (isMe || visible(demo, p.id)))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map((p) => toPost(demo, p.id));
-    const entry = demo.state.entries.find((e) => e.authorId === person.id && demo.posts[e.postId]);
+    const entry = demo.state.entries.find((e) => e.authorId === person.id && (person.id === demo.me?.id || demo.posts[e.postId]));
     return {
       profile: {
         ...author(demo, person.id),
@@ -1602,7 +1634,10 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
       },
       posts,
       saved: isMe ? demo.saves.filter((id) => visible(demo, id)).map((id) => toPost(demo, id)) : [],
-      entry: isMe && entry ? { entryId: entry.id, postId: entry.postId, tier: entry.tier, status: entry.status, views: entry.stats.views, contestDay: entry.contestDay } : null,
+      entry:
+        isMe && entry
+          ? { entryId: entry.id, postId: demo.posts[entry.postId] ? entry.postId : null, tier: entry.tier, status: entry.status, views: entry.stats.views, contestDay: entry.contestDay }
+          : null,
     };
   });
 }
@@ -1659,8 +1694,9 @@ export async function getMyEntry(): Promise<MyEntry | null> {
     return r ? { entryId: r.entry_id, postId: r.post_id, tier: r.tier, status: r.status, views: r.views, contestDay: r.contest_day } : null;
   }
   return withDemo((demo) => {
-    const e = demo.me ? demo.state.entries.find((x) => x.authorId === demo.me!.id && demo.posts[x.postId]) : undefined;
-    return e ? { entryId: e.id, postId: e.postId, tier: e.tier, status: e.status, views: e.stats.views, contestDay: e.contestDay } : null;
+    // Come sul server: anche la candidatura ritirata (post eliminato) resta, così oggi non se ne fa un'altra.
+    const e = demo.me ? demo.state.entries.find((x) => x.authorId === demo.me!.id) : undefined;
+    return e ? { entryId: e.id, postId: demo.posts[e.postId] ? e.postId : null, tier: e.tier, status: e.status, views: e.stats.views, contestDay: e.contestDay } : null;
   });
 }
 
@@ -1790,7 +1826,7 @@ export async function publish(
     let entry: MyEntry | null = null;
     if (input.joinContest) {
       try {
-        if (recentWinners(demo, shiftDay(coverDay(demo.settings!.revealMinutes), 1)).includes(me.id)) throw new Error('Sei stato in copertina da poco: potrai ricandidarti tra qualche giorno.');
+        if (recentWinners(demo, shiftDay(demoDay(demo), 1)).includes(me.id)) throw new Error('Sei stato in copertina da poco: potrai ricandidarti tra qualche giorno.');
         const e = submitEntry(demo.state, { id: `e-${demo.state.day}-${id}`, postId: id, authorId: me.id });
         // Qualità nascosta estratta come per tutti gli altri: nessun favoritismo.
         demo.quality[e.id] = Math.random() ** 1.3;
@@ -1845,9 +1881,9 @@ export async function closeDayNowDemo(): Promise<Cover | null> {
   return withDemo((demo) => {
     const rng = seededRng(Date.now() >>> 0);
     simulateCrowd(demo.state, { quality: (id) => demo.quality[id] ?? 0.3, viewers: 160, viewsPerViewer: 7, viewerPrefix: `crowd-close-${Date.now()}-`, forgetViewers: true }, rng);
-    const today = coverDay(demo.settings!.revealMinutes);
+    const today = demoDay(demo);
     // La copertina nuova prende il posto di quella visibile adesso (che dipende dall'orario di rivelazione).
-    const shown = coverDay(demo.settings!.revealMinutes);
+    const shown = demoDay(demo);
     const before = demo.covers;
     // Scalano solo le copertine già uscite: quella in attesa dell'orario di rivelazione resta dov'è.
     demo.covers = demo.covers.map((cv) => (cv.featuredOn <= shown ? { ...cv, featuredOn: shiftDay(cv.featuredOn, -1) } : cv));
@@ -1858,6 +1894,7 @@ export async function closeDayNowDemo(): Promise<Cover | null> {
       const won = winnerEntry.find((e) => e.postId === postId);
       if (won && demo.me && won.authorId === demo.me.id) notifyDemo(demo, 'cover', null, postId, { featured_on: shown });
     }
+    keepViews(demo);
     demo.state = seedDay(demo, today, `${today}-${Date.now()}`);
     const cv = postId ? demo.covers.find((x) => x.featuredOn === shown) : undefined;
     return cv ? toCover(demo, cv) : null;
@@ -1943,6 +1980,19 @@ export async function reportProfile(userId: string, reason: ReportReason, note?:
   }, true);
 }
 
+/** "Non mi interessa": meno post come questo (gusti) e questo non torna in Esplora. */
+export async function notInterested(postId: string): Promise<void> {
+  if (!isDemo) {
+    await rpc('not_interested', { p_post_id: postId });
+    return;
+  }
+  await withDemo((demo) => {
+    bumpInterest(demo, postId, -6);
+    demo.seen ??= {};
+    demo.seen[postId] = Date.now();
+  }, true);
+}
+
 export async function blockUser(userId: string): Promise<void> {
   if (!isDemo) {
     await rpc('block_user', { p_user_id: userId });
@@ -1993,9 +2043,23 @@ export async function deletePost(postId: string): Promise<void> {
   }, true);
 }
 
+/** Demo: post, commenti, candidature e copertine di una persona spariscono (come a cascata nel database). */
+function purgeDemoContent(demo: DemoDb, userId: string) {
+  for (const [id, p] of Object.entries(demo.posts)) {
+    if (p.authorId !== userId) continue;
+    delete demo.posts[id];
+    delete demo.comments[id];
+  }
+  for (const id of Object.keys(demo.comments)) demo.comments[id] = demo.comments[id].filter((c) => c.authorId !== userId);
+  for (const e of demo.state.entries) if (e.authorId === userId) e.status = 'disqualified';
+  demo.covers = demo.covers.filter((cv) => demo.posts[cv.postId]);
+}
+
 /**
  * Elimina l'account e tutto ciò che contiene: prima i file nello Storage, poi il profilo
  * con post, commenti, like, follow e partecipazioni (a cascata nel database).
+ * Nella demo si elimina solo l'account attuale: gli altri creati sul dispositivo restano
+ * ("Ricomincia la demo da zero", nel profilo, cancella tutto).
  */
 export async function deleteAccount(): Promise<void> {
   if (!isDemo) {
@@ -2006,7 +2070,19 @@ export async function deleteAccount(): Promise<void> {
     await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
     return;
   }
-  await resetDemo();
+  await withDemo((demo) => {
+    const me = demo.me;
+    if (!me) return;
+    purgeDemoContent(demo, me.id);
+    demo.myPostIds = [];
+    delete demo.people[me.id];
+    delete demo.accounts?.[me.username];
+    // Negli altri account del dispositivo: chi lo seguiva non lo segue più.
+    for (const acc of Object.values(demo.accounts ?? {})) {
+      if (acc.saved) acc.saved = { ...acc.saved, following: acc.saved.following.filter((id) => id !== me.id) };
+    }
+    demo.me = null;
+  }, true);
 }
 
 export type ModItem = { post: Post; hidden: boolean; reports: number; reasons: ReportReason[]; firstAt: string };
@@ -2181,7 +2257,7 @@ export async function getStatus(): Promise<Status> {
       identity: id ? { status: id.status, deadline: id.deadline, reason: id.reason, canAct: id.status === 'approved' || Date.now() < Date.parse(id.deadline) } : null,
       isModerator: Boolean(demo.me),
       isAdmin: Boolean(demo.me),
-      banned: false,
+      banned: Boolean(acc?.bannedAt),
       needsPrivate: false,
       needsPassword: false,
       unread: (demo.notifications ?? []).filter((n) => !n.read && (!n.actor || !demo.blocked.includes(n.actor.id))).length,
@@ -2392,6 +2468,11 @@ export async function reviewIdentity(userId: string, decision: 'approve' | 'reje
       reason: ok ? null : decision === 'underage' ? `Hai meno di ${MIN_AGE_YEARS} anni.` : reason?.trim() || 'Documento non leggibile o non corrispondente.',
     };
     const data = { reason: acc.identity.reason, final: decision === 'underage' };
+    // Come sul server: sotto l'età minima l'account si chiude e i suoi contenuti spariscono.
+    if (decision === 'underage') {
+      acc.bannedAt = new Date().toISOString();
+      purgeDemoContent(demo, acc.me.id);
+    }
     if (demo.me?.id === userId) notifyDemo(demo, ok ? 'identity_ok' : 'identity_ko', null, null, data);
     else {
       // L'altro account (sullo stesso dispositivo) trova la notifica al prossimo accesso.

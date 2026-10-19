@@ -21,6 +21,7 @@ import { useSession } from '../state/session';
 import { useGoBack } from '../state/useGoBack';
 import type { MyEntry, Post, Profile } from '../types';
 import { actionError, friendlyError } from '../services/errors';
+import { invite, inviteText } from '../services/share';
 
 export function ProfileView({ username, showBack }: { username: string; showBack?: boolean }) {
   const insets = useSafeAreaInsets();
@@ -380,6 +381,13 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         </View>
       )}
 
+      {profile.isMe && inviteText() ? (
+        <Press style={styles.invite} onPress={() => void invite(toast)} accessibilityRole="button">
+          <Icon name="persone" size={20} />
+          <Txt variant="label">Invita amici</Txt>
+        </Press>
+      ) : null}
+
       {profile.isMe && isDemo ? (
         <Press
           style={styles.reset}
@@ -476,4 +484,5 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, paddingHorizontal: 3 },
   cell: { width: '32%', aspectRatio: 2 / 3 },
   reset: { alignSelf: 'center', marginTop: space[8], padding: space[3] },
+  invite: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space[2], alignSelf: 'center', marginTop: space[8], minHeight: 44, paddingHorizontal: space[5], borderRadius: radius.pill, borderWidth: 1, borderColor: color.line },
 });

@@ -15,7 +15,7 @@ export const OWNER = {
   /** Email per supporto, privacy e segnalazioni urgenti: deve essere letta ogni giorno. */
   email: process.env.EXPO_PUBLIC_OWNER_EMAIL || '[supporto@tuodominio.it]',
   /** Dove saranno pubblicate le pagine di legal-site/ (es. https://tuonome.github.io/cooklog). Senza barra finale. */
-  website: process.env.EXPO_PUBLIC_OWNER_WEBSITE || '',
+  website: (process.env.EXPO_PUBLIC_OWNER_WEBSITE || '').trim().replace(/\/+$/, ''),
 };
 
 /** I nomi delle variabili EXPO_PUBLIC_OWNER_* non impostate (mai i valori). */
