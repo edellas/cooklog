@@ -1,0 +1,90 @@
+{
+  "expo": {
+    "name": "Virale",
+    "slug": "virale",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.virale.mobile",
+      "infoPlist": {
+        "CADisableMinimumFrameDurationOnPhone": true
+      },
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "monochromeImage": "./assets/adaptive-icon-monochrome.png",
+        "backgroundColor": "#0C1322"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "app.virale.mobile",
+      "blockedPermissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_CONTACTS",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "name": "Virale",
+      "lang": "it",
+      "backgroundColor": "#0C1322",
+      "themeColor": "#0C1322",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-video",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Virale usa la galleria per pubblicare foto e video.",
+          "cameraPermission": "Virale usa la fotocamera per registrare video e scattare foto.",
+          "microphonePermission": "Virale usa il microfono per registrare video con audio."
+        }
+      ],
+      "expo-router",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 240,
+          "resizeMode": "contain",
+          "backgroundColor": "#0C1322"
+        }
+      ],
+      "expo-web-browser",
+      "react-native-compressor",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/adaptive-icon-monochrome.png",
+          "color": "#FADB2C"
+        }
+      ]
+    ],
+    "scheme": "virale",
+    "experiments": {
+      "typedRoutes": false
+    },
+    "description": "Ogni giorno un solo post diventa la copertina che vedono tutti.",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "owner": "virales-team",
+    "extra": {
+      "eas": {
+        "projectId": "264cb2ed-7b17-45bf-ad31-c1497fe4480e"
+      }
+    }
+  }
+}

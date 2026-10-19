@@ -1,0 +1,73 @@
+{
+  "name": "virale",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "test": "node --experimental-strip-types --no-warnings --test src/engine/engine.test.ts src/components/videoProgress.test.ts",
+    "simulate": "node --experimental-strip-types --no-warnings scripts/simulate.ts",
+    "typecheck": "tsc --noEmit",
+    "build:web": "expo export --platform web",
+    "lint": "expo lint",
+    "export:legal": "node --env-file-if-exists=.env.local --experimental-strip-types --no-warnings scripts/export-legal.ts",
+    "check:release": "node --env-file-if-exists=.env.local --experimental-strip-types --no-warnings scripts/check-release.ts",
+    "icons": "python3 scripts/make-icons.py",
+    "store:grafica": "python3 scripts/make-feature-graphic.py"
+  },
+  "dependencies": {
+    "@expo-google-fonts/bodoni-moda": "^0.4.2",
+    "@expo-google-fonts/schibsted-grotesk": "^0.4.2",
+    "@expo/metro-runtime": "~6.1.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/bottom-tabs": "^7.21.0",
+    "@react-navigation/native": "^7.5.1",
+    "@supabase/supabase-js": "^2.117.3",
+    "eslint-config-expo": "~10.0.0",
+    "expo": "~54.0.36",
+    "expo-clipboard": "~8.0.8",
+    "expo-constants": "~18.0.14",
+    "expo-file-system": "~19.0.24",
+    "expo-font": "~14.0.12",
+    "expo-haptics": "~15.0.8",
+    "expo-image": "~3.0.11",
+    "expo-image-manipulator": "~14.0.8",
+    "expo-image-picker": "~17.0.11",
+    "expo-linear-gradient": "~15.0.8",
+    "expo-linking": "~8.0.12",
+    "expo-notifications": "~0.32.17",
+    "expo-router": "~6.0.24",
+    "expo-splash-screen": "~31.0.13",
+    "expo-status-bar": "~3.0.9",
+    "expo-video": "~3.0.16",
+    "expo-web-browser": "~15.0.11",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-compressor": "1.19.4",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-svg": "15.12.1",
+    "react-native-url-polyfill": "^4.0.0",
+    "react-native-web": "~0.21.0",
+    "react-native-worklets": "0.5.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "eslint": "^9.39.5",
+    "typescript": "~5.9.2"
+  },
+  "private": true,
+  "expo": {
+    "install": {
+      "exclude": [
+        "@react-navigation/bottom-tabs",
+        "@react-navigation/native"
+      ]
+    }
+  }
+}
