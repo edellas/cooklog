@@ -69,9 +69,8 @@ password, notifiche push, pulizia automatica dei file e pagina per i link condiv
    Senza questi passi l'app funziona lo stesso, ma su Android non arrivano notifiche (le Impostazioni lo dicono).
 8. **Notifiche push su iPhone**: alla prima `eas build --platform ios --profile production` accetta quando EAS
    propone di creare la chiave per le notifiche push (Apple Push Notifications key).
-9. **Build nuova** (servono le dipendenze native nuove: compressione dei video e notifiche):
-   `eas build --platform android --profile preview` (anche dal sito expo.dev). Se la build fallisce per
-   `react-native-compressor`, c'è un piano di ripiego nel README (sezione "Produzione"). Sul telefono prova:
+9. **Build nuova** (servono le dipendenze native nuove: notifiche e appunti):
+   `eas build --platform android --profile preview` (anche dal sito expo.dev). Sul telefono prova:
    un video da 60 secondi, la notifica "nuovo follower" con un secondo account, un link condiviso aperto da
    WhatsApp, "Password dimenticata?" con il codice, la tastiera su iPhone mentre scrivi la didascalia.
 10. **Testi legali**: l'informativa privacy cambia (foto profilo, ricerca, codice di recupero, token delle notifiche):
