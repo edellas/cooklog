@@ -1,5 +1,6 @@
 import { View } from 'react-native';
 
+import { firstChar } from '../design/text';
 import { color, font } from '../design/tokens';
 import { Txt } from './Txt';
 
@@ -29,7 +30,7 @@ export function Monogram({ name, seed, size = 36, ring }: { name: string; seed: 
       <Txt
         style={{ fontFamily: font.display, fontSize: size * 0.5, lineHeight: size * 0.62, marginTop: size * 0.02 }}
         tone={color.canvas}>
-        {name.trim().slice(0, 1).toUpperCase() || '·'}
+        {firstChar(name.trim()).toUpperCase() || '·'}
       </Txt>
     </View>
   );

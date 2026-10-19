@@ -14,6 +14,8 @@ type Session = {
   error: string | null;
   retry: () => void;
   setMe: (me: Me | null) => void;
+  /** Stesso utente con nome o foto cambiati: niente azzeramento dello stato (non è un cambio di account). */
+  updateMe: (me: Me) => void;
   /** Verifica dell'età, ruoli, notifiche non lette, impostazioni. Null finché non arriva. */
   status: Status | null;
   refreshStatus: () => Promise<void>;
@@ -41,6 +43,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setStatus(null);
     setMeState(next);
   }, []);
+
+  const updateMe = useCallback((next: Me) => setMeState((cur) => (cur && cur.id === next.id ? next : cur)), []);
 
   const retry = useCallback(() => {
     setError(null);
@@ -88,8 +92,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const value = useMemo(
-    () => ({ me, setMe, error, retry, status, refreshStatus, version, bump }),
-    [me, setMe, error, retry, status, refreshStatus, version, bump],
+    () => ({ me, setMe, updateMe, error, retry, status, refreshStatus, version, bump }),
+    [me, setMe, updateMe, error, retry, status, refreshStatus, version, bump],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -14,7 +14,7 @@ import { toggleMute, useMuted } from '../state/sound';
 import type { Post } from '../types';
 import { Icon } from './Icon';
 import { MediaFrame, type VideoProgress } from './MediaFrame';
-import { Monogram } from './Monogram';
+import { Avatar } from './Avatar';
 import { haptic, Press } from './Press';
 import { useToast } from './Toast';
 import { Txt } from './Txt';
@@ -167,7 +167,7 @@ export const PostCard = memo(function PostCard({
             onPress={() => nav.push(`/utente/${post.author.username}`)}
             accessibilityRole="link"
             accessibilityLabel={`Profilo di ${post.author.displayName}, @${post.author.username}`}>
-            <Monogram name={post.author.displayName} seed={post.author.username} size={34} />
+            <Avatar name={post.author.displayName} seed={post.author.username} uri={post.author.avatar} size={34} />
             <View style={{ flexShrink: 1 }}>
               <Txt variant="label" numberOfLines={1}>
                 {post.author.displayName}

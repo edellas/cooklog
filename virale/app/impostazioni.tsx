@@ -5,7 +5,7 @@ import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../src/components/Icon';
-import { Monogram } from '../src/components/Monogram';
+import { Avatar } from '../src/components/Avatar';
 import { haptic, Press } from '../src/components/Press';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
@@ -143,7 +143,7 @@ export default function Settings() {
           ) : blocked.length ? (
             blocked.map((a) => (
               <View key={a.id} style={styles.blockedRow}>
-                <Monogram name={a.displayName} seed={a.username} size={32} />
+                <Avatar name={a.displayName} seed={a.username} uri={a.avatar} size={32} />
                 <Txt variant="label" style={{ flex: 1 }}>
                   @{a.username}
                 </Txt>

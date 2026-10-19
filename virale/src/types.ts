@@ -15,6 +15,8 @@ export type Author = {
   id: string;
   username: string;
   displayName: string;
+  /** Indirizzo della foto profilo (in demo un data URL); senza, si mostra il monogramma. */
+  avatar?: string | null;
 };
 
 /** Un post: da 1 a 10 foto e/o video, come su TikTok. */
@@ -52,6 +54,8 @@ export type Comment = {
 
 export type Profile = Author & {
   bio: string;
+  /** Solo il proprio profilo: da quando si può cambiare di nuovo il nome mostrato (ISO), se c'è un'attesa. */
+  nameChangeFrom?: string | null;
   followers: number;
   following: number;
   covers: number;

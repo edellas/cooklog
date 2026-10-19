@@ -73,6 +73,7 @@ export default function RootLayout() {
                     options={{ presentation: 'formSheet', sheetAllowedDetents: [0.75, 0.95], sheetGrabberVisible: true, sheetCornerRadius: 24, contentStyle: { backgroundColor: color.sheet } }}
                   />
                   <Stack.Screen name="impostazioni" />
+                  <Stack.Screen name="modifica-profilo" />
                   <Stack.Screen name="moderazione" />
                   <Stack.Screen name="amministrazione" />
                   <Stack.Screen name="verifica" />

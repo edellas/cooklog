@@ -4,7 +4,7 @@ import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'r
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../../src/components/Icon';
-import { Monogram } from '../../src/components/Monogram';
+import { Avatar } from '../../src/components/Avatar';
 import { haptic, Press } from '../../src/components/Press';
 import { useToast } from '../../src/components/Toast';
 import { Txt } from '../../src/components/Txt';
@@ -143,7 +143,7 @@ export default function FollowsScreen() {
           renderItem={({ item }) => (
             <View style={styles.row}>
               <Press style={styles.person} onPress={() => nav.push(`/utente/${item.username}`)} accessibilityRole="link" accessibilityLabel={`Profilo di @${item.username}`}>
-                <Monogram name={item.displayName} seed={item.username} size={40} />
+                <Avatar name={item.displayName} seed={item.username} uri={item.avatar} size={40} />
                 <View style={{ flexShrink: 1 }}>
                   <Txt variant="label" numberOfLines={1}>
                     {item.displayName}

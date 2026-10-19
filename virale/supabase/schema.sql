@@ -400,7 +400,7 @@ create policy "profiles insert own" on public.profiles for insert to authenticat
 -- La registrazione passa da complete_registration (età, dati privati, scadenza del documento): niente insert diretti.
 -- Dei profili altrui si leggono solo i campi pubblici.
 revoke select, insert on public.profiles from anon, authenticated;
-grant select (id, username, display_name, bio, created_at) on public.profiles to authenticated;
+grant select (id, username, display_name, bio, avatar_path, created_at) on public.profiles to authenticated;
 revoke insert on public.profiles from authenticated;
 -- Il profilo non si modifica dalla tabella: nome, bio e foto passano da update_my_profile (regole, limiti,
 -- moderazione). Prima nome e bio si potevano scrivere liberamente (a capo, caratteri di controllo,
@@ -1045,7 +1045,7 @@ $$;
 
 create or replace function public.list_blocked()
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
-  select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name)
+  select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name, 'avatar_path', a.avatar_path)
   from blocks b join profiles a on a.id = b.blocked_id
   where b.blocker_id = auth.uid()
   order by b.created_at desc;
@@ -1349,7 +1349,9 @@ begin
   end if;
   return jsonb_build_object(
     'profile', jsonb_build_object(
-      'id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio,
+      'id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio, 'avatar_path', v_pr.avatar_path,
+      -- Per la modifica del profilo: da quando si può cambiare di nuovo il nome (solo per sé).
+      'name_change_from', case when v_pr.id = v_uid and v_pr.name_changed_at is not null then v_pr.name_changed_at + interval '7 days' end,
       -- Stesse regole degli elenchi (list_follows): niente account espulsi o bloccati.
       'followers', (select count(*) from follows f join profiles a on a.id = f.follower_id
                     where f.followee_id = v_pr.id and a.banned_at is null and not public.is_blocked_pair(v_uid, a.id)),
@@ -2054,7 +2056,7 @@ create or replace function public.list_notifications(p_limit int default 50, p_b
 returns setof jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'id', n.id, 'kind', n.kind, 'data', n.data, 'created_at', n.created_at, 'read', n.read_at is not null,
-    'actor', case when a.id is null then null else jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name) end,
+    'actor', case when a.id is null then null else jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name, 'avatar_path', a.avatar_path) end,
     'post', case when n.post_id is null then null else jsonb_build_object('id', p.id, 'media', p.media) end
   )
   from notifications n
@@ -2129,7 +2131,7 @@ begin
     raise exception 'Profilo non trovato.';
   end if;
   return query
-  select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name,
+  select jsonb_build_object('id', a.id, 'username', a.username, 'display_name', a.display_name, 'avatar_path', a.avatar_path,
                             'followed', exists (select 1 from follows m where m.follower_id = v_uid and m.followee_id = a.id),
                             'is_me', a.id = v_uid, 'cursor', f.created_at)
   from follows f
@@ -2841,6 +2843,76 @@ exception when insufficient_privilege then
   raise notice 'Non ho i permessi per il controllo sul nome di accesso (auth.users): salto.';
 end $$;
 
+-- ---------------------------------------------------------------------------
+-- 18) Modifica del profilo: nome mostrato, bio e foto, con regole (prima si scrivevano senza controlli)
+-- ---------------------------------------------------------------------------
+-- Un parametro null vuol dire "non cambia". Con la verifica dell'età scaduta si guarda soltanto.
+create or replace function public.update_my_profile(p_display_name text default null, p_bio text default null,
+                                                    p_avatar_path text default null, p_remove_avatar boolean default false)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_pr profiles;
+  v_name text;
+  v_bio text;
+  v_avatar text;
+  v_exists boolean;
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if not public.can_act(v_uid) then raise exception 'Per modificare il profilo serve la verifica dell’età.'; end if;
+  if (select count(*) from rate_events where user_id = v_uid and kind = 'profile' and at > now() - interval '1 hour') >= 10 then
+    raise exception 'Troppe modifiche in poco tempo: riprova più tardi.';
+  end if;
+  insert into rate_events (user_id, kind) values (v_uid, 'profile');
+  select * into v_pr from profiles where id = v_uid for update;
+  v_name := v_pr.display_name;
+  v_bio := v_pr.bio;
+  v_avatar := v_pr.avatar_path;
+
+  if p_display_name is not null then
+    v_name := regexp_replace(trim(p_display_name), '\s+', ' ', 'g');
+    if length(v_name) not between 1 and 30 then raise exception 'Il nome può avere da 1 a 30 caratteri.'; end if;
+    if v_name ~ '[[:cntrl:]]' then raise exception 'Il nome contiene caratteri non validi.'; end if;
+    -- Nessuno si spaccia per l'app o per chi la gestisce.
+    if lower(v_name) ~ '(virale|staff|moderat|amministrat|supporto)' then raise exception 'Questo nome non è disponibile.'; end if;
+    if v_name is distinct from v_pr.display_name then
+      if v_pr.name_changed_at > now() - interval '7 days' then raise exception 'Puoi cambiare il nome una volta ogni 7 giorni.'; end if;
+    end if;
+  end if;
+
+  if p_bio is not null then
+    v_bio := trim(p_bio);
+    if length(v_bio) > 160 then raise exception 'La bio può avere al massimo 160 caratteri.'; end if;
+    if length(v_bio) - length(replace(v_bio, E'\n', '')) > 4 then raise exception 'La bio può andare a capo al massimo 4 volte.'; end if;
+    if replace(v_bio, E'\n', '') ~ '[[:cntrl:]]' then raise exception 'La bio contiene caratteri non validi.'; end if;
+  end if;
+
+  if coalesce(p_remove_avatar, false) then
+    v_avatar := null;
+  elsif p_avatar_path is not null then
+    if p_avatar_path !~ ('^' || v_uid::text || '/avatar-[0-9]{10,16}\.jpg$') then raise exception 'Foto non valida.'; end if;
+    -- Su Supabase la foto deve esistere davvero nel bucket "avatars" (nei test locali lo Storage non c'è).
+    if to_regclass('storage.objects') is not null then
+      execute 'select exists (select 1 from storage.objects where bucket_id = ''avatars'' and name = $1)' into v_exists using p_avatar_path;
+      if not v_exists then raise exception 'Foto non valida.'; end if;
+    end if;
+    v_avatar := p_avatar_path;
+  end if;
+  -- La foto di prima va cancellata dallo Storage.
+  if v_pr.avatar_path is not null and v_avatar is distinct from v_pr.avatar_path then
+    insert into storage_purge (bucket, path) values ('avatars', v_pr.avatar_path) on conflict do nothing;
+  end if;
+
+  update profiles
+     set display_name = v_name, bio = v_bio, avatar_path = v_avatar,
+         name_changed_at = case when v_name is distinct from v_pr.display_name then now() else name_changed_at end
+   where id = v_uid
+  returning * into v_pr;
+  return jsonb_build_object('id', v_pr.id, 'username', v_pr.username, 'display_name', v_pr.display_name, 'bio', v_pr.bio,
+                            'avatar_path', v_pr.avatar_path, 'name_changed_at', v_pr.name_changed_at);
+end;
+$$;
+
 -- Prima volta con la gara che chiude all'orario della copertina (database che usavano la mezzanotte):
 -- se ieri non ha avuto una copertina la si sceglie adesso, e tutti i giorni di calendario passati risultano chiusi.
 do $$
@@ -2912,6 +2984,7 @@ grant execute on function public.report_comment(uuid, text, text) to authenticat
 grant execute on function public.report_profile(uuid, text, text) to authenticated;
 grant execute on function public.mod_user_reports() to authenticated;
 grant execute on function public.mod_resolve_user_report(text, uuid, text) to authenticated;
+grant execute on function public.update_my_profile(text, text, text, boolean) to authenticated;
 -- Pulizia dei file dal lavoro programmato: solo con la chiave di servizio.
 revoke all on function public.storage_purge_take(int) from public, anon, authenticated;
 revoke all on function public.storage_purge_finish(text, text[]) from public, anon, authenticated;
@@ -2926,8 +2999,9 @@ grant execute on function public.list_follows(text, text, int, timestamptz) to a
 grant execute on function public.feed_explore(int, uuid[]) to authenticated;
 grant execute on function public.track_views(jsonb) to authenticated;
 grant execute on function public.admin_set_id_provider(text) to authenticated;
--- Usata dalla regola dello Storage sul bucket media (setup-produzione.sql).
+-- Usate dalle regole dello Storage sui bucket media e avatars (setup-produzione.sql).
 grant execute on function public.media_in_use(text) to authenticated;
+grant execute on function public.avatar_in_use(text) to authenticated;
 -- Solo per la funzione verifica-eta (chiave di servizio).
 revoke all on function public.identity_provider_start(uuid, text) from public, anon, authenticated;
 revoke all on function public.identity_provider_result(uuid, text, text, date, text, text, text) from public, anon, authenticated;

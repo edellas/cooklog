@@ -67,6 +67,28 @@ drop policy if exists "documenti delete own or admin" on storage.objects;
 create policy "documenti delete own or admin" on storage.objects for delete to authenticated
   using (bucket_id = 'documenti' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin(auth.uid())));
 
+-- 2c) Bucket pubblico "avatars" per le foto profilo: JPEG quadrati 512×512 fatti dall'app, al massimo 1 MB.
+--     Ognuno carica nella propria cartella (con la verifica dell'età valida e un tetto giornaliero), elenca e
+--     cancella i propri file; nessuna sostituzione. La foto la collega al profilo update_my_profile.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('avatars', 'avatars', true, 1048576, array['image/jpeg'])
+on conflict (id) do update
+  set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "avatars upload own" on storage.objects;
+create policy "avatars upload own" on storage.objects for insert to authenticated
+  with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text
+              and public.can_act(auth.uid()) and public.my_recent_object_count('avatars') < 20);
+drop policy if exists "avatars list own" on storage.objects;
+create policy "avatars list own" on storage.objects for select to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "avatars delete own" on storage.objects;
+-- La foto in uso non la cancella nessuno dal client: quella vecchia la cancella la pulizia programmata.
+create policy "avatars delete own" on storage.objects for delete to authenticated
+  using (bucket_id = 'avatars' and (((storage.foldername(name))[1] = auth.uid()::text and not public.avatar_in_use(name))
+                                    or public.is_admin(auth.uid())));
+drop policy if exists "avatars update own" on storage.objects;
+
 -- 3) Chiusura della gara: ogni minuto si controlla se è passato l'orario della copertina (scelto
 --    dall'amministratore, ora di Roma). Appena passa, la gara chiude, si sceglie il vincitore e la nuova
 --    copertina esce. Negli altri minuti non fa nulla (una lettura).

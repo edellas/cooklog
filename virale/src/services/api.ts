@@ -69,9 +69,20 @@ export function contestOpen(revealMinutes = 0, now = new Date()): boolean {
 // Supabase (produzione): le RPC restituiscono post già composti in JSON.
 // ===========================================================================
 
+type AuthorJson = { id: string; username: string; display_name: string; avatar_path?: string | null };
+
+/** Indirizzo pubblico di una foto profilo nel bucket "avatars". */
+export function avatarUrl(path: string | null | undefined): string | null {
+  return path && supabaseUrl ? `${supabaseUrl}/storage/v1/object/public/avatars/${path}` : null;
+}
+
+function authorFrom(a: AuthorJson): Author {
+  return { id: a.id, username: a.username, displayName: a.display_name, avatar: avatarUrl(a.avatar_path) };
+}
+
 type PostJson = {
   id: string;
-  author: { id: string; username: string; display_name: string };
+  author: AuthorJson;
   media: { kind: 'image' | 'video'; url: string; width: number; height: number; duration_ms?: number; poster?: string }[];
   caption: string;
   created_at: string;
@@ -90,7 +101,7 @@ type PostJson = {
 function fromJson(p: PostJson): Post {
   return {
     id: p.id,
-    author: { id: p.author.id, username: p.author.username, displayName: p.author.display_name },
+    author: authorFrom(p.author),
     media: p.media.map((m) => ({ kind: m.kind, src: m.url, width: m.width, height: m.height, durationMs: m.duration_ms, poster: m.poster })),
     caption: p.caption,
     createdAt: p.created_at,
@@ -406,6 +417,8 @@ type DemoAccount = {
   birthDate: string;
   identity: { status: IdentityStatus; deadline: string; reason: string | null; document?: string; selfie?: string; submittedAt?: string };
   saved?: DemoUserState;
+  /** Ultimo cambio del nome mostrato (si cambia una volta ogni 7 giorni, come sul server). */
+  nameChangedAt?: string;
 };
 
 const DEFAULT_SETTINGS: Settings = { revealMinutes: 0, idGraceDays: 7, cutoffHour: DEFAULT_ARENA_CONFIG.submissionCutoffHour, idProvider: 'manual' };
@@ -618,7 +631,7 @@ function stored(demo: DemoDb, postId: string): StoredPost {
 
 function author(demo: DemoDb, id: string): Author {
   const p = demo.people[id];
-  return p ? { id: p.id, username: p.username, displayName: p.displayName } : { id, username: 'utente', displayName: 'Utente' };
+  return p ? { id: p.id, username: p.username, displayName: p.displayName, avatar: p.avatar ?? null } : { id, username: 'utente', displayName: 'Utente' };
 }
 
 function toPost(demo: DemoDb, id: string): Post {
@@ -1049,6 +1062,94 @@ export async function changePassword(current: string, next: string): Promise<voi
   }, true);
 }
 
+/** Stesse regole di update_my_profile (schema.sql): nome da 1 a 30 caratteri senza nomi da staff, bio fino a 160. */
+function profileProblem(name: string | undefined, bio: string | undefined): string | null {
+  if (name !== undefined) {
+    if (charCount(name) < 1 || charCount(name) > 30) return 'Il nome può avere da 1 a 30 caratteri.';
+    if (/[\u0000-\u001f\u007f]/.test(name)) return 'Il nome contiene caratteri non validi.';
+    if (/(virale|staff|moderat|amministrat|supporto)/i.test(name)) return 'Questo nome non è disponibile.';
+  }
+  if (bio !== undefined) {
+    if (charCount(bio) > 160) return 'La bio può avere al massimo 160 caratteri.';
+    if ((bio.match(/\n/g) ?? []).length > 4) return 'La bio può andare a capo al massimo 4 volte.';
+    if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(bio)) return 'La bio contiene caratteri non validi.';
+  }
+  return null;
+}
+
+/**
+ * Foto profilo: quadrata 512×512 in JPEG (qualità 0,8), dal centro dell'immagine scelta. In demo un data URL
+ * più piccolo (256×256), che sta nello spazio del browser.
+ */
+async function squareJpeg(uri: string, width: number, height: number, size: number, base64: boolean) {
+  const side = Math.min(width, height);
+  const ctx = ImageManipulator.manipulate(uri);
+  if (side > 0 && width !== height) ctx.crop({ originX: Math.round((width - side) / 2), originY: Math.round((height - side) / 2), width: side, height: side });
+  ctx.resize({ width: size, height: size });
+  return (await ctx.renderAsync()).saveAsync({ format: SaveFormat.JPEG, compress: 0.8, base64 });
+}
+
+export type ProfileUpdate = {
+  displayName?: string;
+  bio?: string;
+  /** Una foto nuova scelta dalla galleria (con le sue misure). */
+  photo?: { uri: string; width: number; height: number };
+  removePhoto?: boolean;
+};
+
+/** Modifica il proprio profilo: nome mostrato (una volta ogni 7 giorni), bio, foto. */
+export async function updateProfile(change: ProfileUpdate): Promise<Me & { bio: string }> {
+  const name = change.displayName?.trim().replace(/\s+/g, ' ');
+  const bio = change.bio?.trim();
+  const problem = profileProblem(name, bio);
+  if (problem) throw new Error(problem);
+  if (!isDemo) {
+    const me = await uid();
+    let path: string | null = null;
+    if (change.photo && !change.removePhoto) {
+      const out = await squareJpeg(change.photo.uri, change.photo.width, change.photo.height, 512, false);
+      path = `${me}/avatar-${Date.now()}.jpg`;
+      const buffer = await (await fetch(out.uri)).arrayBuffer();
+      const { error } = await db().storage.from('avatars').upload(path, buffer, { contentType: 'image/jpeg', upsert: false, cacheControl: '3600' });
+      if (error) throw new Error(storageMessage(error));
+    }
+    const row = await rpc<{ id: string; username: string; display_name: string; bio: string; avatar_path: string | null }>('update_my_profile', {
+      p_display_name: name ?? null,
+      p_bio: bio ?? null,
+      p_avatar_path: path,
+      p_remove_avatar: Boolean(change.removePhoto),
+    }).catch(async (e: Error) => {
+      // La foto appena caricata non serve più.
+      if (path) await db().storage.from('avatars').remove([path]).catch(() => undefined);
+      throw e;
+    });
+    return { ...authorFrom(row), bio: row.bio };
+  }
+  const photo = change.photo && !change.removePhoto ? await squareJpeg(change.photo.uri, change.photo.width, change.photo.height, 256, true).catch(() => null) : null;
+  return withDemo((demo) => {
+    if (!demo.me) throw new Error('Accedi di nuovo.');
+    demoAssertCanAct(demo);
+    const acc = demo.accounts?.[demo.me.username];
+    const person = demo.people[demo.me.id];
+    if (!acc || !person) throw new Error('Accedi di nuovo.');
+    if (name !== undefined && name !== person.displayName) {
+      if (acc.nameChangedAt && Date.now() - Date.parse(acc.nameChangedAt) < 7 * 86400000) throw new Error('Puoi cambiare il nome una volta ogni 7 giorni.');
+      person.displayName = name;
+      acc.nameChangedAt = new Date().toISOString();
+    }
+    if (bio !== undefined) {
+      person.bio = bio;
+      demo.myBio = bio;
+    }
+    if (change.removePhoto) person.avatar = null;
+    else if (photo?.base64) person.avatar = `data:image/jpeg;base64,${photo.base64}`;
+    const me: Me = { id: person.id, username: person.username, displayName: person.displayName, avatar: person.avatar ?? null };
+    demo.me = me;
+    acc.me = me;
+    return { ...me, bio: person.bio };
+  }, true);
+}
+
 /** La copertina di oggi: identica per tutti. */
 export async function getTodayCover(): Promise<Cover | null> {
   if (!isDemo) {
@@ -1245,10 +1346,10 @@ export async function registerShare(postId: string): Promise<boolean> {
 
 export async function getComments(postId: string): Promise<Comment[]> {
   if (!isDemo) {
-    const rows = await rpc<{ id: string; post_id: string; body: string; created_at: string; author: { id: string; username: string; display_name: string } }[]>('get_comments', {
+    const rows = await rpc<{ id: string; post_id: string; body: string; created_at: string; author: AuthorJson }[]>('get_comments', {
       p_post_id: postId,
     });
-    return rows.map((r) => ({ id: r.id, postId: r.post_id, body: r.body, createdAt: r.created_at, author: { id: r.author.id, username: r.author.username, displayName: r.author.display_name } }));
+    return rows.map((r) => ({ id: r.id, postId: r.post_id, body: r.body, createdAt: r.created_at, author: authorFrom(r.author) }));
   }
   return withDemo((demo) => visibleComments(demo, postId).map((cm) => ({ id: cm.id, postId, author: author(demo, cm.authorId), body: cm.body, createdAt: cm.createdAt })));
 }
@@ -1300,6 +1401,8 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
         username: string;
         display_name: string;
         bio: string | null;
+        avatar_path?: string | null;
+        name_change_from?: string | null;
         followers: number;
         following: number;
         covers: number;
@@ -1321,6 +1424,8 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
         id: pr.id,
         username: pr.username,
         displayName: pr.display_name,
+        avatar: avatarUrl(pr.avatar_path),
+        nameChangeFrom: pr.name_change_from ?? null,
         bio: pr.bio ?? '',
         followers: pr.followers,
         following: pr.following,
@@ -1350,6 +1455,10 @@ export async function getProfile(username: string): Promise<{ profile: Profile; 
     return {
       profile: {
         ...author(demo, person.id),
+        nameChangeFrom: (() => {
+          const at = isMe ? demo.accounts?.[person.username]?.nameChangedAt : undefined;
+          return at && Date.now() - Date.parse(at) < 7 * 86400000 ? new Date(Date.parse(at) + 7 * 86400000).toISOString() : null;
+        })(),
         bio: isMe ? demo.myBio : person.bio,
         // I creator seguiti all'inizio hanno già te nel conteggio: se smetti di seguirli scende di uno.
         followers: person.followers + (demo.following.includes(person.id) ? 1 : 0) - (DEMO_FOLLOWING.includes(person.username) ? 1 : 0),
@@ -1732,8 +1841,8 @@ export async function unblockUser(userId: string): Promise<void> {
 
 export async function listBlocked(): Promise<Author[]> {
   if (!isDemo) {
-    const rows = await rpc<{ id: string; username: string; display_name: string }[]>('list_blocked');
-    return rows.map((r) => ({ id: r.id, username: r.username, displayName: r.display_name }));
+    const rows = await rpc<AuthorJson[]>('list_blocked');
+    return rows.map(authorFrom);
   }
   return withDemo((demo) => demo.blocked.map((id) => author(demo, id)));
 }
@@ -1818,7 +1927,7 @@ export type UserReportItem = {
   firstAt: string;
   snapshot: { body?: string; username?: string; display_name?: string; bio?: string };
   comment: { id: string; body: string; postId: string | null } | null;
-  user: { id: string; username: string; displayName: string; bio: string } | null;
+  user: { id: string; username: string; displayName: string; bio: string; avatar: string | null } | null;
 };
 
 /** Coda di moderazione dei commenti e dei profili segnalati (solo moderatori). */
@@ -1833,7 +1942,7 @@ export async function getUserReports(): Promise<UserReportItem[]> {
         first_at: string;
         snapshot: UserReportItem['snapshot'] | null;
         comment: { id: string; body: string; post_id: string | null } | null;
-        user: { id: string; username: string; display_name: string; bio: string | null } | null;
+        user: { id: string; username: string; display_name: string; bio: string | null; avatar_path?: string | null } | null;
       }[]
     >('mod_user_reports');
     return rows.map((r) => ({
@@ -1844,14 +1953,14 @@ export async function getUserReports(): Promise<UserReportItem[]> {
       firstAt: r.first_at,
       snapshot: r.snapshot ?? {},
       comment: r.comment ? { id: r.comment.id, body: r.comment.body, postId: r.comment.post_id } : null,
-      user: r.user ? { id: r.user.id, username: r.user.username, displayName: r.user.display_name, bio: r.user.bio ?? '' } : null,
+      user: r.user ? { id: r.user.id, username: r.user.username, displayName: r.user.display_name, bio: r.user.bio ?? '', avatar: avatarUrl(r.user.avatar_path) } : null,
     }));
   }
   return withDemo((demo) =>
     (demo.userReports ?? [])
       .map((r): UserReportItem | null => {
         const person = demo.people[r.userId];
-        const user = person ? { id: person.id, username: person.username, displayName: person.displayName, bio: person.bio } : null;
+        const user = person ? { id: person.id, username: person.username, displayName: person.displayName, bio: person.bio, avatar: person.avatar ?? null } : null;
         if (r.kind === 'comment') {
           const cm = r.postId ? demo.comments[r.postId]?.find((c) => c.id === r.commentId) : undefined;
           if (!cm) return null;
@@ -2163,7 +2272,7 @@ type NotificationJson = {
   data: AppNotification['data'];
   created_at: string;
   read: boolean;
-  actor: { id: string; username: string; display_name: string } | null;
+  actor: AuthorJson | null;
   post: { id: string; media: PostJson['media'] } | null;
 };
 
@@ -2176,7 +2285,7 @@ export async function getNotifications(before?: { createdAt: string; id: string 
       data: n.data ?? {},
       createdAt: n.created_at,
       read: n.read,
-      actor: n.actor ? { id: n.actor.id, username: n.actor.username, displayName: n.actor.display_name } : null,
+      actor: n.actor ? authorFrom(n.actor) : null,
       post: n.post ? { id: n.post.id, media: n.post.media.map((m) => ({ kind: m.kind, src: m.url, width: m.width, height: m.height })) } : null,
     }));
   }
@@ -2238,13 +2347,13 @@ export async function trackViews(items: ViewItem[]): Promise<void> {
 
 export async function listFollows(username: string, kind: 'followers' | 'following', before?: string): Promise<FollowRow[]> {
   if (!isDemo) {
-    const rows = await rpc<{ id: string; username: string; display_name: string; followed: boolean; is_me: boolean; cursor?: string }[]>('list_follows', {
+    const rows = await rpc<(AuthorJson & { followed: boolean; is_me: boolean; cursor?: string })[]>('list_follows', {
       p_username: username,
       p_kind: kind,
       p_limit: 50,
       p_before: before ?? null,
     });
-    return rows.map((r) => ({ id: r.id, username: r.username, displayName: r.display_name, followedByMe: r.followed, isMe: r.is_me, cursor: r.cursor }));
+    return rows.map((r) => ({ ...authorFrom(r), followedByMe: r.followed, isMe: r.is_me, cursor: r.cursor }));
   }
   // In demo l'elenco arriva tutto alla prima pagina.
   if (before) return [];

@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Field } from "../../src/components/Field";
 import { Icon } from "../../src/components/Icon";
-import { Monogram } from "../../src/components/Monogram";
+import { Avatar } from "../../src/components/Avatar";
 import { haptic, Press } from "../../src/components/Press";
 import { ReportReasons } from "../../src/components/ReportReasons";
 import { useToast } from "../../src/components/Toast";
@@ -291,9 +291,10 @@ export default function CommentsSheet() {
                   accessibilityLabel={`Profilo di @${item.author.username}`}
                   hitSlop={6}
                 >
-                  <Monogram
+                  <Avatar
                     name={item.author.displayName}
                     seed={item.author.username}
+                    uri={item.author.avatar}
                     size={32}
                   />
                 </Press>

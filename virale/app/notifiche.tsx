@@ -4,7 +4,7 @@ import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'r
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../src/components/Icon';
-import { Monogram } from '../src/components/Monogram';
+import { Avatar } from '../src/components/Avatar';
 import { Press } from '../src/components/Press';
 import { Thumb } from '../src/components/Thumb';
 import { Txt } from '../src/components/Txt';
@@ -179,7 +179,7 @@ export default function NotificationsScreen() {
           renderItem={({ item }) => (
             <Press style={[styles.row, !item.read && styles.unread]} onPress={() => open(item)} accessibilityRole="button" accessibilityLabel={text(item)}>
               {item.actor ? (
-                <Monogram name={item.actor.displayName} seed={item.actor.username} size={38} />
+                <Avatar name={item.actor.displayName} seed={item.actor.username} uri={item.actor.avatar} size={38} />
               ) : (
                 <View style={styles.badge}>
                   <Icon name={ICON[item.kind]} size={20} color={color.giallo} />

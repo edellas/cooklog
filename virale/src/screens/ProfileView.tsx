@@ -4,7 +4,7 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View, type N
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../components/Icon';
-import { Monogram } from '../components/Monogram';
+import { Avatar } from '../components/Avatar';
 import { haptic, Press } from '../components/Press';
 import { Thumb } from '../components/Thumb';
 import { TierLadder } from '../components/TierLadder';
@@ -206,7 +206,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         </View>
 
         <View style={styles.head}>
-          <Monogram name={profile.displayName} seed={profile.username} size={76} />
+          <Avatar name={profile.displayName} seed={profile.username} uri={profile.avatar} size={76} />
           <View style={{ flex: 1, gap: 2 }}>
             <Txt variant="heading" numberOfLines={2}>
               {profile.displayName}
@@ -271,10 +271,19 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         </View>
 
         {profile.isMe ? (
-          <Press style={styles.secondary} onPress={() => nav.push('/regole')} accessibilityRole="button">
-            <Icon name="info" size={20} />
-            <Txt variant="label">Come si diventa copertina</Txt>
-          </Press>
+          <View style={styles.meButtons}>
+            <Press style={[styles.primary, { flex: 1.4 }]} onPress={() => nav.push('/modifica-profilo')} accessibilityRole="button">
+              <Txt variant="label" tone={color.canvas}>
+                Modifica profilo
+              </Txt>
+            </Press>
+            <Press style={[styles.secondary, { flex: 1 }]} onPress={() => nav.push('/regole')} accessibilityRole="button">
+              <Icon name="info" size={20} />
+              <Txt variant="label" numberOfLines={1}>
+                Come si sceglie
+              </Txt>
+            </Press>
+          </View>
         ) : (
           <Press
             style={[styles.primary, profile.followedByMe && styles.secondary]}
@@ -425,6 +434,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.canvas },
   pad: { paddingHorizontal: space[5], gap: space[4] },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  meButtons: { flexDirection: 'row', gap: space[2] },
   safety: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', columnGap: space[5] },
   block: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 44 },
   back: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },

@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../src/components/Icon';
-import { Monogram } from '../src/components/Monogram';
+import { Avatar } from '../src/components/Avatar';
 import { haptic, Press } from '../src/components/Press';
 import { Thumb } from '../src/components/Thumb';
 import { useToast } from '../src/components/Toast';
@@ -224,7 +224,7 @@ export default function Moderation() {
             return (
               <View style={[styles.card, { flexDirection: 'column' }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: space[3] }}>
-                  <Monogram name={item.user?.displayName ?? who} seed={who} size={36} />
+                  <Avatar name={item.user?.displayName ?? who} seed={who} uri={item.user?.avatar} size={36} />
                   <View style={{ flex: 1 }}>
                     <Txt variant="label">{item.kind === 'comment' ? `Commento di @${who}` : `Profilo di @${who}`}</Txt>
                     {item.user ? (

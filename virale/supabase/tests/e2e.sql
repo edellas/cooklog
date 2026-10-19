@@ -1013,3 +1013,42 @@ do $$ declare d date := (get_today_cover() ->> 'featured_on')::date; begin
   raise notice 'ok, la copertina di un giorno: solo se è già uscita';
 end $$;
 reset role;
+
+-- ---------- Modifica del profilo (W15) ----------
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+do $$ declare r jsonb; begin
+  begin perform update_my_profile(p_bio => repeat('a', 161)); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%160 caratteri%' then raise; end if; end;
+  begin perform update_my_profile(p_bio => 'ciao' || chr(7)); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%caratteri non validi%' then raise; end if; end;
+  begin perform update_my_profile(p_bio => E'1\n2\n3\n4\n5\n6'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%a capo%' then raise; end if; end;
+  begin perform update_my_profile(p_display_name => 'Il Moderatore'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  begin perform update_my_profile(p_avatar_path => '00000000-0000-0000-0000-000000000101/avatar-1700000000000.jpg'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%Foto non valida%' then raise; end if; end;
+  r := update_my_profile(p_display_name => '  Nuovo   Nome ', p_bio => E'Riga uno\nRiga due', p_avatar_path => '00000000-0000-0000-0000-000000000104/avatar-1700000000123.jpg');
+  if r ->> 'display_name' <> 'Nuovo Nome' or r ->> 'avatar_path' is null then raise exception 'profilo non aggiornato: %', r; end if;
+  begin perform update_my_profile(p_display_name => 'Altro Nome'); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%7 giorni%' then raise; end if; end;
+  -- Stesso nome di adesso: nessun cambio, nessun errore.
+  perform update_my_profile(p_display_name => 'Nuovo Nome', p_bio => 'Bio nuova');
+  raise notice 'ok, profilo: regole su nome, bio e foto, nome una volta ogni 7 giorni';
+end $$;
+do $$ begin
+  if (get_post('50000000-0000-0000-0000-000000000001') -> 'author' ->> 'avatar_path') is not null then null; end if;
+  if not ((select get_profile('mod4')) -> 'profile' ? 'avatar_path') then raise exception 'avatar_path mancante nel profilo'; end if;
+  raise notice 'ok, la foto profilo è nei dati degli autori';
+end $$;
+reset role;
+do $$ begin
+  if not (post_json('50000000-0000-0000-0000-000000000001', null) -> 'author' ? 'avatar_path') then raise exception 'avatar_path mancante in post_json'; end if;
+  update identity_checks set status = 'missing', deadline = now() - interval '1 day' where user_id = '00000000-0000-0000-0000-000000000104';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', false);
+do $$ begin perform update_my_profile(p_bio => 'x'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%verifica%' then raise; end if; raise notice 'ok, con la verifica scaduta il profilo non si modifica'; end $$;
+reset role;
+update identity_checks set status = 'approved' where user_id = '00000000-0000-0000-0000-000000000104';

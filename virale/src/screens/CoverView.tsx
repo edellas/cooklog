@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '../components/Icon';
 import { Masthead } from '../components/Masthead';
 import { MediaFrame } from '../components/MediaFrame';
-import { Monogram } from '../components/Monogram';
+import { Avatar } from '../components/Avatar';
 import { haptic, Press } from '../components/Press';
 import { useToast } from '../components/Toast';
 import { Txt } from '../components/Txt';
@@ -166,7 +166,7 @@ export function CoverView({
           onPress={() => nav.push(`/utente/${post.author.username}`)}
           accessibilityRole="link"
           accessibilityLabel={`Profilo di ${post.author.displayName}, @${post.author.username}`}>
-          <Monogram name={post.author.displayName} seed={post.author.username} size={44} />
+          <Avatar name={post.author.displayName} seed={post.author.username} uri={post.author.avatar} size={44} />
           <View style={{ flexShrink: 1 }}>
             <Txt variant="heading" numberOfLines={1}>
               {post.author.displayName}
