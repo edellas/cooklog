@@ -38,8 +38,10 @@ import type {
 } from '../types';
 import { Platform } from 'react-native';
 
-import { canActKnown, friendlyError } from './errors';
+import { charCount } from '../design/text';
+import { canActKnown, friendlyError, TOO_BIG_ERROR } from './errors';
 import { getJson, removeKey, setJson } from './storage';
+import { MAX_UPLOAD_BYTES, prepareVideo } from './video';
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from './supabase';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
@@ -196,19 +198,24 @@ async function videoPoster(uri: string): Promise<string | null> {
 
 /**
  * Carica un file nel bucket media. Sul telefono lo legge a pezzi dal disco (un video da 100 MB non passa
- * tutto in memoria) e dice a che punto è; sul web usa il client normale.
+ * tutto in memoria) e dice a che punto è; sul web usa il client normale. Con `signal` il caricamento sul
+ * telefono si interrompe subito (sul web finisce, e il file si cancella dopo).
  */
-async function putFile(path: string, uri: string, contentType: string, onFraction?: (f: number) => void): Promise<void> {
+async function putFile(path: string, uri: string, contentType: string, onFraction?: (f: number) => void, signal?: AbortSignal): Promise<void> {
   if (Platform.OS === 'web') {
     const blob = await (await fetch(uri)).blob();
+    if (blob.size > MAX_UPLOAD_BYTES) throw new Error(TOO_BIG_ERROR);
     const { error } = await db().storage.from('media').upload(path, blob, { contentType });
     if (error) throw new Error(storageMessage(error));
     onFraction?.(1);
     return;
   }
+  // Controllo del peso prima di partire: un file oltre il limite verrebbe trasferito tutto e poi rifiutato.
+  const info = await FileSystem.getInfoAsync(uri).catch(() => null);
+  if (info?.exists && info.size > MAX_UPLOAD_BYTES) throw new Error(TOO_BIG_ERROR);
   const { data } = await db().auth.getSession();
   const token = data.session?.access_token;
-  if (!token) throw new Error('Sessione scaduta: riapri l’app.');
+  if (!token) throw new Error('Sessione scaduta: accedi di nuovo.');
   const task = FileSystem.createUploadTask(
     `${supabaseUrl}/storage/v1/object/media/${path}`,
     uri,
@@ -219,7 +226,18 @@ async function putFile(path: string, uri: string, contentType: string, onFractio
     },
     (p) => onFraction?.(p.totalBytesExpectedToSend > 0 ? p.totalBytesSent / p.totalBytesExpectedToSend : 0),
   );
-  const res = await task.uploadAsync();
+  const cancel = () => void task.cancelAsync().catch(() => undefined);
+  signal?.addEventListener('abort', cancel);
+  let res: Awaited<ReturnType<typeof task.uploadAsync>>;
+  try {
+    res = await task.uploadAsync();
+  } catch (e) {
+    if (signal?.aborted) throw new PublishAborted();
+    throw new Error(friendlyError(e));
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+  if (signal?.aborted) throw new PublishAborted();
   if (!res || res.status >= 300) {
     let message = '';
     try {
@@ -246,21 +264,54 @@ function storageMessage(error: { message?: string; status?: number; statusCode?:
   return friendlyError({ ...error, message, name: 'StorageApiError' });
 }
 
-async function upload(userId: string, raw: NewPost['media'][number], index: number, onFraction?: (f: number) => void): Promise<MediaItem> {
-  const item = raw.kind === 'image' ? await preparePhoto(raw) : raw;
+type UploadHooks = {
+  /** Avanzamento del file (0-1), compressione compresa. */
+  onFraction?: (f: number) => void;
+  onPhase?: (p: PublishPhase) => void;
+  signal?: AbortSignal;
+  /** Ogni percorso prima di caricarlo: se la pubblicazione si interrompe, si sa cosa cancellare. */
+  onPath?: (path: string) => void;
+};
+
+async function upload(userId: string, raw: NewPost['media'][number], index: number, hooks: UploadHooks = {}): Promise<MediaItem> {
+  const { onFraction, onPhase, signal, onPath } = hooks;
+  // Video: prima la compressione (solo sul telefono, se serve), che pesa il 40% della barra di questo file.
+  let compressed = false;
+  const item =
+    raw.kind === 'image'
+      ? await preparePhoto(raw)
+      : await prepareVideo(
+          raw,
+          (f) => {
+            if (!compressed) onPhase?.('prepara');
+            compressed = true;
+            onFraction?.(f * 0.4);
+          },
+          signal,
+        ).catch((e: unknown) => {
+          if (signal?.aborted) throw new PublishAborted();
+          throw e;
+        });
+  if (signal?.aborted) throw new PublishAborted();
+  onPhase?.('carica');
   const contentType = item.mimeType ?? (item.kind === 'video' ? 'video/mp4' : 'image/jpeg');
   const base = `${userId}/${Date.now()}-${index}`;
   const path = `${base}.${EXT[contentType] ?? (item.kind === 'video' ? 'mp4' : 'jpg')}`;
-  await putFile(path, item.uri, contentType, onFraction);
+  onPath?.(path);
+  await putFile(path, item.uri, contentType, (f) => onFraction?.(compressed ? 0.4 + f * 0.6 : f), signal);
   const publicUrl = (p: string) => db().storage.from('media').getPublicUrl(p).data.publicUrl;
   let poster: string | undefined;
   if (item.kind === 'video') {
+    // L'anteprima dal file che si pubblica (quello compresso, se c'è).
     const still = await videoPoster(item.uri);
+    if (signal?.aborted) throw new PublishAborted();
     if (still) {
       try {
-        await putFile(`${base}-poster.jpg`, still, 'image/jpeg');
+        onPath?.(`${base}-poster.jpg`);
+        await putFile(`${base}-poster.jpg`, still, 'image/jpeg', undefined, signal);
         poster = publicUrl(`${base}-poster.jpg`);
-      } catch {
+      } catch (e) {
+        if (e instanceof PublishAborted) throw e;
         // senza anteprima il video si vede lo stesso
       }
     }
@@ -1325,25 +1376,60 @@ export async function getMyEntry(): Promise<MyEntry | null> {
 
 export type PublishResult = { post: Post; entry: MyEntry | null; contestError: string | null };
 
+/** Fasi della pubblicazione: compressione dei video, caricamento dei file, creazione del post. */
+export type PublishPhase = 'prepara' | 'carica' | 'conclude';
+
+/** La pubblicazione è stata annullata prima di creare il post: i file caricati sono stati cancellati. */
+export class PublishAborted extends Error {
+  constructor() {
+    super('Pubblicazione annullata: non è stato pubblicato niente.');
+    this.name = 'PublishAborted';
+  }
+}
+
 /**
  * Pubblica un post e, se richiesto, lo candida. Una volta creato il post non lancia più errori:
  * se la candidatura non riesce lo dice in `contestError`, così l'utente non ripubblica due volte.
+ * onProgress: da 0 a 1 mentre si preparano e caricano i file (non torna mai indietro).
+ * opts.signal: annulla finché il post non è stato creato (fase "conclude"); dopo, l'annullamento si ignora.
  */
-/** onProgress: da 0 a 1 mentre si caricano i file (per la barra della schermata di pubblicazione). */
-export async function publish(input: NewPost, onProgress?: (fraction: number) => void): Promise<PublishResult> {
+export async function publish(
+  input: NewPost,
+  onProgress?: (fraction: number) => void,
+  opts: { signal?: AbortSignal; onPhase?: (p: PublishPhase) => void } = {},
+): Promise<PublishResult> {
+  const { signal, onPhase } = opts;
   if (!input.media.length) throw new Error('Scegli almeno una foto o un video.');
   if (input.media.length > 10) throw new Error('Al massimo 10 elementi per post.');
-  if (input.caption.length > 300) throw new Error('La didascalia può avere al massimo 300 caratteri.');
+  if (charCount(input.caption) > 300) throw new Error('La didascalia può avere al massimo 300 caratteri.');
   if (!isDemo) {
     const me = await uid();
     const media: MediaItem[] = [];
+    const started: string[] = [];
+    let best = 0;
+    const progress = (f: number) => {
+      // Mai all'indietro: il secondo tentativo di compressione o un file più piccolo non fanno scendere la barra.
+      best = Math.max(best, Math.min(1, f));
+      onProgress?.(best);
+    };
     try {
       const n = input.media.length;
-      for (const [i, m] of input.media.entries()) media.push(await upload(me, m, i, (f) => onProgress?.((i + f) / n)));
+      for (const [i, m] of input.media.entries()) {
+        if (signal?.aborted) throw new PublishAborted();
+        media.push(await upload(me, m, i, { onFraction: (f) => progress((i + f) / n), onPhase, signal, onPath: (p) => started.push(p) }));
+        if (signal?.aborted) throw new PublishAborted();
+      }
     } catch (e) {
-      await removeUploads(media);
+      await removePaths(started);
+      if (e instanceof PublishAborted || signal?.aborted) throw new PublishAborted();
       throw new Error(friendlyError(e));
     }
+    if (signal?.aborted) {
+      await removePaths(started);
+      throw new PublishAborted();
+    }
+    // Da qui il post viene creato: annullare non è più possibile.
+    onPhase?.('conclude');
     const { data, error } = await db()
       .from('posts')
       .insert({
@@ -1383,7 +1469,16 @@ export async function publish(input: NewPost, onProgress?: (fraction: number) =>
     const entry = input.joinContest && !contestError ? await getMyEntry().catch(() => null) : null;
     return { post, entry, contestError };
   }
-  const media = await Promise.all(input.media.map(persistLocal));
+  onPhase?.('carica');
+  const media: MediaItem[] = [];
+  for (const [i, m] of input.media.entries()) {
+    if (signal?.aborted) throw new PublishAborted();
+    media.push(await persistLocal(m));
+    if (signal?.aborted) throw new PublishAborted();
+    onProgress?.((i + 1) / input.media.length);
+  }
+  if (signal?.aborted) throw new PublishAborted();
+  onPhase?.('conclude');
   return withDemo((demo) => {
     if (!demo.me) throw new Error('Crea prima il tuo profilo.');
     demoAssertCanAct(demo);
@@ -1416,6 +1511,11 @@ export async function publish(input: NewPost, onProgress?: (fraction: number) =>
     }
     return { post: toPost(demo, id), entry, contestError };
   }, true);
+}
+
+/** Cancella file appena caricati (pubblicazione annullata o fallita). Un percorso mai arrivato non dà errore. */
+async function removePaths(paths: string[]) {
+  if (paths.length) await db().storage.from('media').remove(paths).catch(() => undefined);
 }
 
 async function removeUploads(media: MediaItem[]) {

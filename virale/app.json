@@ -61,7 +61,8 @@
           "backgroundColor": "#0C1322"
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "react-native-compressor"
     ],
     "scheme": "virale",
     "experiments": {

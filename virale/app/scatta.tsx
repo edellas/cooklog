@@ -30,7 +30,7 @@ import { useGoBack } from "../src/state/useGoBack";
 import { atTime } from "../src/design/format";
 import { duration, ease } from "../src/design/motion";
 import { color, radius, space } from "../src/design/tokens";
-import { contestOpen, getMyEntry, publish } from "../src/services/api";
+import { contestOpen, getMyEntry, isDemo, publish, PublishAborted, type PublishPhase } from "../src/services/api";
 import { getJson, removeKey, setJson } from "../src/services/storage";
 import { useSession } from "../src/state/session";
 import { toggleMute, useMuted } from "../src/state/sound";
@@ -54,9 +54,20 @@ export default function CreateScreen() {
   const [join, setJoin] = useState(true);
   const [alreadyIn, setAlreadyIn] = useState(false);
   const [busy, setBusy] = useState(false);
-  /** Avanzamento del caricamento dei file (0-1), mentre si pubblica. */
+  /** Avanzamento della preparazione e del caricamento dei file (0-1), mentre si pubblica. */
   const [progress, setProgress] = useState<number | null>(null);
+  /** Fase della pubblicazione: finché i file si preparano o si caricano si può annullare; poi no. */
+  const [phase, setPhase] = useState<PublishPhase | "idle">("idle");
+  const phaseRef = useRef<PublishPhase | "idle">("idle");
+  phaseRef.current = phase;
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  const abort = useRef<AbortController | null>(null);
+  /** La pubblicazione in corso: uscendo dopo un annullamento si aspetta che abbia finito di pulire. */
+  const running = useRef<Promise<unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Avvisi non di errore (pubblicazione annullata): in grigio. */
+  const [notice, setNotice] = useState<string | null>(null);
   const muted = useMuted();
   const [done, setDone] = useState<{
     post: Post;
@@ -77,6 +88,7 @@ export default function CreateScreen() {
   const canJoin = !alreadyIn && !closed;
 
   // Uscire con una bozza (tasto indietro di Android, gesto, browser) chiede conferma: non si perde il lavoro.
+  // Durante la pubblicazione uscire vuol dire annullarla: i file caricati si cancellano, il post non esce.
   const navigation = useNavigation();
   const allowLeave = useRef(false);
   usePreventRemove(media.length > 0 && !done, ({ data }) => {
@@ -85,8 +97,36 @@ export default function CreateScreen() {
       allowLeave.current = true;
       navigation.dispatch(data.action);
     };
+    // Sul web l'indirizzo è già cambiato: se si resta, lo si rimette (altrimenti una ricarica perde la bozza).
+    const stay = () => {
+      if (Platform.OS === "web" && typeof history !== "undefined" && !location.pathname.endsWith("/scatta")) history.pushState(history.state, "", "/scatta");
+    };
+    if (busyRef.current && phaseRef.current === "conclude") {
+      if (Platform.OS === "web") globalThis.alert?.("Sto finendo di pubblicare: un attimo.");
+      else Alert.alert("Sto finendo di pubblicare: un attimo.", undefined, [{ text: "OK" }]);
+      return stay();
+    }
+    if (busyRef.current) {
+      const cancelAndLeave = async () => {
+        abort.current?.abort();
+        // Si aspetta la pulizia dei file caricati (al massimo 5 secondi), poi si esce.
+        await Promise.race([running.current?.catch(() => undefined), new Promise((r) => setTimeout(r, 5000))]);
+        leave();
+      };
+      if (Platform.OS === "web") {
+        if (globalThis.confirm?.("Pubblicazione in corso. Annullarla e uscire? Foto e video caricati finora verranno eliminati.")) void cancelAndLeave();
+        else stay();
+        return;
+      }
+      Alert.alert("Pubblicazione in corso", "Foto e video caricati finora verranno eliminati.", [
+        { text: "Continua", style: "cancel" },
+        { text: "Annulla ed esci", style: "destructive", onPress: () => void cancelAndLeave() },
+      ]);
+      return;
+    }
     if (Platform.OS === "web") {
       if (globalThis.confirm?.("Scartare il post? Foto, video e didascalia andranno persi.")) leave();
+      else stay();
       return;
     }
     Alert.alert("Scartare il post?", "Foto, video e didascalia andranno persi.", [
@@ -95,8 +135,35 @@ export default function CreateScreen() {
     ]);
   });
 
+  // Web: chiudere o ricaricare la scheda con una bozza chiede conferma al browser.
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined" || !media.length || done) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [media.length, done]);
+
+  /** "Annulla" durante la pubblicazione: si chiede conferma, poi si resta qui con la bozza intatta. */
+  const cancelPublish = () => {
+    if (!busyRef.current || phaseRef.current === "conclude") return;
+    const doIt = () => abort.current?.abort();
+    if (Platform.OS === "web") {
+      if (globalThis.confirm?.("Annullare la pubblicazione? Foto e video caricati finora verranno eliminati.")) doIt();
+      return;
+    }
+    Alert.alert("Annullare la pubblicazione?", "Foto e video caricati finora verranno eliminati.", [
+      { text: "Continua", style: "cancel" },
+      { text: "Annulla pubblicazione", style: "destructive", onPress: doIt },
+    ]);
+  };
+
   /** Chiudere con foto già scelte chiede conferma: non si perde il lavoro con un tocco. */
   const close = () => {
+    // Durante la pubblicazione il pulsante è "Annulla" (sopra): qui non si arriva, ma per sicurezza.
+    if (busyRef.current) return cancelPublish();
     if (confirmClose) allowLeave.current = true;
     if (!media.length || confirmClose) return goBack();
     setConfirmClose(true);
@@ -120,8 +187,12 @@ export default function CreateScreen() {
     const ms = (d: number | null | undefined) =>
       d == null ? undefined : Math.round(Platform.OS === "web" ? d * 1000 : d);
     const tooLong = assets.some((a) => a.type === "video" && (ms(a.duration) ?? 0) > 61_000);
+    // Oltre 500 MB nemmeno la compressione basta (e il telefono ci metterebbe minuti): si dice subito.
+    const tooBig = (a: ImagePicker.ImagePickerAsset) => a.type === "video" && (a.fileSize ?? 0) > 500 * 1024 * 1024;
+    // Sul web (fuori dalla demo) il WebM non si pubblica: iPhone non lo riproduce in modo affidabile.
+    const webm = (a: ImagePicker.ImagePickerAsset) => Platform.OS === "web" && !isDemo && a.type === "video" && /webm/i.test(a.mimeType ?? "");
     const next: DraftMedia[] = assets
-      .filter((a) => !(a.type === "video" && (ms(a.duration) ?? 0) > 61_000))
+      .filter((a) => !(a.type === "video" && (ms(a.duration) ?? 0) > 61_000) && !tooBig(a) && !webm(a))
       .map((a) => ({
         uri: a.uri,
         kind: a.type === "video" ? "video" : "image",
@@ -131,7 +202,11 @@ export default function CreateScreen() {
         mimeType: a.mimeType ?? undefined,
       }));
     const extra = next.length - room;
-    if (tooLong)
+    if (assets.some(tooBig))
+      setError("Questo video è troppo pesante (oltre 500 MB): scegline uno più corto.");
+    else if (assets.some(webm))
+      setError("Sul web puoi caricare video MP4 o MOV.");
+    else if (tooLong)
       setError("I video possono durare al massimo 60 secondi: quelli più lunghi non sono stati aggiunti.");
     else if (extra > 0)
       setError(`Al massimo ${MAX} per post: ne ho tenuti ${room}, gli altri ${extra} no.`);
@@ -177,6 +252,14 @@ export default function CreateScreen() {
         // Su iPhone le foto HEIC e i video HEVC diventano JPEG e H.264: si vedono anche su Android e sul web.
         preferredAssetRepresentationMode:
           ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        // Su iPhone una sola conversione, fatta dal sistema: video a 720p (un 4K da un minuto pesa centinaia di MB).
+        // Su Android la compressione la fa l'app prima di caricare (video.native.ts).
+        ...(Platform.OS === "ios"
+          ? {
+              videoExportPreset: ImagePicker.VideoExportPreset.H264_1280x720,
+              ...(camera ? { videoQuality: ImagePicker.UIImagePickerControllerQualityType.IFrame1280x720 } : {}),
+            }
+          : {}),
       };
       if (camera && Platform.OS === "android") await setJson(CAMERA_KEY, true);
       const res = camera
@@ -206,26 +289,41 @@ export default function CreateScreen() {
   };
 
   const submit = async () => {
+    if (busyRef.current) return;
+    const controller = new AbortController();
+    abort.current = controller;
+    busyRef.current = true;
     try {
       setBusy(true);
       setError(null);
+      setNotice(null);
       setProgress(0);
-      const res = await publish(
+      setPhase("carica");
+      const job = publish(
         {
           media,
           caption,
           joinContest: join && canJoin,
         },
         setProgress,
+        { signal: controller.signal, onPhase: setPhase },
       );
+      running.current = job;
+      const res = await job;
       haptic("success");
       bump();
       setDone(res);
     } catch (e) {
-      setError(friendlyError(e));
+      // Annullata: la bozza resta com'era, e lo si dice senza toni da errore.
+      if (e instanceof PublishAborted) setNotice(e.message);
+      else setError(friendlyError(e));
     } finally {
+      abort.current = null;
+      running.current = null;
+      busyRef.current = false;
       setBusy(false);
       setProgress(null);
+      setPhase("idle");
     }
   };
 
@@ -259,23 +357,37 @@ export default function CreateScreen() {
       behavior={Platform.OS === "ios" ? undefined : "padding"}
     >
       <View style={styles.bar}>
-        <Press
-          style={[styles.round, confirmClose && styles.roundWarn]}
-          onPress={close}
-          accessibilityRole="button"
-          accessibilityLabel={
-            confirmClose ? "Tocca di nuovo per scartare il post" : "Chiudi"
-          }
-        >
-          <Icon
-            name="chiudi"
-            color={confirmClose ? color.matita : color.paper}
-          />
-        </Press>
+        {busy ? (
+          // Mentre si pubblica: "Annulla" finché i file si caricano, poi niente (il post sta per uscire).
+          <Press
+            style={[styles.cancel, phase === "conclude" && styles.off]}
+            onPress={cancelPublish}
+            disabled={phase === "conclude"}
+            accessibilityRole="button"
+            accessibilityLabel="Annulla la pubblicazione"
+            accessibilityState={{ disabled: phase === "conclude" }}
+          >
+            <Txt variant="label">Annulla</Txt>
+          </Press>
+        ) : (
+          <Press
+            style={[styles.round, confirmClose && styles.roundWarn]}
+            onPress={close}
+            accessibilityRole="button"
+            accessibilityLabel={
+              confirmClose ? "Tocca di nuovo per scartare il post" : "Chiudi"
+            }
+          >
+            <Icon
+              name="chiudi"
+              color={confirmClose ? color.matita : color.paper}
+            />
+          </Press>
+        )}
         <Txt variant="title">
-          {confirmClose ? "Scartare il post?" : "Nuovo post"}
+          {confirmClose && !busy ? "Scartare il post?" : "Nuovo post"}
         </Txt>
-        <View style={{ width: 40 }} />
+        <View style={{ width: busy ? 80 : 40 }} />
       </View>
 
       <ScrollView
@@ -468,8 +580,13 @@ export default function CreateScreen() {
         )}
 
         {error ? (
-          <Txt variant="small" tone={color.matita}>
+          <Txt variant="small" tone={color.matita} accessibilityLiveRegion="polite">
             {error}
+          </Txt>
+        ) : null}
+        {notice ? (
+          <Txt variant="small" tone={color.paperDim} accessibilityLiveRegion="polite">
+            {notice}
           </Txt>
         ) : null}
 
@@ -487,7 +604,9 @@ export default function CreateScreen() {
               <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
                 <ActivityIndicator color={color.canvas} />
                 <Txt variant="label" tone={color.canvas}>
-                  {progress !== null && progress < 1 ? `Carico… ${Math.round(progress * 100)}%` : "Pubblico…"}
+                  {phase === "conclude" || progress === null
+                    ? "Pubblico…"
+                    : `${phase === "prepara" ? "Preparo il video…" : "Carico…"} ${Math.round(progress * 100)}%`}
                 </Txt>
               </View>
             ) : (
@@ -658,6 +777,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   roundWarn: { borderWidth: 1.5, borderColor: color.matita },
+  cancel: {
+    minWidth: 80,
+    height: 40,
+    borderRadius: 20,
+    paddingHorizontal: space[4],
+    backgroundColor: color.raised,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   blocked: {
     flexDirection: "row",
     gap: space[3],
