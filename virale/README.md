@@ -58,7 +58,7 @@ Senza configurazione parte in **modalità demo**:
 - creator, foto e video di esempio e un pubblico simulato che continua a guardare mentre usi l'app (anche il tuo post sale di gradino dal vivo);
 - tutto resta sul dispositivo (anche più account, il codice di recupero e la verifica dell'età simulata);
 - il link "Demo: simula la mezzanotte" sotto la copertina chiude subito la gara;
-- niente notifiche push e niente compressione dei video (servono l'app per telefono e Supabase).
+- niente notifiche push (servono l'app per telefono e Supabase).
 
 Una build di **produzione** (`EXPO_PUBLIC_APP_ENV=production`) senza Supabase o senza i dati del titolare (`EXPO_PUBLIC_OWNER_*`) si apre su "Configurazione mancante" con l'elenco delle variabili: è voluto.
 
@@ -98,7 +98,7 @@ npm run check:release   # dati del titolare, sito, pagine legali: cosa manca pri
 - **Carico**: con 20.000 post in gara, servire 10 Provini (già composti in JSON) e registrare 10 voti richiede circa 20 ms su un core (Postgres 16 locale, senza tuning).
 - **App web**: percorsi verificati in Chromium automatizzato (registrazione e codice di recupero, copertina, provini, cerchio, commenti, segnalazioni, ricerca, modifica del profilo, pubblicazione con foto e video e annullamento, profilo, archivio, regole, mezzanotte simulata, schermi piccoli, orizzontale e tablet). Quel Chromium non ha il codec H.264: nei test i video demo si servono come WebM.
 - **Funzione `verifica-eta`** (Deno): le rotte `/lavori` (pulizia dei file e invio delle notifiche push a blocchi di 100), `/apri` e `/recupero` sono provate con richieste finte (supabase-js locale, senza rete).
-- **Sul telefono** vanno provati a mano: compressione di un video da 60 s, notifiche push, link condivisi aperti da WhatsApp, "Password dimenticata?", tastiera su iPhone (vedi PUBBLICARE.md, §6).
+- **Sul telefono** vanno provati a mano: un video da 60 s (oltre 48 MB l'app chiede di accorciarlo), notifiche push, link condivisi aperti da WhatsApp, "Password dimenticata?", tastiera su iPhone (vedi PUBBLICARE.md, §6).
 
 ## Produzione (milioni di utenti)
 
@@ -110,9 +110,9 @@ La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](
 4. Variabili d'ambiente EAS: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, i dati del titolare `EXPO_PUBLIC_OWNER_*` e, per le notifiche su Android, il file `GOOGLE_SERVICES_JSON` (lo legge `app.config.js`; senza, la build riesce ma Android non riceve notifiche).
 5. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.
 
-**Dipendenze native** (servono una build EAS nuova, non bastano gli aggiornamenti OTA): `react-native-compressor` (compressione dei video su Android; su iPhone la fa il sistema a 720p) ed `expo-notifications`.
+**Dipendenze native** (servono una build EAS nuova, non bastano gli aggiornamenti OTA): `expo-notifications` ed `expo-clipboard`.
 
-**Piano di ripiego per la compressione dei video**: se una build fallisse per `react-native-compressor`, togli `"react-native-compressor"` dai `plugins` di `app.json` e il pacchetto da `package.json` (`npm uninstall react-native-compressor`). L'app continua a funzionare: `src/services/video.native.ts` carica il modulo solo se c'è e, senza, carica il video originale se pesa fino a 48 MB, altrimenti chiede di accorciarlo. Su iPhone non cambia nulla (la conversione a 720p la fa il sistema).
+**Video**: non si ricomprimono sul telefono. `react-native-compressor` è stato tolto perché l'APK con quella libreria non si installava su alcuni telefoni Android (e includeva una libreria GPL). `src/services/video.native.ts` controlla il peso prima del caricamento: fino a 48 MB si carica, oltre si chiede di accorciare il video. Su iPhone la conversione a 720p la fa il sistema. Con il piano Pro di Supabase si può alzare il limite del bucket `media` e `MAX_UPLOAD_BYTES`.
 
 Perché regge il carico:
 - la copertina è una sola riga uguale per tutti, cacheabile per tutto il giorno;
@@ -133,7 +133,7 @@ Già pronto per gli store: accettazione di termini ed età minima, verifica dell
 | `src/components/` | Cornice media con carosello, video e doppio tocco; segno di matita; striscia del post; icone SVG; scala dei gradini; toast; testata |
 | `src/engine/` | Motore della gara in TypeScript puro, test e simulazione |
 | `src/services/api.ts` | Dati: Supabase se configurato, altrimenti demo locale |
-| `src/services/` | Anche: errori in italiano (`errors.ts`), compressione dei video (`video.native.ts`), notifiche push (`push.native.ts`; sul web `push.ts` non fa nulla) |
+| `src/services/` | Anche: errori in italiano (`errors.ts`), controllo del peso dei video (`video.native.ts`), notifiche push (`push.native.ts`; sul web `push.ts` non fa nulla) |
 | `supabase/functions/verifica-eta/` | Funzione Edge: verifica dell'età con Didit, lavori programmati (pulizia dei file, notifiche push), link condivisi, recupero della password |
 | `supabase/` | Schema (rieseguibile), RLS, RPC, configurazione di produzione, test end-to-end |
 | `public/index.html` | Pagina web di partenza: lingua italiana e sfondo della rivista durante il caricamento |
