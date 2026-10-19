@@ -1241,3 +1241,32 @@ do $$ begin
   raise notice 'ok, push_done segna le inviate e push_drop_tokens dimentica i telefoni';
 end $$;
 drop table claimed;
+
+-- ---------- Completamento dei video: non si ottiene trascinando la barra (W12) ----------
+insert into posts (id, author_id, media, caption) values ('10000000-0000-0000-0000-00000000d0a3', '00000000-0000-0000-0000-00000000d0a3',
+  jsonb_build_array(jsonb_build_object('kind', 'video', 'url', 'https://proj.supabase.co/storage/v1/object/public/media/00000000-0000-0000-0000-00000000d0a3/v.mp4',
+                                       'width', 720, 'height', 1280, 'duration_ms', 30000)), 'Video di 30 secondi');
+insert into arena_entries (id, contest_day, post_id, author_id)
+values ('20000000-0000-0000-0000-00000000d0a3', arena_today(), '10000000-0000-0000-0000-00000000d0a3', '00000000-0000-0000-0000-00000000d0a3');
+insert into arena_views (entry_id, viewer_id, contest_day)
+select '20000000-0000-0000-0000-00000000d0a3', id, arena_today() from profiles where username in ('pusha', 'pushb');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a1', false);
+select arena_record_view('20000000-0000-0000-0000-00000000d0a3', 2000, true, true);
+reset role;
+do $$ begin
+  if (select coalesce(sum(completes), 0) + coalesce(sum(rewatches), 0) from arena_entry_stats where entry_id = '20000000-0000-0000-0000-00000000d0a3') <> 0 then
+    raise exception 'video di 30 s completato in 2 s';
+  end if;
+  if (select coalesce(sum(views), 0) from arena_entry_stats where entry_id = '20000000-0000-0000-0000-00000000d0a3') <> 1 then raise exception 'vista non contata'; end if;
+  raise notice 'ok, un video di 30 secondi "completato" in 2 non conta come completato né rivisto';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a2', false);
+select arena_record_view('20000000-0000-0000-0000-00000000d0a3', 20000, true, true);
+reset role;
+do $$ begin
+  if (select sum(completes) from arena_entry_stats where entry_id = '20000000-0000-0000-0000-00000000d0a3') <> 1 then raise exception 'completamento vero non contato'; end if;
+  if (select sum(rewatches) from arena_entry_stats where entry_id = '20000000-0000-0000-0000-00000000d0a3') <> 0 then raise exception 'rivisto senza un giro intero'; end if;
+  raise notice 'ok, con 20 secondi su 30 il completamento conta (il rivisto no)';
+end $$;

@@ -1473,6 +1473,8 @@ declare
   v_saved boolean;
   v_shared boolean;
   v_completed boolean;
+  v_rewatched boolean;
+  v_min_video_ms numeric;
   v_served timestamptz;
 begin
   if v_uid is null or not public.can_act(v_uid) then return false; end if;
@@ -1498,10 +1500,17 @@ begin
   v_commented := exists (select 1 from comments where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
   v_saved := exists (select 1 from post_saves where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
   v_shared := exists (select 1 from post_shares where post_id = v_entry.post_id and user_id = v_uid and created_at >= v_served);
-  -- Completamento e ri-visione li misura il telefono, ma devono essere compatibili col tempo passato sul post.
-  -- Video (p_completed presente): conta l'arrivo alla fine, con un tempo minimo. Foto: conta il tempo.
+  -- Completamento e ri-visione li misura il telefono, ma devono essere compatibili col tempo passato sul post:
+  -- un video da 30 secondi non si "completa" in 2 (trascinando la barra). Si usa il video più corto del post.
+  select min((m->>'duration_ms')::numeric) into v_min_video_ms
+    from posts p, jsonb_array_elements(p.media) m
+   where p.id = v_entry.post_id and m->>'kind' = 'video' and jsonb_typeof(m->'duration_ms') = 'number';
+  -- Video (p_completed presente): conta l'arrivo alla fine, dopo almeno il 60% della durata. Foto: conta il tempo.
   v_completed := case when p_completed is null then v_dwell >= v_cfg.complete_dwell_ms
-                      else p_completed and v_dwell >= v_cfg.skip_dwell_ms end;
+                      else p_completed and v_dwell >= greatest(v_cfg.skip_dwell_ms, least(coalesce(v_min_video_ms, 0) * 0.6, v_cfg.max_dwell_ms)) end;
+  -- Rivisto: almeno un giro intero del video (e mai meno del doppio del tempo minimo).
+  v_rewatched := coalesce(p_rewatched, false)
+                 and v_dwell >= greatest(2 * v_cfg.complete_dwell_ms, least(coalesce(v_min_video_ms, 0), v_cfg.max_dwell_ms));
   update arena_views set counted = true, credited = array_remove(array[
       case when v_liked then 'like' end, case when v_commented then 'comment' end,
       case when v_saved then 'save' end, case when v_shared then 'share' end], null)
@@ -1510,7 +1519,7 @@ begin
   insert into arena_entry_stats as s (entry_id, shard, views, completes, rewatches, likes, comments, saves, shares, skips, reports, dwell_ms)
   values (
     p_entry_id, floor(random() * v_cfg.stat_shards)::smallint, 1,
-    v_completed::int, (coalesce(p_rewatched, false) and v_dwell >= 2 * v_cfg.complete_dwell_ms)::int,
+    v_completed::int, v_rewatched::int,
     v_liked::int, v_commented::int, v_saved::int,
     v_shared::int, (v_dwell < v_cfg.skip_dwell_ms)::int, 0, v_dwell
   )

@@ -12,8 +12,9 @@ import { color, radius } from '../design/tokens';
 import type { MediaItem } from '../types';
 import { CircleMark } from './CircleMark';
 import { Icon } from './Icon';
-import { haptic } from './Press';
+import { haptic, Press } from './Press';
 import { Txt } from './Txt';
+import { initialProgress, nextProgress } from './videoProgress';
 
 export type VideoProgress = { completed: boolean; rewatched: boolean };
 
@@ -85,6 +86,14 @@ export function MediaFrame({
   const seeker = useRef<Seeker | null>(null);
   const [scrub, setScrub] = useState<{ at: number; duration: number } | null>(null);
   const [buffering, setBuffering] = useState(false);
+  /** Elementi che non si sono caricati (per indice) e tentativi: "Riprova" rimonta l'elemento. */
+  const [failed, setFailed] = useState<Record<number, boolean>>({});
+  const [attempts, setAttempts] = useState<Record<number, number>>({});
+  const markFailed = useCallback((i: number, on: boolean) => setFailed((f) => (Boolean(f[i]) === on ? f : { ...f, [i]: on })), []);
+  const retry = useCallback((i: number) => {
+    setFailed((f) => ({ ...f, [i]: false }));
+    setAttempts((a) => ({ ...a, [i]: (a[i] ?? 0) + 1 }));
+  }, []);
   const bufferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // La rotellina compare solo se il caricamento dura: un attimo di attesa non deve far lampeggiare nulla.
   const onBuffering = useCallback((on: boolean) => {
@@ -250,6 +259,8 @@ export function MediaFrame({
                     Math.abs(i - index) <= 1 ? (
                       <VideoItem
                         src={item.src}
+                        attempt={attempts[i] ?? 0}
+                        onFailed={(on) => markFailed(i, on)}
                         poster={item.poster}
                         fit={fitFor(item, size)}
                         playing={active && i === index && !paused}
@@ -267,12 +278,27 @@ export function MediaFrame({
                     ) : null
                   ) : fitFor(item, size) === 'contain' ? (
                     // Foto molto più larga (o più alta) della cornice: intera, su uno sfondo sfocato di sé stessa.
-                    <>
+                    <View key={attempts[i] ?? 0} style={StyleSheet.absoluteFill}>
                       <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={24} />
-                      <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="contain" transition={120} />
-                    </>
+                      <Image
+                        source={resolveMedia(item.src)}
+                        style={StyleSheet.absoluteFill}
+                        contentFit="contain"
+                        transition={120}
+                        onError={() => markFailed(i, true)}
+                        onLoad={() => markFailed(i, false)}
+                      />
+                    </View>
                   ) : (
-                    <Image source={resolveMedia(item.src)} style={StyleSheet.absoluteFill} contentFit="cover" transition={120} />
+                    <Image
+                      key={attempts[i] ?? 0}
+                      source={resolveMedia(item.src)}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="cover"
+                      transition={120}
+                      onError={() => markFailed(i, true)}
+                      onLoad={() => markFailed(i, false)}
+                    />
                   )}
                 </View>
               )}
@@ -281,7 +307,20 @@ export function MediaFrame({
         </GestureDetector>
       ) : null}
 
-      {media[index]?.kind === 'video' && paused ? (
+      {failed[index] ? (
+        // Non si è caricato: lo si dice, con "Riprova" (fuori dai gesti del carosello: il tocco non mette in pausa).
+        <View style={styles.center} pointerEvents="box-none">
+          <View style={styles.failBox}>
+            <Icon name="info" size={26} color={color.paper} />
+            <Txt variant="label">Non si carica.</Txt>
+            <Press style={styles.retry} onPress={() => retry(index)} accessibilityRole="button" accessibilityLabel="Riprova a caricare">
+              <Txt variant="label" tone={color.canvas}>
+                Riprova
+              </Txt>
+            </Press>
+          </View>
+        </View>
+      ) : media[index]?.kind === 'video' && paused ? (
         <View style={styles.center} pointerEvents="none">
           <View style={styles.playBadge}>
             <Icon name="play" size={34} color={color.paper} />
@@ -356,6 +395,8 @@ function fitFor(item: MediaItem, size: { w: number; h: number }): 'cover' | 'con
 
 function VideoItem({
   src,
+  attempt,
+  onFailed,
   poster,
   fit,
   playing,
@@ -369,6 +410,9 @@ function VideoItem({
   onBuffering,
 }: {
   src: string;
+  /** Cresce a ogni "Riprova": il video si ricarica. */
+  attempt: number;
+  onFailed: (on: boolean) => void;
   poster?: string;
   fit: 'cover' | 'contain';
   playing: boolean;
@@ -388,8 +432,27 @@ function VideoItem({
     p.muted = true;
     p.timeUpdateEventInterval = 0.25;
   });
-  const progress = useRef({ maxRatio: 0, last: 0, loops: 0, seeked: false });
+  const progress = useRef(initialProgress());
+  /** Ultimo spostamento a mano (o ripartenza da capo): per 600 ms gli aggiornamenti non contano. */
+  const seekedAt = useRef<number | null>(null);
   const onProgressRef = useRef(onProgress);
+  const onFailedRef = useRef(onFailed);
+  useEffect(() => {
+    onFailedRef.current = onFailed;
+  }, [onFailed]);
+
+  // "Riprova": si ricarica la stessa sorgente.
+  const firstAttempt = useRef(attempt);
+  useEffect(() => {
+    if (attempt === firstAttempt.current) return;
+    firstAttempt.current = attempt;
+    setFirstFrame(false);
+    try {
+      player.replace(resolveMedia(src) as never);
+    } catch {
+      onFailedRef.current(true);
+    }
+  }, [attempt, player, src]);
   useEffect(() => {
     onProgressRef.current = onProgress;
   }, [onProgress]);
@@ -404,7 +467,8 @@ function VideoItem({
     if (playing) {
       if (playedKey.current !== viewKey) {
         playedKey.current = viewKey;
-        progress.current = { maxRatio: 0, last: 0, loops: 0, seeked: false };
+        progress.current = initialProgress();
+        seekedAt.current = Date.now();
         player.currentTime = 0;
       }
       player.play();
@@ -420,7 +484,7 @@ function VideoItem({
       player,
       seek: (f) => {
         if (!player.duration) return;
-        progress.current.seeked = true;
+        seekedAt.current = Date.now();
         player.currentTime = f * player.duration;
       },
     };
@@ -435,23 +499,19 @@ function VideoItem({
 
   useEventListener(player, 'statusChange', ({ status }) => {
     if (current) onBuffering(status === 'loading');
+    if (status === 'error') onFailedRef.current(true);
+    else if (status === 'readyToPlay') onFailedRef.current(false);
   });
 
+  // Quanto è stato guardato davvero (videoProgress.ts): trascinare la barra non completa il video.
   useEventListener(player, 'timeUpdate', ({ currentTime }) => {
     const d = player.duration;
     if (!d) return;
-    const p = progress.current;
-    if (p.seeked) {
-      p.seeked = false;
-    } else {
-      // Il tempo torna indietro di colpo: il video è ripartito (loop) = ri-visione.
-      if (currentTime + 0.5 < p.last) p.loops += 1;
-      p.maxRatio = Math.max(p.maxRatio, currentTime / d);
-    }
-    p.last = currentTime;
+    const p = nextProgress(progress.current, { time: currentTime, duration: d, seekedAt: seekedAt.current, now: Date.now() });
+    progress.current = p;
     // Barra di avanzamento: moto costante, lineare (ferma mentre la si trascina).
     if (current && !dragging.get()) bar.set(withTiming(currentTime / d, { duration: 250 }));
-    onProgressRef.current?.({ completed: p.loops > 0 || p.maxRatio >= 0.9, rewatched: p.loops > 0 });
+    onProgressRef.current?.({ completed: p.completed, rewatched: p.rewatched });
   });
 
   return (
@@ -503,6 +563,8 @@ const styles = StyleSheet.create({
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   playBadge: { width: 72, height: 72, borderRadius: 36, backgroundColor: color.scrim, alignItems: 'center', justifyContent: 'center', paddingLeft: 4 },
   scrubLabel: { backgroundColor: color.scrim, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8 },
+  failBox: { alignItems: 'center', gap: 10, backgroundColor: color.scrim, borderRadius: radius.card, paddingHorizontal: 22, paddingVertical: 18 },
+  retry: { backgroundColor: color.giallo, borderRadius: radius.pill, paddingHorizontal: 20, minHeight: 44, justifyContent: 'center' },
   // Zona di presa alta 24 punti per una barra sottile: si prende col pollice senza mirare.
   seekZone: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 24, justifyContent: 'flex-end' },
   track: { height: 3, backgroundColor: 'rgba(245,243,238,0.2)', overflow: 'hidden' },
