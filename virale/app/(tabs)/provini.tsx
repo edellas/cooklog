@@ -16,11 +16,15 @@ import { duration, ease } from '../../src/design/motion';
 import { color, font, radius, space } from '../../src/design/tokens';
 import { coverDay, msUntil, msUntilReveal } from '../../src/engine/engine';
 import { getExplore, getFollowing, getForYou, recordView } from '../../src/services/api';
+import { friendlyError } from '../../src/services/errors';
+import { useToast } from '../../src/components/Toast';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
 import type { FeedCard } from '../../src/types';
 
 type Mode = 'gara' | 'esplora' | 'seguiti';
+/** Una scheda della lista. In Esplora lo stesso post può tornare: la chiave distingue le sue apparizioni. */
+type Card = FeedCard & { key: string };
 const MODES: { id: Mode; label: string }[] = [
   { id: 'gara', label: 'In gara' },
   { id: 'esplora', label: 'Esplora' },
@@ -49,23 +53,35 @@ export default function ProviniTab() {
   const [ended, setEnded] = useState(false);
   /** Un aggiornamento completo è in corso: niente "pagina dopo" finché non arriva (la scarterebbe). */
   const resetting = useRef(false);
-  const [cards, setCards] = useState<FeedCard[]>([]);
+  const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(0);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [focused, setFocused] = useState(true);
 
   const signals = useRef<Record<string, Partial<Record<Interaction, boolean>>>>({});
   const video = useRef<Record<string, VideoProgress>>({});
-  const current = useRef<{ card: FeedCard; since: number } | null>(null);
-  /** Numero della vista per ogni post: cambia quando il post torna sullo schermo, e il video riparte. */
+  const current = useRef<{ card: Card; since: number } | null>(null);
+  /** Numero della vista per ogni scheda: cambia quando la scheda torna sullo schermo, e il video riparte. */
   const views = useRef<Record<string, number>>({});
-  const cardsRef = useRef<FeedCard[]>([]);
+  const cardsRef = useRef<Card[]>([]);
+  const toast = useToast();
+  /** Chiavi uniche: In gara e Seguiti non ripetono i post (chiave = id), Esplora sì (id~n). */
+  const keySeq = useRef(0);
+  const keyed = useCallback((list: FeedCard[], existing: Card[]): Card[] => {
+    const used = new Set(existing.map((c) => c.key));
+    return list.map((c) => {
+      let key = c.id;
+      while (used.has(key)) key = `${c.id}~${(keySeq.current += 1)}`;
+      used.add(key);
+      return { ...c, key };
+    });
+  }, []);
   /** Ogni caricamento ha un numero: le risposte arrivate tardi (dopo un cambio di modalità) si scartano. */
   const request = useRef(0);
   const loadingMore = useRef(false);
-  const list = useRef<FlatList<FeedCard>>(null);
+  const list = useRef<FlatList<Card>>(null);
 
   useEffect(() => {
     cardsRef.current = cards;
@@ -100,21 +116,34 @@ export default function ProviniTab() {
       const shown = reset ? [] : cardsRef.current;
       let next: FeedCard[];
       if (mode === 'seguiti') next = await getFollowing(shown.at(-1)?.createdAt);
-      else if (mode === 'esplora') next = await getExplore(8, shown.map((x) => x.id));
-      else next = await getForYou(6, shown.map((x) => x.id));
+      else if (mode === 'esplora') {
+        next = await getExplore(8, shown.map((x) => x.id));
+        // Esplora non finisce: se la pagina ripete solo post già in lista, si richiede escludendo solo gli
+        // ultimi 30 e si accodano anche i ripetuti (con una chiave nuova).
+        if (!reset && next.every((n) => shown.some((p) => p.id === n.id))) next = await getExplore(8, shown.slice(-30).map((x) => x.id));
+      } else next = await getForYou(6, shown.map((x) => x.id));
       if (id === request.current) {
         // Contano solo i post nuovi: una pagina fatta di post già in lista non deve bloccare lo scorrimento.
-        const fresh = reset ? next : next.filter((n) => !shown.some((p) => p.id === n.id));
-        // Seguiti e In gara finiscono (In gara: visti tutti i candidati di adesso); Esplora no.
-        if (mode !== 'esplora' && !fresh.length) {
+        const fresh = reset || mode === 'esplora' ? next : next.filter((n) => !shown.some((p) => p.id === n.id));
+        // Seguiti e In gara finiscono (In gara: visti tutti i candidati di adesso). Esplora solo se non esiste
+        // più nessun post da vedere.
+        if (!fresh.length && (mode !== 'esplora' || !reset)) {
           exhausted.current = true;
           setEnded(true);
         }
-        setCards((prev) => (reset ? next : [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]));
+        setCards((prev) => {
+          if (reset) return keyed(next, []);
+          const add = mode === 'esplora' ? next : next.filter((n) => !prev.some((p) => p.id === n.id));
+          return [...prev, ...keyed(add, prev)];
+        });
         setError(null);
       }
     } catch (e) {
-      if (id === request.current && reset) setError((e as Error).message);
+      if (id === request.current) {
+        if (reset) setError(friendlyError(e));
+        // Aggiornamento o pagina successiva falliti con dei post già sullo schermo: lo si dice, senza toglierli.
+        if (cardsRef.current.length) toast('Non riesco ad aggiornare. Controlla la connessione.', 'error');
+      }
     } finally {
       if (id === request.current) {
         loadingMore.current = false;
@@ -123,7 +152,7 @@ export default function ProviniTab() {
         setRefreshing(false);
       }
     }
-  }, [mode]);
+  }, [keyed, mode, toast]);
 
   // All'orario della copertina la gara chiude e ne parte una nuova: i candidati di prima spariscono, il feed
   // si ricarica. Il timer può fermarsi col telefono in standby: si ricontrolla anche riaprendo l'app (sotto).
@@ -140,13 +169,13 @@ export default function ProviniTab() {
    * ancora guardato (consegnati dal server, non vanno buttati). Un cambiamento vero (nuovo post, blocco,
    * segnalazione, nuovo giorno) svuota tutto.
    */
-  const saved = useRef<Partial<Record<Mode, { cards: FeedCard[]; activeId: string | null; ended: boolean; at: number }>>>({});
+  const saved = useRef<Partial<Record<Mode, { cards: Card[]; activeKey: string | null; ended: boolean; at: number }>>>({});
   const restoreIndex = useRef(0);
   const lastKey = useRef({ version, day });
   const switchMode = (m: Mode) => {
     if (m === mode) return;
     flush();
-    saved.current[mode] = { cards: cardsRef.current, activeId: activeIdRef.current, ended: exhausted.current, at: Date.now() };
+    saved.current[mode] = { cards: cardsRef.current, activeKey: activeKeyRef.current, ended: exhausted.current, at: Date.now() };
     setMode(m);
   };
 
@@ -162,9 +191,10 @@ export default function ProviniTab() {
       resetting.current = false;
       exhausted.current = keep.ended;
       setEnded(keep.ended);
-      restoreIndex.current = Math.max(0, keep.cards.findIndex((c) => c.id === keep.activeId));
+      restoreIndex.current = Math.max(0, keep.cards.findIndex((c) => c.key === keep.activeKey));
+      cardsRef.current = keep.cards;
       setCards(keep.cards);
-      setActiveId(keep.activeId);
+      setActiveKey(keep.activeKey);
       setError(null);
       setLoading(false);
       return;
@@ -172,8 +202,9 @@ export default function ProviniTab() {
     restoreIndex.current = 0;
     setLoading(true);
     setError(null);
+    cardsRef.current = [];
     setCards([]);
-    setActiveId(null);
+    setActiveKey(null);
     void load(true);
   }, [flush, load, mode, version, day]);
 
@@ -190,7 +221,7 @@ export default function ProviniTab() {
       if (st === 'background') flushRef.current();
       else if (st === 'active') {
         if (focusedRef.current && !current.current) {
-          const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
+          const visible = cardsRef.current.find((c) => c.key === activeKeyRef.current);
           if (visible) current.current = { card: visible, since: Date.now() };
         }
       }
@@ -203,7 +234,7 @@ export default function ProviniTab() {
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
-      const visible = cardsRef.current.find((c) => c.id === activeIdRef.current);
+      const visible = cardsRef.current.find((c) => c.key === activeKeyRef.current);
       if (visible && !current.current) current.current = { card: visible, since: Date.now() };
       return () => {
         setFocused(false);
@@ -211,40 +242,40 @@ export default function ProviniTab() {
       };
     }, [flush]),
   );
-  const activeIdRef = useRef<string | null>(null);
+  const activeKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
+    activeKeyRef.current = activeKey;
+  }, [activeKey]);
 
   const flushRef = useRef(flush);
   useEffect(() => {
     flushRef.current = flush;
   }, [flush]);
-  const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<FeedCard>[] }) => {
+  const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken<Card>[] }) => {
     const visible = viewableItems[0]?.item;
     // Sulla pagina finale non c'è nessun post: si chiude la vista dell'ultimo (non deve contare il tempo lì).
     if (!visible) {
       flushRef.current();
-      setActiveId(null);
+      setActiveKey(null);
       return;
     }
-    if (visible.id === current.current?.card.id) return;
+    if (visible.key === current.current?.card.key) return;
     flushRef.current();
     current.current = { card: visible, since: Date.now() };
-    views.current[visible.id] = (views.current[visible.id] ?? 0) + 1;
-    setActiveId(visible.id);
+    views.current[visible.key] = (views.current[visible.key] ?? 0) + 1;
+    setActiveKey(visible.key);
   }).current;
 
   // Le immagini dei prossimi due post si scaricano mentre guardi questo: scorrendo sono già lì.
   useEffect(() => {
-    const at = cards.findIndex((c) => c.id === activeId);
+    const at = cards.findIndex((c) => c.key === activeKey);
     if (at < 0) return;
     const urls = cards
       .slice(at + 1, at + 3)
       .flatMap((c) => c.media.slice(0, 2).map((m) => (m.kind === 'image' ? resolveMedia(m.src) : m.poster)))
       .filter((u): u is string => typeof u === 'string' && /^https?:/.test(u));
     if (urls.length) void Image.prefetch(urls).catch(() => undefined);
-  }, [activeId, cards]);
+  }, [activeKey, cards]);
 
   // Toccare di nuovo "Provini" mentre ci sei: si torna in cima e arrivano post nuovi (come su TikTok).
   const navigation = useNavigation();
@@ -270,23 +301,28 @@ export default function ProviniTab() {
   }, []);
 
   const renderItem = useCallback(
-    ({ item }: { item: FeedCard }) => (
+    ({ item }: { item: Card }) => (
       <View style={{ height }}>
         <PostCard
           post={item}
           meId={me?.id}
-          active={focused && item.id === activeId}
-          viewKey={views.current[item.id] ?? 0}
+          active={focused && item.key === activeKey}
+          viewKey={views.current[item.key] ?? 0}
           blind={mode === 'gara'}
           onInteract={onInteract}
           onVideoProgress={onVideoProgress}
         />
       </View>
     ),
-    [activeId, focused, height, me?.id, mode, onInteract, onVideoProgress],
+    [activeKey, focused, height, me?.id, mode, onInteract, onVideoProgress],
   );
 
-  const onLayout = (e: LayoutChangeEvent) => setHeight(e.nativeEvent.layout.height);
+  // Con i commenti o un profilo aperti sopra (sul web) la lista misura 0: si tiene l'ultima altezza buona,
+  // altrimenti la lista si smonterebbe e ripartirebbe dal primo post.
+  const onLayout = (e: LayoutChangeEvent) => {
+    const h = e.nativeEvent.layout.height;
+    if (h > 0) setHeight(h);
+  };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -329,14 +365,14 @@ export default function ProviniTab() {
         ) : !cards.length ? (
           <View style={styles.center}>
             <Txt variant="title" style={{ textAlign: 'center' }}>
-              {mode === 'seguiti' ? 'Non segui ancora nessuno.' : mode === 'esplora' ? 'Ancora nessun post da scoprire.' : 'Hai visto tutti i provini di adesso.'}
+              {mode === 'seguiti' ? 'Non segui ancora nessuno.' : mode === 'esplora' ? 'Per ora hai visto tutto.' : 'Per ora li hai visti tutti.'}
             </Txt>
             <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
               {mode === 'seguiti'
                 ? 'Tocca “Segui” sotto un post che ti piace: i suoi nuovi post arriveranno qui.'
                 : mode === 'esplora'
                   ? 'Appena qualcuno pubblica, lo trovi qui.'
-                  : 'Ogni candidato lo vedi una volta sola, e i tuoi non li vedi: il tuo voto è come guardi. Ne arrivano di nuovi durante il giorno.'}
+                  : 'Ogni post in gara lo vedi una volta sola (i tuoi mai). Votare è guardare: più ti fermi, più conta. Ne arrivano di nuovi durante il giorno.'}
             </Txt>
             {mode === 'gara' ? (
               <Press style={styles.retry} onPress={() => switchMode('esplora')} accessibilityRole="button">
@@ -363,7 +399,7 @@ export default function ProviniTab() {
             key={mode}
             initialScrollIndex={restoreIndex.current < cards.length ? restoreIndex.current : 0}
             data={cards}
-            keyExtractor={(c) => c.id}
+            keyExtractor={(c) => c.key}
             pagingEnabled
             decelerationRate="fast"
             snapToInterval={height}
@@ -374,13 +410,29 @@ export default function ProviniTab() {
             onEndReachedThreshold={1.5}
             onEndReached={() => void load(false)}
             ListFooterComponent={
-              ended && mode !== 'esplora' ? (
+              ended && mode === 'esplora' ? (
                 <View style={[styles.center, { height }]}>
                   <Txt variant="title" style={{ textAlign: 'center' }}>
-                    {mode === 'gara' ? 'Hai visto tutti i provini di adesso.' : 'Sei in pari con chi segui.'}
+                    Per ora hai visto tutto.
                   </Txt>
                   <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-                    {mode === 'gara' ? 'Ne arrivano di nuovi durante il giorno: tira giù per controllare.' : 'Intanto scopri qualcosa di nuovo.'}
+                    Appena qualcuno pubblica, lo trovi qui.
+                  </Txt>
+                  <Press style={styles.retry} onPress={refreshNow} accessibilityRole="button">
+                    <Txt variant="label" tone={color.canvas}>
+                      Aggiorna
+                    </Txt>
+                  </Press>
+                </View>
+              ) : ended ? (
+                <View style={[styles.center, { height }]}>
+                  <Txt variant="title" style={{ textAlign: 'center' }}>
+                    {mode === 'gara' ? 'Per ora li hai visti tutti.' : 'Sei in pari con chi segui.'}
+                  </Txt>
+                  <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
+                    {mode === 'gara'
+                      ? 'Ogni post in gara lo vedi una volta sola (i tuoi mai). Votare è guardare: più ti fermi, più conta. Ne arrivano di nuovi durante il giorno.'
+                      : 'Intanto scopri qualcosa di nuovo.'}
                   </Txt>
                   <Press style={styles.retry} onPress={() => switchMode('esplora')} accessibilityRole="button">
                     <Txt variant="label" tone={color.canvas}>

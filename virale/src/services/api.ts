@@ -829,14 +829,23 @@ function demoScore(demo: DemoDb, p: StoredPost, personalOnly: boolean): number {
   return score;
 }
 
-/** Esplora in demo: tutti i post (anche in gara), ordinati per gusti con un po' di caso, al massimo 2 per autore. */
+/**
+ * Esplora in demo: tutti i post (anche in gara), ordinati per gusti con un po' di caso, al massimo 2 per autore.
+ * Come sul server: finiti quelli nuovi si ripropongono gli altri evitando gli ultimi 50 mostrati, poi gli
+ * ultimi 5, poi nessuno. Non finisce mai.
+ */
 function demoExplore(demo: DemoDb, limit: number, exclude: string[]): Post[] {
   const meId = demo.me?.id;
-  const ex = new Set(exclude);
+  const ex = new Set(exclude.slice(-300));
   const now = Date.now();
-  const base = Object.values(demo.posts).filter((p) => p.authorId !== meId && !ex.has(p.id) && visible(demo, p.id));
-  let pool = base.filter((p) => !(demo.seen?.[p.id] && now - demo.seen[p.id] < 3 * 86400000));
-  if (pool.length < limit) pool = base;
+  const all = Object.values(demo.posts).filter((p) => p.authorId !== meId && visible(demo, p.id));
+  let pool = all.filter((p) => !ex.has(p.id) && !(demo.seen?.[p.id] && now - demo.seen[p.id] < 3 * 86400000));
+  for (const recent of [50, 5, 0]) {
+    if (pool.length >= limit) break;
+    const skip = new Set(recent ? exclude.slice(-recent) : []);
+    pool = all.filter((p) => !skip.has(p.id));
+    if (pool.length) break;
+  }
   const ranked = pool.map((p) => ({ p, s: demoScore(demo, p, false) + Math.random() * 0.6 })).sort((a, b) => b.s - a.s);
   const perAuthor: Record<string, number> = {};
   const out: Post[] = [];

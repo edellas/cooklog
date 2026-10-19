@@ -144,7 +144,13 @@ export default function ScrollPostsScreen() {
           {kind === 'saved' ? 'Salvati' : `@${username}`}
         </Txt>
       </View>
-      <View style={styles.list} onLayout={(e: LayoutChangeEvent) => setHeight(e.nativeEvent.layout.height)}>
+      {/* Con un foglio aperto sopra (sul web) la lista misura 0: si tiene l'ultima altezza buona. */}
+      <View
+        style={styles.list}
+        onLayout={(e: LayoutChangeEvent) => {
+          const h = e.nativeEvent.layout.height;
+          if (h > 0) setHeight(h);
+        }}>
         {posts.length && height > 0 ? (
           <FlatList
             data={posts}

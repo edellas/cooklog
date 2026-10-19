@@ -793,3 +793,34 @@ do $$ begin
   raise exception 'NON DOVEVA PASSARE';
 exception when insufficient_privilege then raise notice 'ok, modifica diretta del profilo rifiutata'; end $$;
 reset role;
+
+-- ---------- Esplora non finisce mai (W4) ----------
+-- Un autore con 5 post e uno spettatore che li ha già tutti nella lista: Esplora ne ripropone comunque.
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000a3'), ('00000000-0000-0000-0000-0000000000a4');
+insert into profiles (id, username, display_name) values ('00000000-0000-0000-0000-0000000000a3', 'cinquepost', 'Cinque P.'), ('00000000-0000-0000-0000-0000000000a4', 'spettatore', 'Spettatore S.');
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username in ('cinquepost', 'spettatore');
+insert into posts (id, author_id, media, caption)
+  select ('40000000-0000-0000-0000-00000000000'||i)::uuid, '00000000-0000-0000-0000-0000000000a3',
+         test_media('00000000-0000-0000-0000-0000000000a3', 'e'||i||'.jpg'), 'Esplora '||i
+  from generate_series(1,5) i;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a4', false);
+do $$ declare n int; v_all uuid[]; begin
+  select array_agg(id) into v_all from posts where author_id <> auth.uid();
+  select count(*) into n from feed_explore(8, v_all) x;
+  if n < 1 then raise exception 'Esplora finita con tutti i post già mostrati'; end if;
+  raise notice 'ok, Esplora ripropone i post anche quando li hai già visti tutti (%)', n;
+end $$;
+-- Nessun post altrui da vedere: nessun post e nessun errore (dentro un blocco annullato alla fine).
+reset role;
+do $$ declare n int; begin
+  -- Si simula un database senza post visibili: tutti nascosti, poi si annulla.
+  update posts set hidden_at = now() where author_id <> '00000000-0000-0000-0000-0000000000a4' and hidden_at is null;
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a4', true);
+  set local role authenticated;
+  select count(*) into n from feed_explore(8, '{}') x;
+  if n <> 0 then raise exception 'Esplora senza post da vedere ne ha restituiti %', n; end if;
+  raise notice 'ok, Esplora senza post da vedere: nessun post, nessun errore';
+  raise exception using errcode = 'P0002', message = 'annulla';
+exception when no_data_found then null;
+end $$;

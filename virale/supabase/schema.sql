@@ -2156,7 +2156,7 @@ $$;
 -- Esplora: tutti i post di tutti (anche quelli in gara e di chi non segui), ordinati per te. Un po' di caso
 -- (esplorazione) fa scoprire anche cose nuove, e al massimo due post dello stesso autore per pagina.
 -- Guardare qui un post in gara non è un voto: si vota solo in "In gara", dove i post arrivano alla cieca.
--- Finiti quelli nuovi, ripropone i meno recenti: il feed non finisce mai.
+-- Finiti quelli nuovi, ripropone i meno recenti (anche già visti): il feed non finisce mai.
 create or replace function public.feed_explore(p_limit int default 8, p_exclude uuid[] default '{}')
 returns setof jsonb language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -2164,6 +2164,7 @@ declare
   v_day date := public.arena_today();
   v_limit int := least(greatest(p_limit, 1), 20);
   v_ex uuid[] := coalesce(p_exclude, '{}'::uuid[]);
+  v_bounds int[];
   v_pool uuid[];
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
@@ -2182,18 +2183,26 @@ begin
   ) x;
 
   if coalesce(array_length(v_pool, 1), 0) < v_limit then
-    -- Visti tutti quelli nuovi: si ripesca a caso tra i 3000 più recenti (indice per data, niente scansione completa).
-    select array_agg(id) into v_pool from (
-      select r.id from (
-        select p.id from posts p
-        where p.author_id <> v_uid
-          and not (p.id = any (v_ex))
-        order by p.created_at desc
-        limit 3000
-      ) r
-      order by random()
-      limit 600
-    ) x where public.can_see(x.id, v_uid);
+    -- Visti tutti quelli nuovi: si ripesca a caso tra i 3000 più recenti (indice per data, niente scansione
+    -- completa). Si evitano solo gli ultimi 50 mostrati; se non basta (pochi post in tutto) solo gli ultimi 5,
+    -- e alla fine nessuno: Esplora non finisce mai finché esiste un post da vedere.
+    foreach v_bounds slice 1 in array array[
+      array[cardinality(v_ex) - 49, cardinality(v_ex)],
+      array[cardinality(v_ex) - 4, cardinality(v_ex)],
+      array[1, 0]] loop
+      select array_agg(id) into v_pool from (
+        select r.id from (
+          select p.id from posts p
+          where p.author_id <> v_uid
+            and not (p.id = any (v_ex[greatest(v_bounds[1], 1):v_bounds[2]]))
+          order by p.created_at desc
+          limit 3000
+        ) r
+        order by random()
+        limit 600
+      ) x where public.can_see(x.id, v_uid);
+      exit when v_pool is not null;
+    end loop;
   end if;
   if v_pool is null then return; end if;
 
