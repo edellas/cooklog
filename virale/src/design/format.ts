@@ -37,6 +37,25 @@ export function clock(ms: number): string {
   return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
 }
 
+/** Quanto manca, leggibile: "14 h 27 min", "27 min", "meno di un minuto". */
+export function relTime(ms: number): string {
+  const m = Math.floor(Math.max(0, ms) / 60000);
+  if (m < 1) return 'meno di un minuto';
+  const h = Math.floor(m / 60);
+  return h ? `${h} h ${m % 60} min` : `${m} min`;
+}
+
+/** Come relTime, a parole intere per i lettori di schermo: "14 ore e 27 minuti". */
+export function relTimeLong(ms: number): string {
+  const m = Math.floor(Math.max(0, ms) / 60000);
+  if (m < 1) return 'meno di un minuto';
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  const hours = h ? `${h} ${h === 1 ? 'ora' : 'ore'}` : '';
+  const minutes = min ? `${min} ${min === 1 ? 'minuto' : 'minuti'}` : '';
+  return [hours, minutes].filter(Boolean).join(' e ');
+}
+
 /** Minuti dalla mezzanotte come orario "14:55". */
 export function clockTime(minutes: number): string {
   const m = ((minutes % 1440) + 1440) % 1440;

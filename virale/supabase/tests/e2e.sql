@@ -1080,3 +1080,20 @@ do $$ declare u text[]; begin
   raise notice 'ok, ricerca persone: prefissi, "_" come lettera, niente bloccati, espulsi né sé stessi';
 end $$;
 reset role;
+
+-- ---------- In gara: se il voto conta (W18) ----------
+reset role;
+insert into auth.users (id) values ('00000000-0000-0000-0000-000000000301');
+insert into profiles (id, username, display_name) values ('00000000-0000-0000-0000-000000000301', 'appena.iscritto', 'Appena I.');
+insert into identity_checks (user_id, status, deadline) values ('00000000-0000-0000-0000-000000000301', 'approved', now());
+set role authenticated;
+do $$ declare v jsonb; begin
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000301', true);
+  v := my_status() -> 'voter';
+  if (v ->> 'can_vote')::boolean or v ->> 'from' is null then raise exception 'account appena creato: %', v; end if;
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000101', true);
+  v := my_status() -> 'voter';
+  if not (v ->> 'can_vote')::boolean then raise exception 'account verificato di 10 giorni senza voto: %', v; end if;
+  raise notice 'ok, my_status dice se il voto conta e da quando';
+end $$;
+reset role;

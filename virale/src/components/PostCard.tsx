@@ -9,6 +9,7 @@ import { actionError } from '../services/errors';
 import { shareText } from '../services/share';
 import { useNav } from '../state/nav';
 import { emitFollowChange, emitPostChange, onFollowChange, onPostChange, withRecentChanges } from '../state/postEvents';
+import { firstCircleHint } from '../state/hints';
 import { useActGuard } from '../state/useActGuard';
 import { toggleMute, useMuted } from '../state/sound';
 import type { Post } from '../types';
@@ -83,7 +84,10 @@ export const PostCard = memo(function PostCard({
     const likeCount = Math.max(0, post.likeCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, likedByMe: on, likeCount }));
     emitPostChange(post.id, { likedByMe: on, likeCount });
-    if (on) onInteract?.(post.id, 'liked');
+    if (on) {
+      onInteract?.(post.id, 'liked');
+      firstCircleHint(meId, toast);
+    }
     toggleLike(post.id, on).catch((e: unknown) => {
       const back = { likedByMe: !on, likeCount: post.likeCount };
       setPost((p) => ({ ...p, ...back }));

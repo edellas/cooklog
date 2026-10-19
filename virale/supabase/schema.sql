@@ -2160,6 +2160,10 @@ returns jsonb language sql stable security definer set search_path = public, pg_
                  and (n.kind <> 'cover' or coalesce((n.data->>'featured_on')::date, '-infinity'::date) <= public.cover_day())
                  and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))),
     'needs_private', not exists (select 1 from profile_private where id = auth.uid()),
+    -- Se il voto conta (età verificata e account con più di 24 ore) e da quando conterà per gli account nuovi.
+    'voter', (select jsonb_build_object('can_vote', public.can_vote(p.id) and p.created_at <= now() - c.min_viewer_account_age,
+                                        'from', p.created_at + c.min_viewer_account_age)
+                from profiles p, arena_config c where p.id = auth.uid() limit 1),
     'settings', public.get_settings()
   );
 $$;

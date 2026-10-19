@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { useFocusEffect, useNavigation } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, FlatList, RefreshControl, StyleSheet, View, type LayoutChangeEvent, type ViewToken } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -11,7 +11,7 @@ import { PostCard, type Interaction } from '../../src/components/PostCard';
 import { haptic, Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
 import { resolveMedia } from '../../src/data/demoMedia';
-import { clock } from '../../src/design/format';
+import { relTime, relTimeLong } from '../../src/design/format';
 import { duration, ease } from '../../src/design/motion';
 import { color, font, radius, space } from '../../src/design/tokens';
 import { coverDay, msUntil, msUntilReveal } from '../../src/engine/engine';
@@ -19,6 +19,8 @@ import { getExplore, getFollowing, getForYou, recordView } from '../../src/servi
 import { friendlyError } from '../../src/services/errors';
 import { useToast } from '../../src/components/Toast';
 import { useNav } from '../../src/state/nav';
+import { alreadySeen, markSeen } from '../../src/state/hints';
+import { onSectionRequest, takeSection } from '../../src/state/sections';
 import { useSession } from '../../src/state/session';
 import { queueView } from '../../src/state/views';
 import type { FeedCard } from '../../src/types';
@@ -46,7 +48,14 @@ export default function ProviniTab() {
   const reveal = status?.settings.revealMinutes ?? 0;
   const revealRef = useRef(reveal);
   revealRef.current = reveal;
-  const [mode, setMode] = useState<Mode>('gara');
+  // "Guarda i provini di oggi" dalla Copertina (o un link …/provini?sezione=gara) apre la sezione chiesta.
+  const [mode, setMode] = useState<Mode>(() => takeSection() ?? 'gara');
+  const { sezione } = useLocalSearchParams<{ sezione?: string }>();
+  /** Spiegazione di In gara alla prima apertura: finché è sullo schermo il post sotto non conta e non parte. */
+  const [intro, setIntro] = useState(false);
+  const introRef = useRef(false);
+  /** La fascia "il tuo voto conterà…" si chiude per la sessione. */
+  const [bandClosed, setBandClosed] = useState(voterBandClosed);
   const [refreshing, setRefreshing] = useState(false);
   /** Seguiti finisce: quando una pagina torna vuota non si chiede altro fino al prossimo aggiornamento. */
   const exhausted = useRef(false);
@@ -180,6 +189,36 @@ export default function ProviniTab() {
     saved.current[mode] = { cards: cardsRef.current, activeKey: activeKeyRef.current, ended: exhausted.current, at: Date.now() };
     setMode(m);
   };
+  const switchRef = useRef(switchMode);
+  switchRef.current = switchMode;
+  useEffect(() => onSectionRequest((m) => switchRef.current(m)), []);
+  useEffect(() => {
+    if (sezione === 'gara' || sezione === 'esplora' || sezione === 'seguiti') switchRef.current(sezione);
+  }, [sezione]);
+
+  // Prima apertura di In gara (per questo account): la spiegazione, una volta sola.
+  const introKey = me ? `virale.spiegazione.ingara.${me.id}` : null;
+  useEffect(() => {
+    if (mode !== 'gara' || !introKey) return;
+    let alive = true;
+    void alreadySeen(introKey).then((seen) => {
+      if (!alive || seen) return;
+      introRef.current = true;
+      // Il tempo passato a leggere non è un voto: la vista del post sotto si scarta.
+      current.current = null;
+      setIntro(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [introKey, mode]);
+  const closeIntro = () => {
+    if (introKey) void markSeen(introKey);
+    introRef.current = false;
+    setIntro(false);
+    const visible = cardsRef.current.find((c) => c.key === activeKeyRef.current);
+    if (visible && focusedRef.current && !current.current) current.current = { card: visible, since: Date.now() };
+  };
 
   useEffect(() => {
     flush();
@@ -222,7 +261,7 @@ export default function ProviniTab() {
       // notifica, e chiuderebbe la vista (come uno scorrimento) mentre si sta ancora guardando.
       if (st === 'background') flushRef.current();
       else if (st === 'active') {
-        if (focusedRef.current && !current.current) {
+        if (focusedRef.current && !current.current && !introRef.current) {
           const visible = cardsRef.current.find((c) => c.key === activeKeyRef.current);
           if (visible) current.current = { card: visible, since: Date.now() };
         }
@@ -237,7 +276,10 @@ export default function ProviniTab() {
     useCallback(() => {
       setFocused(true);
       const visible = cardsRef.current.find((c) => c.key === activeKeyRef.current);
-      if (visible && !current.current) current.current = { card: visible, since: Date.now() };
+      if (visible && !current.current && !introRef.current) current.current = { card: visible, since: Date.now() };
+      // Una sezione chiesta da un'altra schermata mentre i Provini erano già aperti.
+      const wanted = takeSection();
+      if (wanted) switchRef.current(wanted);
       return () => {
         setFocused(false);
         flush();
@@ -263,7 +305,7 @@ export default function ProviniTab() {
     }
     if (visible.key === current.current?.card.key) return;
     flushRef.current();
-    current.current = { card: visible, since: Date.now() };
+    current.current = introRef.current ? null : { card: visible, since: Date.now() };
     views.current[visible.key] = (views.current[visible.key] ?? 0) + 1;
     setActiveKey(visible.key);
   }).current;
@@ -308,7 +350,7 @@ export default function ProviniTab() {
         <PostCard
           post={item}
           meId={me?.id}
-          active={focused && item.key === activeKey}
+          active={focused && !intro && item.key === activeKey}
           viewKey={views.current[item.key] ?? 0}
           blind={mode === 'gara'}
           onInteract={onInteract}
@@ -316,7 +358,7 @@ export default function ProviniTab() {
         />
       </View>
     ),
-    [activeKey, focused, height, me?.id, mode, onInteract, onVideoProgress],
+    [activeKey, focused, height, intro, me?.id, mode, onInteract, onVideoProgress],
   );
 
   // Con i commenti o un profilo aperti sopra (sul web) la lista misura 0: si tiene l'ultima altezza buona,
@@ -336,16 +378,26 @@ export default function ProviniTab() {
             switchMode(m);
           }}
         />
-        {mode === 'gara' ? (
-          <ArenaClock reveal={reveal} closesAt={closesAt} />
-        ) : (
-          <Press style={styles.search} onPress={() => nav.push('/cerca')} accessibilityRole="button" accessibilityLabel="Cerca persone">
-            <Icon name="cerca" size={20} color={color.paper} strokeWidth={2} />
-          </Press>
-        )}
+        <Press style={styles.search} onPress={() => nav.push('/cerca')} accessibilityRole="button" accessibilityLabel="Cerca persone">
+          <Icon name="cerca" size={20} color={color.paper} strokeWidth={2} />
+        </Press>
       </View>
+      {/* In gara: quanto manca alla chiusura, sotto le sezioni (accanto non ci starebbe sui telefoni piccoli). */}
+      {mode === 'gara' ? <ArenaClock reveal={reveal} closesAt={closesAt} /> : null}
+
+      {mode === 'gara' && !bandClosed && status?.voter && !status.voter.canVote ? (
+        <VoterBand
+          status={status}
+          onOpen={() => nav.push('/verifica')}
+          onClose={() => {
+            voterBandClosed = true;
+            setBandClosed(true);
+          }}
+        />
+      ) : null}
 
       <View style={styles.list} onLayout={onLayout}>
+        {mode === 'gara' && intro ? <ArenaIntro onClose={closeIntro} /> : null}
         {loading && !cards.length ? (
           <View style={styles.center}>
             <ActivityIndicator color={color.giallo} />
@@ -482,22 +534,94 @@ export default function ProviniTab() {
   );
 }
 
-/** Il conto alla rovescia vive da solo: aggiornarlo ogni secondo non ridisegna il feed. */
+/** Quanto manca alla chiusura della gara ("Chiude tra 14 h 27 min"): vive da solo, così non ridisegna il feed. */
 function ArenaClock({ reveal, closesAt }: { reveal: number; closesAt?: string }) {
   const left0 = () => msUntil(closesAt, msUntilReveal(reveal));
   const [left, setLeft] = useState(left0);
   useEffect(() => {
-    const tick = () => setLeft(msUntil(closesAt, msUntilReveal(reveal)));
+    const tick = () => {
+      const next = msUntil(closesAt, msUntilReveal(reveal));
+      setLeft((cur) => (relTime(cur) === relTime(next) ? cur : next));
+    };
     tick();
-    const id = setInterval(tick, 1000);
+    const id = setInterval(tick, 15_000);
     return () => clearInterval(id);
   }, [reveal, closesAt]);
   return (
-    <View style={styles.clock} accessible accessibilityLabel={`La gara chiude tra ${clock(left)}`}>
-      <Icon name="orologio" size={16} color={color.giallo} strokeWidth={2} />
-      <Txt variant="meta" tone={color.paper} style={{ fontFamily: font.uiBold }}>
-        {clock(left)}
+    <View style={styles.clock} accessible accessibilityLabel={`La gara chiude tra ${relTimeLong(left)}`}>
+      <Icon name="orologio" size={14} color={color.giallo} strokeWidth={2} />
+      <Txt variant="meta" tone={color.paperDim} style={{ fontFamily: font.uiBold }} numberOfLines={1}>
+        {`Chiude tra ${relTime(left)}`}
       </Txt>
+    </View>
+  );
+}
+
+/** Chiusa una volta, la fascia del voto resta chiusa fino al prossimo avvio dell'app. */
+let voterBandClosed = false;
+
+/** Perché il voto di chi guarda non conta ancora, con il modo per rimediare (quando c'è). */
+function VoterBand({ status, onOpen, onClose }: { status: NonNullable<ReturnType<typeof useSession>['status']>; onOpen: () => void; onClose: () => void }) {
+  const id = status.identity;
+  const expired = id?.canAct === false;
+  const unverified = !expired && id?.status !== 'approved';
+  const from = status.voter?.from ? new Date(status.voter.from) : null;
+  const when = from
+    ? `${from.toDateString() === new Date().toDateString() ? 'oggi' : from.toDateString() === new Date(Date.now() + 86400000).toDateString() ? 'domani' : from.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })} alle ${from.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`
+    : 'domani';
+  const text = expired
+    ? 'Verifica scaduta: puoi guardare ma non votare.'
+    : unverified
+      ? 'Il tuo voto conterà dopo la verifica dell’età.'
+      : `Il tuo voto conterà da ${when}: gli account nuovi guardano per 24 ore.`;
+  const action = expired || unverified;
+  return (
+    <View style={styles.band}>
+      <Press style={{ flex: 1, minHeight: 36, justifyContent: 'center' }} onPress={action ? onOpen : undefined} disabled={!action} accessibilityRole={action ? 'button' : 'text'}>
+        <Txt variant="meta" tone={color.paperDim}>
+          {text}
+          {action ? (
+            <Txt variant="meta" tone={color.giallo} style={{ fontFamily: font.uiBold }}>
+              {' Verifica ora'}
+            </Txt>
+          ) : null}
+        </Txt>
+      </Press>
+      <Press style={styles.bandClose} onPress={onClose} accessibilityRole="button" accessibilityLabel="Chiudi l’avviso">
+        <Icon name="chiudi" size={16} color={color.paperFaint} />
+      </Press>
+    </View>
+  );
+}
+
+/** La spiegazione di In gara, alla prima apertura. */
+function ArenaIntro({ onClose }: { onClose: () => void }) {
+  const lines: { icon: 'provini' | 'occhio' | 'cerchia' | 'copertina'; text: string }[] = [
+    { icon: 'provini', text: 'Ogni post in gara lo vedi una volta sola, i tuoi mai.' },
+    { icon: 'occhio', text: 'Niente numeri: conta come guardi. Più ti fermi, più conta.' },
+    { icon: 'cerchia', text: 'Doppio tocco o il cerchio qui sotto: è il nostro mi piace.' },
+    { icon: 'copertina', text: 'Quando la gara chiude, il più apprezzato diventa la copertina.' },
+  ];
+  return (
+    <View style={styles.introWrap} accessibilityViewIsModal>
+      <View style={styles.intro}>
+        <Txt variant="heading" accessibilityRole="header">
+          Qui voti guardando
+        </Txt>
+        {lines.map((l) => (
+          <View key={l.text} style={styles.introLine}>
+            <Icon name={l.icon} size={22} color={l.icon === 'cerchia' ? color.matita : color.giallo} />
+            <Txt variant="body" style={{ flex: 1 }}>
+              {l.text}
+            </Txt>
+          </View>
+        ))}
+        <Press style={[styles.retry, { alignSelf: 'stretch', alignItems: 'center' }]} onPress={onClose} accessibilityRole="button">
+          <Txt variant="label" tone={color.canvas}>
+            Ho capito
+          </Txt>
+        </Press>
+      </View>
     </View>
   );
 }
@@ -527,13 +651,18 @@ function Segmented({ value, onChange }: { value: Mode; onChange: (m: Mode) => vo
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.canvas },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space[4], paddingVertical: space[2], gap: space[3] },
-  seg: { flex: 1, maxWidth: 300, flexDirection: 'row', backgroundColor: color.raised, borderRadius: radius.pill, padding: 4 },
+  seg: { flex: 1, maxWidth: 360, flexDirection: 'row', backgroundColor: color.raised, borderRadius: radius.pill, padding: 4 },
   segPill: { position: 'absolute', top: 4, left: 4, bottom: 4, backgroundColor: color.paper, borderRadius: radius.pill },
   segItem: { flex: 1, alignItems: 'center', paddingVertical: 8 },
-  clock: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: color.raised, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 8 },
+  clock: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingBottom: space[2] },
   list: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 32 },
   retry: { marginTop: space[3], backgroundColor: color.giallo, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 12 },
   ghostBtn: { backgroundColor: color.raised, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 12 },
+  band: { flexDirection: 'row', alignItems: 'center', gap: space[2], marginHorizontal: space[4], marginBottom: space[1], paddingLeft: space[3], backgroundColor: color.raised, borderRadius: radius.control },
+  bandClose: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  introWrap: { ...StyleSheet.absoluteFillObject, zIndex: 5, backgroundColor: 'rgba(12,19,34,0.88)', justifyContent: 'center', padding: space[5] },
+  intro: { backgroundColor: color.sheet, borderRadius: radius.card, padding: space[5], gap: space[4] },
+  introLine: { flexDirection: 'row', gap: space[3], alignItems: 'flex-start' },
   search: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
 });

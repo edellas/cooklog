@@ -138,6 +138,8 @@ export type Status = {
   needsPassword: boolean;
   unread: number;
   settings: Settings;
+  /** Se il voto di chi guarda conta nella gara (età verificata, account con più di 24 ore) e da quando. */
+  voter?: { canVote: boolean; from: string | null } | null;
 };
 
 export type NotificationKind = 'follow' | 'like' | 'comment' | 'tier' | 'cover' | 'identity_ok' | 'identity_ko' | 'removed';

@@ -419,6 +419,8 @@ type DemoAccount = {
   saved?: DemoUserState;
   /** Ultimo cambio del nome mostrato (si cambia una volta ogni 7 giorni, come sul server). */
   nameChangedAt?: string;
+  /** Quando è stato creato l'account demo (il voto conta dopo 24 ore, come sul server). */
+  createdAt?: string;
 };
 
 const DEFAULT_SETTINGS: Settings = { revealMinutes: 0, idGraceDays: 7, cutoffHour: DEFAULT_ARENA_CONFIG.submissionCutoffHour, idProvider: 'manual' };
@@ -957,7 +959,15 @@ export async function register(input: RegisterInput): Promise<Me> {
     // Come sul server: "Nome I.", contando i caratteri (un'emoji è uno solo, non due).
     const me: Me = { id: `me-${username}`, username, displayName: `${Array.from(first).slice(0, 36).join('')} ${(Array.from(last)[0] ?? '').toUpperCase()}.` };
     const deadline = new Date(Date.now() + demo.settings!.idGraceDays * 86400_000).toISOString();
-    demo.accounts![username] = { me, passwordHash, firstName: first, lastName: last, birthDate: input.birthDate, identity: { status: 'missing', deadline, reason: null } };
+    demo.accounts![username] = {
+      me,
+      passwordHash,
+      firstName: first,
+      lastName: last,
+      birthDate: input.birthDate,
+      identity: { status: 'missing', deadline, reason: null },
+      createdAt: new Date().toISOString(),
+    };
     demo.people[me.id] = { ...me, bio: '', followers: 0, following: 0 };
     restoreDemoUser(demo, demo.accounts![username]);
     demo.people[me.id].following = demo.following.length;
@@ -2010,6 +2020,7 @@ type StatusJson = {
   is_admin: boolean;
   banned?: boolean;
   needs_private?: boolean;
+  voter?: { can_vote: boolean; from: string | null } | null;
   unread: number;
   settings: {
     reveal_minutes: number;
@@ -2044,6 +2055,7 @@ export async function getStatus(): Promise<Status> {
       needsPrivate: Boolean(r.needs_private),
       unread: Number(r.unread ?? 0),
       settings: settingsFrom(r.settings),
+      voter: r.voter ? { canVote: Boolean(r.voter.can_vote), from: r.voter.from ?? null } : null,
     };
   }
   return withDemo((demo) => {
@@ -2058,6 +2070,13 @@ export async function getStatus(): Promise<Status> {
       needsPassword: false,
       unread: (demo.notifications ?? []).filter((n) => !n.read && (!n.actor || !demo.blocked.includes(n.actor.id))).length,
       settings: demo.settings!,
+      // Come sul server: vota chi ha l'età verificata e un account con più di 24 ore.
+      voter: acc
+        ? (() => {
+            const from = acc.createdAt ? new Date(Date.parse(acc.createdAt) + 86400000).toISOString() : null;
+            return { canVote: id?.status === 'approved' && (!from || Date.parse(from) <= Date.now()), from };
+          })()
+        : null,
     };
   });
 }

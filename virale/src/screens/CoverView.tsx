@@ -14,7 +14,7 @@ import { haptic, Press } from '../components/Press';
 import { useToast } from '../components/Toast';
 import { Txt } from '../components/Txt';
 import { resolveMedia } from '../data/demoMedia';
-import { clock, formatCount, longDate } from '../design/format';
+import { atTime, formatCount, longDate, relTime, relTimeLong } from '../design/format';
 import { duration, ease } from '../design/motion';
 import { color, font, radius, space } from '../design/tokens';
 import { msUntil, msUntilReveal } from '../engine/engine';
@@ -23,6 +23,8 @@ import { actionError } from '../services/errors';
 import { shareText } from '../services/share';
 import { useNav } from '../state/nav';
 import { emitPostChange, onPostChange, withRecentChanges } from '../state/postEvents';
+import { firstCircleHint } from '../state/hints';
+import { requestSection } from '../state/sections';
 import { useActGuard } from '../state/useActGuard';
 import { useSession } from '../state/session';
 import { toggleMute, useMuted } from '../state/sound';
@@ -91,6 +93,7 @@ export function CoverView({
     const likeCount = Math.max(0, post.likeCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, likedByMe: on, likeCount }));
     emitPostChange(post.id, { likedByMe: on, likeCount });
+    if (on) firstCircleHint(me?.id, toast);
     toggleLike(post.id, on).catch((e: unknown) => {
       setPost((p) => ({ ...p, likedByMe: !on, likeCount: post.likeCount }));
       emitPostChange(post.id, { likedByMe: !on, likeCount: post.likeCount });
@@ -179,7 +182,7 @@ export function CoverView({
         {me && post.author.id === me.id ? (
           <View style={styles.mine}>
             <Txt variant="label" tone={color.canvas}>
-              {isToday ? 'Sei tu la copertina di oggi: ti vede chiunque apra Virale.' : 'Questa copertina è tua.'}
+              {isToday ? 'Hai vinto! Sei la copertina di oggi: ti vede chiunque apra Virale.' : 'Questa copertina è tua.'}
             </Txt>
           </View>
         ) : null}
@@ -189,11 +192,18 @@ export function CoverView({
           </Txt>
         ) : null}
         <Txt variant="meta" tone={color.paperDim}>
-          Scelta tra {cover.totalEntries.toLocaleString('it-IT')} {cover.totalEntries === 1 ? 'provino' : 'provini'} · {formatCount(cover.totalViews)} viste in gara
+          {`Scelta tra ${cover.totalEntries.toLocaleString('it-IT')} ${cover.totalEntries === 1 ? 'provino' : 'provini'} · ${formatCount(cover.totalViews)} ${cover.totalViews === 1 ? 'visualizzazione' : 'visualizzazioni'} in gara`}
         </Txt>
 
         <View style={styles.actions}>
-          <CoverAction icon="cerchia" label={formatCount(post.likeCount)} on={post.likedByMe} tone={color.matita} onPress={() => like(!post.likedByMe)} a11y="Cerchia" />
+          <CoverAction
+            icon="cerchia"
+            label={formatCount(post.likeCount)}
+            on={post.likedByMe}
+            tone={color.matita}
+            onPress={() => like(!post.likedByMe)}
+            a11y={post.likedByMe ? 'Togli il cerchio' : 'Cerchia: mi piace'}
+          />
           <CoverAction icon="commento" label="Commenta" onPress={() => nav.push(`/commenti/${post.id}`)} a11y="Commenti" />
           <CoverAction
             icon="salva"
@@ -215,15 +225,32 @@ export function CoverView({
         </View>
 
         {isToday ? (
-          <View style={styles.band}>
-            <Icon name="orologio" size={18} color={color.canvas} strokeWidth={2} />
-            <Countdown onEnd={onDayEnd} revealMinutes={revealMinutes} closesAt={status?.settings.closesAt} />
-            <Press onPress={() => nav.push('/regole')} accessibilityRole="button">
-              <Txt variant="meta" tone={color.canvas} style={styles.link}>
-                Come si sceglie
+          <>
+            {/* L'invito principale è guardare i provini di oggi: il conto alla rovescia passa sotto, piccolo. */}
+            <Press
+              style={styles.cta}
+              onPress={() => {
+                requestSection('gara');
+                nav.navigate('/provini');
+              }}
+              accessibilityRole="button">
+              <Txt variant="label" tone={color.canvas}>
+                Guarda i provini di oggi
               </Txt>
             </Press>
-          </View>
+            {/* Una riga sola anche a 375 punti: testo piccolo, e se proprio non ci sta si accorcia il tempo. */}
+            <View style={styles.timeRow}>
+              <Countdown onEnd={onDayEnd} revealMinutes={revealMinutes} closesAt={status?.settings.closesAt} />
+              <Txt variant="meta" tone={color.paperDim} style={styles.small}>
+                ·
+              </Txt>
+              <Press style={styles.rules} onPress={() => nav.push('/regole')} accessibilityRole="link" hitSlop={4}>
+                <Txt variant="meta" tone={color.paper} style={[styles.link, styles.small]} numberOfLines={1}>
+                  Come si sceglie
+                </Txt>
+              </Press>
+            </View>
+          </>
         ) : null}
         {isToday && onSimulateMidnight ? (
           <Press onPress={onSimulateMidnight} style={{ alignSelf: 'center' }} accessibilityRole="button">
@@ -237,7 +264,11 @@ export function CoverView({
   );
 }
 
-/** Conto alla rovescia in un componente suo: aggiornarlo ogni secondo non ridisegna la copertina (e il video). */
+/**
+ * Quanto manca alla nuova copertina, a parole ("tra 14 h 27 min"), in un componente suo: il controllo gira
+ * ogni secondo (per accorgersi subito della fine della gara) ma il testo cambia solo quando cambia il minuto,
+ * così la copertina (e il video) non si ridisegnano.
+ */
 function Countdown({ onEnd, revealMinutes, closesAt }: { onEnd?: () => void; revealMinutes: number; closesAt?: string }) {
   const [left, setLeft] = useState(() => msUntil(closesAt, msUntilReveal(revealMinutes)));
   const prev = useRef(left);
@@ -255,13 +286,18 @@ function Countdown({ onEnd, revealMinutes, closesAt }: { onEnd?: () => void; rev
       // Passata la rivelazione il conto risale a 24 ore: è il segnale che c'è una copertina nuova.
       if (next > prev.current + 60_000) endRef.current?.();
       prev.current = next;
-      setLeft(next);
+      setLeft((cur) => (relTime(cur) === relTime(next) ? cur : next));
     }, 1000);
     return () => clearInterval(id);
   }, [revealMinutes, closesAt]);
   return (
-    <Txt variant="label" tone={color.canvas} style={{ flex: 1 }}>
-      Prossima copertina tra {clock(left)}
+    <Txt
+      variant="meta"
+      tone={color.paperDim}
+      numberOfLines={1}
+      style={[styles.small, { flexShrink: 1 }]}
+      accessibilityLabel={`Nuova copertina ${atTime(revealMinutes)}, tra ${relTimeLong(left)}`}>
+      {`Nuova copertina ${atTime(revealMinutes)} · tra ${relTime(left)}`}
     </Txt>
   );
 }
@@ -311,14 +347,9 @@ const styles = StyleSheet.create({
   action: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36 },
   more: { marginLeft: 'auto', minHeight: 36, minWidth: 32, alignItems: 'center', justifyContent: 'center' },
   mine: { alignSelf: 'flex-start', backgroundColor: color.giallo, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
-  band: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space[2],
-    backgroundColor: color.giallo,
-    borderRadius: radius.control,
-    paddingHorizontal: space[4],
-    paddingVertical: space[3],
-  },
+  cta: { backgroundColor: color.giallo, borderRadius: radius.control, paddingVertical: 15, alignItems: 'center', justifyContent: 'center', minHeight: 52 },
+  timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  small: { fontSize: 11, lineHeight: 15, letterSpacing: 0 },
+  rules: { minHeight: 44, justifyContent: 'center' },
   link: { fontFamily: font.uiBold, textDecorationLine: 'underline' },
 });

@@ -9,7 +9,10 @@ import { atTime } from '../../src/design/format';
 import { color } from '../../src/design/tokens';
 import { coverDay, msUntil, msUntilReveal } from '../../src/engine/engine';
 import { CoverView } from '../../src/screens/CoverView';
-import { closeDayNowDemo, getTodayCover, isDemo } from '../../src/services/api';
+import { Victory } from '../../src/components/Victory';
+import { closeDayNowDemo, getTodayCover, isDemo, postLink } from '../../src/services/api';
+import { shareText } from '../../src/services/share';
+import { firstTime } from '../../src/state/hints';
 import { getJson, setJson } from '../../src/services/storage';
 import { useSession } from '../../src/state/session';
 import type { Cover } from '../../src/types';
@@ -30,6 +33,28 @@ export default function CoverTab() {
   revealRef.current = status?.settings.revealMinutes ?? 0;
   /** Ricarica solo la copertina (non tutta l'app, che farebbe ripartire anche il feed). */
   const [tick, setTick] = useState(0);
+  /** Il momento della vittoria: la propria copertina, la prima volta che la si apre. */
+  const [victory, setVictory] = useState(false);
+  useEffect(() => {
+    if (!cover || !me || cover.post.author.id !== me.id || cover.featuredOn !== (status?.settings.contestDay ?? coverDay(revealRef.current))) return;
+    let alive = true;
+    void firstTime(`virale.vittoria.${me.id}.${cover.featuredOn}`).then((first) => {
+      if (alive && first) {
+        haptic('success');
+        setVictory(true);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [cover, me, status?.settings.contestDay]);
+  const shareVictory = async () => {
+    if (!cover) return;
+    const link = postLink(cover.post.id);
+    const res = await shareText(link ? `Oggi la copertina di Virale è mia! ${link}` : 'Oggi la copertina di Virale è mia!');
+    if (res === 'copied') toast(link ? 'Link copiato: incollalo dove vuoi.' : 'Testo copiato: incollalo dove vuoi.');
+    if (res !== 'none') setVictory(false);
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -91,7 +116,8 @@ export default function CoverTab() {
     setReveal(true);
     setCover(next);
     bump();
-    toast(next ? `Nuova copertina: @${next.post.author.username}` : 'Nessun post idoneo oggi.');
+    // Se vince il proprio post c'è la festa: niente toast sopra.
+    if (!next || next.post.author.id !== me?.id) toast(next ? `Nuova copertina: @${next.post.author.username}` : 'Nessun post idoneo oggi.');
     // La nuova copertina può essere di un post che hai segnalato o di qualcuno che hai bloccato: si ricarica
     // con le stesse regole di sempre invece di mostrarla comunque.
     setTick((n) => n + 1);
@@ -137,10 +163,22 @@ export default function CoverTab() {
       </View>
     );
   }
-  return <CoverView key={`${cover.featuredOn}-${cover.post.id}`} cover={cover} isToday reveal={reveal} onSimulateMidnight={isDemo ? () => void simulate() : undefined} onDayEnd={() => {
-        setTick((n) => n + 1);
-        void refreshStatus();
-      }} />;
+  return (
+    <View style={{ flex: 1 }}>
+      <CoverView
+        key={`${cover.featuredOn}-${cover.post.id}`}
+        cover={cover}
+        isToday
+        reveal={reveal}
+        onSimulateMidnight={isDemo ? () => void simulate() : undefined}
+        onDayEnd={() => {
+          setTick((n) => n + 1);
+          void refreshStatus();
+        }}
+      />
+      {victory ? <Victory issue={cover.issue} onShare={() => void shareVictory()} onClose={() => setVictory(false)} /> : null}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
