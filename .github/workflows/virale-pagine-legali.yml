@@ -1,12 +1,13 @@
-# Pubblica su GitHub Pages i documenti legali di Virale (privacy, termini, linee guida,
-# eliminazione account): gli store chiedono indirizzi pubblici per questi documenti.
+# Pubblica su GitHub Pages il sito di Virale: documenti legali (privacy, termini, linee guida,
+# eliminazione account: gli store chiedono indirizzi pubblici), pagina iniziale con i link agli store e
+# apri.html, la pagina che apre i link condivisi.
 # Attivazione una tantum: Settings → Pages → Source: "GitHub Actions".
 name: Virale · pagine legali
 
 on:
   push:
     branches: [main]
-    paths: ['virale/src/legal/**', 'virale/scripts/export-legal.ts', '.github/workflows/virale-pagine-legali.yml']
+    paths: ['virale/src/legal/**', 'virale/scripts/export-legal.ts', 'virale/assets/icon.png', '.github/workflows/virale-pagine-legali.yml']
   workflow_dispatch:
 
 permissions:
@@ -29,8 +30,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # I caratteri delle pagine vengono da node_modules (niente Google Fonts): servono le dipendenze.
+      - name: Installa le dipendenze
+        working-directory: virale
+        run: npm ci --ignore-scripts
+      # I dati del titolare stanno nelle Variables del repository (Settings → Secrets and variables →
+      # Actions → Variables), non nel codice. Se ne manca uno la generazione si ferma e non pubblica nulla.
       - name: Genera le pagine
         working-directory: virale
+        env:
+          EXPO_PUBLIC_OWNER_NAME: ${{ vars.EXPO_PUBLIC_OWNER_NAME }}
+          EXPO_PUBLIC_OWNER_ADDRESS: ${{ vars.EXPO_PUBLIC_OWNER_ADDRESS }}
+          EXPO_PUBLIC_OWNER_TAX_ID: ${{ vars.EXPO_PUBLIC_OWNER_TAX_ID }}
+          EXPO_PUBLIC_OWNER_EMAIL: ${{ vars.EXPO_PUBLIC_OWNER_EMAIL }}
+          EXPO_PUBLIC_OWNER_WEBSITE: ${{ vars.EXPO_PUBLIC_OWNER_WEBSITE }}
+          EXPO_PUBLIC_APPSTORE_URL: ${{ vars.EXPO_PUBLIC_APPSTORE_URL }}
         run: npm run export:legal
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

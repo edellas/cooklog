@@ -11,7 +11,7 @@ import { ToastProvider } from '../src/components/Toast';
 import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { isDemo, logout } from '../src/services/api';
-import { OWNER } from '../src/legal/docs';
+import { ownerEmail, ownerMissing } from '../src/legal/docs';
 import { noteInAppNavigation } from '../src/state/nav';
 import { flushViews } from '../src/state/views';
 import { FONTS } from '../src/design/fonts';
@@ -94,10 +94,15 @@ export default function RootLayout() {
 }
 
 /**
- * Una build di produzione senza Supabase girerebbe in demo con contenuti finti: gli store la
- * rifiuterebbero e gli utenti non vedrebbero gli altri. Meglio fermarsi e dirlo.
+ * Una build di produzione senza Supabase girerebbe in demo con contenuti finti, e senza i dati del titolare
+ * mostrerebbe documenti legali con i segnaposto: gli store la rifiuterebbero. Meglio fermarsi e dirlo,
+ * con i nomi delle variabili mancanti (mai i valori). Le build "preview" restano utilizzabili per le prove.
  */
-const MISCONFIGURED = process.env.EXPO_PUBLIC_APP_ENV === 'production' && isDemo;
+const MISSING_CONFIG: string[] =
+  process.env.EXPO_PUBLIC_APP_ENV === 'production'
+    ? [...(isDemo ? ['EXPO_PUBLIC_SUPABASE_URL', 'EXPO_PUBLIC_SUPABASE_ANON_KEY'] : []), ...ownerMissing()]
+    : [];
+const MISCONFIGURED = MISSING_CONFIG.length > 0;
 
 function Misconfigured() {
   return (
@@ -106,8 +111,13 @@ function Misconfigured() {
         Configurazione mancante
       </Txt>
       <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-        Questa build di produzione non ha l’indirizzo e la chiave di Supabase. Impostali come variabili d’ambiente EAS e rifai la build.
+        Questa build di produzione non ha alcuni dati obbligatori. Impostali come variabili d’ambiente EAS e rifai la build:
       </Txt>
+      {MISSING_CONFIG.map((name) => (
+        <Txt key={name} variant="label" style={{ textAlign: 'center' }}>
+          {name}
+        </Txt>
+      ))}
     </View>
   );
 }
@@ -162,7 +172,7 @@ function Banned() {
         Il tuo account è stato chiuso.
       </Txt>
       <Txt variant="body" tone={color.paperDim} style={{ textAlign: 'center' }}>
-        È stato chiuso per una violazione delle linee guida o perché non rispetta l’età minima. Se pensi sia un errore scrivi a {OWNER.email}.
+        {`È stato chiuso per una violazione delle linee guida o perché non rispetta l’età minima.${ownerEmail() ? ` Se pensi sia un errore scrivi a ${ownerEmail()}.` : ''}`}
       </Txt>
       <Press
         style={styles.retry}

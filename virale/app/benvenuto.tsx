@@ -11,7 +11,7 @@ import { Masthead } from '../src/components/Masthead';
 import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { DEMO_MEDIA } from '../src/data/demoMedia';
-import { MIN_AGE, OWNER } from '../src/legal/docs';
+import { MIN_AGE, ownerEmail } from '../src/legal/docs';
 import { color, font, radius, space } from '../src/design/tokens';
 import { getSettings, isDemo, login, PASSWORD_MIN, register, usernameAvailable, validateRegistration } from '../src/services/api';
 import type { RegisterInput } from '../src/types';
@@ -435,9 +435,11 @@ function LoginForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () => v
           </Txt>
         )}
       </Press>
-      <Txt variant="meta" tone={color.paperFaint} style={{ textAlign: 'center' }}>
-        Password dimenticata? Scrivi a {OWNER.email}: te la reimpostiamo dopo aver verificato che l’account è tuo.
-      </Txt>
+      {ownerEmail() ? (
+        <Txt variant="meta" tone={color.paperFaint} style={{ textAlign: 'center' }}>
+          {`Password dimenticata? Scrivi a ${ownerEmail()}: te la reimpostiamo dopo aver verificato che l’account è tuo.`}
+        </Txt>
+      ) : null}
       <Press onPress={onSwitch} style={styles.switch} accessibilityRole="button">
         <Txt variant="small" tone={color.paperDim}>
           Non hai un account? <Txt variant="small" style={styles.link}>Registrati</Txt>

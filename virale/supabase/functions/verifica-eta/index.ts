@@ -7,13 +7,15 @@
 //   GET  /verifica-eta/ritorno   → finita la verifica il browser torna qui e viene rimandato nell'app.
 //   GET  /verifica-eta/stato     → controllo dal browser: quali segreti ci sono e se Didit accetta la chiave.
 //                                  Non mostra mai i valori dei segreti.
-//   GET  /verifica-eta/apri/post/<id> → link dei post condivisi: apre il post nell'app (se è installata).
+//   GET  /verifica-eta/apri/post/<id> → link dei post condivisi (anche quelli vecchi): rimanda alla pagina
+//                                  di atterraggio del sito (VIRALE_SITO/apri.html) o, senza sito, all'app.
 //   POST /verifica-eta/lavori    → lavoro programmato (pg_cron ogni minuto, intestazione x-virale-cron):
 //                                  cancella dallo Storage i file rimossi o di account chiusi.
 //
 // Segreti da impostare in Supabase → Edge Functions → Secrets:
 //   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET (verifica automatica dell'età)
 //   VIRALE_CRON_SECRET (lo stesso valore di "virale_cron_secret" nel Vault: vedi setup-produzione.sql)
+//   VIRALE_SITO (facoltativo: l'indirizzo del sito con apri.html, es. https://nome.github.io/cooklog)
 // (SUPABASE_URL e la chiave di servizio ci sono già.)
 // La funzione va creata con "Verify JWT" SPENTO: Didit non ha un utente Supabase. L'utente dell'app lo
 // controlla il codice qui sotto.
@@ -25,6 +27,7 @@ const SELF = `${env('SUPABASE_URL')}/functions/v1/verifica-eta`;
 const APP_RETURN = 'virale://verifica';
 // Su Android Chrome apre l'app in modo affidabile con un indirizzo "intent://" (e se l'app manca non mostra errori).
 const ANDROID_RETURN = 'intent://verifica#Intent;scheme=virale;package=app.virale.mobile;end';
+const PLAY_URL = 'https://play.google.com/store/apps/details?id=app.virale.mobile';
 
 /** Chiave di servizio: quella classica o, nei progetti con le chiavi nuove, la prima di SUPABASE_SECRET_KEYS. */
 function serviceKey(): string {
@@ -59,9 +62,15 @@ Deno.serve(async (req) => {
   try {
     const shared = /\/apri\/post\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(path);
     if (shared && req.method === 'GET') {
-      // Solo un rimando all'app: il post lo carica l'app, con i permessi di chi lo apre.
+      // Link vecchi (o senza sito): un rimando. Con il sito, alla pagina di atterraggio (apre l'app o lo store);
+      // senza, direttamente all'app, e su Android con il Play Store se l'app non c'è.
+      // Il post lo carica l'app, con i permessi di chi lo apre.
+      const site = env('VIRALE_SITO').replace(/\/+$/, '');
+      if (/^https:\/\//.test(site)) return new Response(null, { status: 302, headers: { Location: `${site}/apri.html?p=${shared[1]}` } });
       const android = /android/i.test(req.headers.get('user-agent') ?? '');
-      const to = android ? `intent://post/${shared[1]}#Intent;scheme=virale;package=app.virale.mobile;end` : `virale://post/${shared[1]}`;
+      const to = android
+        ? `intent://post/${shared[1]}#Intent;scheme=virale;package=app.virale.mobile;S.browser_fallback_url=${encodeURIComponent(PLAY_URL)};end`
+        : `virale://post/${shared[1]}`;
       return new Response(null, { status: 302, headers: { Location: to } });
     }
     if (route === 'webhook' && req.method === 'POST') return await webhook(req);

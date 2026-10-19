@@ -39,6 +39,7 @@ import type {
 import { Platform } from 'react-native';
 
 import { charCount } from '../design/text';
+import { OWNER } from '../legal/docs';
 import { canActKnown, friendlyError, TOO_BIG_ERROR } from './errors';
 import { getJson, removeKey, setJson } from './storage';
 import { MAX_UPLOAD_BYTES, prepareVideo } from './video';
@@ -157,9 +158,14 @@ function storagePath(url: string): string | null {
   return i >= 0 ? decodeURIComponent(url.slice(i + marker.length).split('?')[0]) : null;
 }
 
-/** Link da condividere: apre il post nell'app di chi lo riceve. In demo non c'è un server: nessun link. */
+/**
+ * Link da condividere: la pagina di atterraggio sul sito del titolare (apri.html), che apre il post nell'app
+ * o porta allo store. Senza sito, il rimando della funzione verifica-eta. In demo non c'è un server: nessun link.
+ */
 export function postLink(postId: string): string | null {
-  return isDemo || !supabaseUrl ? null : `${supabaseUrl}/functions/v1/verifica-eta/apri/post/${postId}`;
+  if (isDemo) return null;
+  if (OWNER.website) return `${OWNER.website.replace(/\/+$/, '')}/apri.html?p=${postId}`;
+  return supabaseUrl ? `${supabaseUrl}/functions/v1/verifica-eta/apri/post/${postId}` : null;
 }
 
 /** Lato lungo massimo delle foto pubblicate: nitide su ogni telefono, ma leggere da caricare e da guardare. */

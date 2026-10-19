@@ -2,18 +2,16 @@
  * Controlla che il progetto sia pronto per gli store. Uso: npm run check:release
  * Esce con errore se qualcosa manca.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { OWNER } from '../src/legal/docs.ts';
+import { ownerMissing } from '../src/legal/docs.ts';
 
 const root = join(import.meta.dirname, '..');
 const problems: string[] = [];
 const ok: string[] = [];
 
-for (const [k, v] of Object.entries(OWNER)) {
-  if (v.includes('[')) problems.push(`OWNER.${k} manca: impostalo nelle variabili d'ambiente (vedi .env.example)`);
-}
+for (const name of ownerMissing()) problems.push(`${name} manca: impostalo nelle variabili d'ambiente (vedi .env.example)`);
 if (!problems.length) ok.push('Dati del titolare compilati');
 
 const app = JSON.parse(readFileSync(join(root, 'app.json'), 'utf8')).expo;
@@ -23,7 +21,15 @@ if (!app.ios?.bundleIdentifier || !app.android?.package) problems.push('Mancano 
 else ok.push(`Identificativi: ${app.ios.bundleIdentifier} / ${app.android.package}`);
 
 if (!existsSync(join(root, 'legal-site', 'privacy.html'))) problems.push('Pagine legali non generate: esegui `npm run export:legal`');
-else ok.push('Pagine legali generate in legal-site/');
+else {
+  ok.push('Pagine legali generate in legal-site/');
+  if (!existsSync(join(root, 'legal-site', 'apri.html'))) problems.push('Manca legal-site/apri.html (pagina dei link condivisi): rigenera con `npm run export:legal`');
+  // Nessuna risorsa da Google (Fonts): l'indirizzo IP di chi visita non deve finire a terzi senza consenso.
+  const pages = readdirSync(join(root, 'legal-site')).filter((f) => f.endsWith('.html'));
+  const external = pages.filter((f) => /fonts\.googleapis\.com|fonts\.gstatic\.com/.test(readFileSync(join(root, 'legal-site', f), 'utf8')));
+  if (external.length) problems.push(`legal-site/ carica Google Fonts (${external.join(', ')}): rigenera con \`npm run export:legal\``);
+  else ok.push('Pagine del sito senza Google Fonts');
+}
 
 // Limiti di caratteri dei testi in store/scheda-store.md (sezione "### Titolo (max N)" → testo sotto).
 const listing = readFileSync(join(root, 'store', 'scheda-store.md'), 'utf8');

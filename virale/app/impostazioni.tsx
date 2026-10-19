@@ -10,7 +10,7 @@ import { haptic, Press } from '../src/components/Press';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
-import { DOCS, OWNER, type DocSlug } from '../src/legal/docs';
+import { DOCS, ownerEmail, type DocSlug } from '../src/legal/docs';
 import { changePassword, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, setPassword, unblockUser } from '../src/services/api';
 import { flushViews } from '../src/state/views';
 import { Field } from '../src/components/Field';
@@ -166,9 +166,11 @@ export default function Settings() {
           <Row icon="info" label="Come si diventa copertina" onPress={() => nav.push('/regole')} />
         </Section>
 
-        <Section title="Aiuto">
-          <Row icon="posta" label="Scrivici" hint={OWNER.email} onPress={() => void Linking.openURL(`mailto:${OWNER.email}?subject=Virale`).catch(() => undefined)} />
-        </Section>
+        {ownerEmail() ? (
+          <Section title="Aiuto">
+            <Row icon="posta" label="Scrivici" hint={ownerEmail() ?? ''} onPress={() => void Linking.openURL(`mailto:${ownerEmail()}?subject=Virale`).catch(() => undefined)} />
+          </Section>
+        ) : null}
 
         <Section title="Account">
           <Txt variant="small" tone={color.paperDim}>
