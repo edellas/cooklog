@@ -1,7 +1,7 @@
 import * as Linking from 'expo-linking';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../src/components/Icon';
@@ -11,7 +11,21 @@ import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { color, radius, space } from '../src/design/tokens';
 import { DOCS, ownerEmail, type DocSlug } from '../src/legal/docs';
-import { changePassword, createRecoveryCode, deleteAccount, isDemo, listBlocked, logout, PASSWORD_MIN, setPassword, unblockUser } from '../src/services/api';
+import {
+  changePassword,
+  createRecoveryCode,
+  deleteAccount,
+  getPushPrefs,
+  isDemo,
+  listBlocked,
+  logout,
+  PASSWORD_MIN,
+  setPassword,
+  setPushPrefs,
+  unblockUser,
+  type PushPrefs,
+} from '../src/services/api';
+import { openPushSettings, pushMissingReason, pushPermission, registerPush, type PushState } from '../src/services/push';
 import { RecoveryCodeCard } from '../src/components/RecoveryCode';
 import { flushViews } from '../src/state/views';
 import { Field } from '../src/components/Field';
@@ -137,6 +151,10 @@ export default function Settings() {
               </Press>
             </>
           )}
+        </Section>
+
+        <Section title="Notifiche">
+          <NotificationSettings />
         </Section>
 
         <Section title="Utenti bloccati">
@@ -381,6 +399,103 @@ function RecoveryCode() {
   );
 }
 
+const PUSH_ROWS: { key: keyof PushPrefs; label: string }[] = [
+  { key: 'cover', label: 'Nuova copertina ogni giorno' },
+  { key: 'contest', label: 'Il tuo post in gara' },
+  { key: 'social', label: 'Follower e commenti' },
+];
+
+/** Notifiche sul telefono: permesso del sistema e tre categorie (verifica e rimozioni arrivano sempre). */
+function NotificationSettings() {
+  const toast = useToast();
+  const [state, setState] = useState<PushState | null>(null);
+  const [prefs, setPrefs] = useState<PushPrefs | null>(null);
+  const [asking, setAsking] = useState(false);
+
+  // Il permesso si rilegge tornando nella schermata e tornando dalle impostazioni del telefono.
+  const refresh = useCallback(() => {
+    if (pushMissingReason) return;
+    void pushPermission().then(setState);
+  }, []);
+  useFocusEffect(refresh);
+  useEffect(() => {
+    if (pushMissingReason) return;
+    const sub = AppState.addEventListener('change', (s) => s === 'active' && refresh());
+    getPushPrefs()
+      .then(setPrefs)
+      .catch(() => setPrefs(null));
+    return () => sub.remove();
+  }, [refresh]);
+
+  if (pushMissingReason) {
+    return (
+      <Txt variant="small" tone={color.paperFaint}>
+        {pushMissingReason}
+      </Txt>
+    );
+  }
+
+  const toggle = (key: keyof PushPrefs) => {
+    if (!prefs) return;
+    const before = prefs;
+    const next = { ...prefs, [key]: !prefs[key] };
+    setPrefs(next);
+    setPushPrefs(next)
+      .then(setPrefs)
+      .catch((e: unknown) => {
+        setPrefs(before);
+        toast(friendlyError(e), 'error');
+      });
+  };
+
+  const ask = async () => {
+    setAsking(true);
+    setState(await registerPush());
+    setAsking(false);
+  };
+
+  return (
+    <View style={{ gap: space[3] }}>
+      {state === 'denied' ? (
+        <View style={[styles.row, { flexDirection: 'column', alignItems: 'flex-start', gap: space[3] }]}>
+          <Txt variant="small" tone={color.paperDim}>
+            Le notifiche sono spente nelle impostazioni del telefono.
+          </Txt>
+          <Press style={styles.pill} onPress={openPushSettings} accessibilityRole="button">
+            <Txt variant="meta">Apri impostazioni</Txt>
+          </Press>
+        </View>
+      ) : state === 'undetermined' ? (
+        <Press style={[styles.pill, styles.pushOn]} onPress={() => void ask()} disabled={asking} accessibilityRole="button">
+          <Txt variant="meta" tone={color.canvas}>
+            {asking ? 'Un attimo…' : 'Attiva le notifiche'}
+          </Txt>
+        </Press>
+      ) : state === 'unavailable' ? (
+        <Txt variant="small" tone={color.paperFaint}>
+          Su questo telefono le notifiche non sono ancora disponibili: riprova più tardi.
+        </Txt>
+      ) : null}
+      {prefs
+        ? PUSH_ROWS.map((r) => (
+            <View key={r.key} style={styles.switchRow}>
+              <Txt variant="label" style={{ flex: 1 }}>
+                {r.label}
+              </Txt>
+              <Switch
+                value={prefs[r.key]}
+                onValueChange={() => toggle(r.key)}
+                accessibilityLabel={r.label}
+                trackColor={{ false: color.line, true: color.giallo }}
+                thumbColor={color.paper}
+              />
+            </View>
+          ))
+        : null}
+    </View>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={{ gap: space[3] }}>
@@ -417,4 +532,6 @@ const styles = StyleSheet.create({
   delete: { borderWidth: 1.5, borderColor: color.matita, borderRadius: radius.control, paddingVertical: 15, alignItems: 'center', minHeight: 52, justifyContent: 'center' },
   deleteConfirm: { backgroundColor: color.matita },
   warnBox: { borderWidth: 1, borderColor: color.giallo },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: space[4], backgroundColor: color.raised, borderRadius: radius.control, paddingHorizontal: space[4], minHeight: 56 },
+  pushOn: { backgroundColor: color.giallo, borderColor: color.giallo, alignSelf: 'flex-start', paddingVertical: 10 },
 });

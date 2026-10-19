@@ -62,7 +62,14 @@
         }
       ],
       "expo-web-browser",
-      "react-native-compressor"
+      "react-native-compressor",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/adaptive-icon-monochrome.png",
+          "color": "#FADB2C"
+        }
+      ]
     ],
     "scheme": "virale",
     "experiments": {

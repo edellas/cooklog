@@ -2038,6 +2038,8 @@ begin
   elsif tg_table_name = 'daily_viral' then
     -- La copertina esce nel momento in cui la gara chiude: il vincitore lo scopre insieme a tutti.
     perform public.notify(new.author_id, 'cover', null, new.post_id, jsonb_build_object('featured_on', new.featured_on));
+    -- Notifica push "È uscita la nuova copertina" a tutti (la invia la funzione verifica-eta, sezione 21).
+    insert into push_broadcasts (featured_on) values (new.featured_on) on conflict do nothing;
   end if;
   return null;
 end;
@@ -3024,6 +3026,293 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 21) Notifiche push (sul telefono): poche e utili, mai di notte, raggruppate se sono tante
+-- ---------------------------------------------------------------------------
+-- Le invia la funzione verifica-eta (rotta /lavori, ogni minuto) tramite il servizio di Expo. I mi piace
+-- restano solo nell'app: niente spam.
+create table if not exists public.push_tokens (
+  token text primary key check (length(token) <= 200 and token ~ '^Expo(nent)?PushToken\[[A-Za-z0-9_-]+\]$'),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  platform text not null check (platform in ('ios', 'android')),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_push_tokens_user on public.push_tokens (user_id);
+alter table public.push_tokens enable row level security;
+revoke all on public.push_tokens from anon, authenticated;
+
+-- Le categorie che si possono spegnere (verifica dell'età e rimozioni arrivano sempre).
+create table if not exists public.push_prefs (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  cover boolean not null default true,
+  contest boolean not null default true,
+  social boolean not null default true
+);
+alter table public.push_prefs enable row level security;
+revoke all on public.push_prefs from anon, authenticated;
+
+create table if not exists public.push_outbox (
+  id bigserial primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  kind text not null,
+  title text not null,
+  body text not null,
+  url text,
+  dedup text,
+  not_before timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  sent_at timestamptz,
+  attempts int not null default 0
+);
+create index if not exists idx_push_outbox_due on public.push_outbox (not_before, id) where sent_at is null;
+create index if not exists idx_push_outbox_dedup on public.push_outbox (user_id, dedup, created_at desc);
+alter table public.push_outbox enable row level security;
+revoke all on public.push_outbox from anon, authenticated;
+
+-- "È uscita la nuova copertina": una riga per copertina, inviata a pagine (cursor = ultimo token servito).
+create table if not exists public.push_broadcasts (
+  featured_on date primary key,
+  cursor text,
+  done_at timestamptz
+);
+alter table public.push_broadcasts enable row level security;
+revoke all on public.push_broadcasts from anon, authenticated;
+
+-- Mai di notte: dalle 22 alle 8 (ora della gara) una notifica aspetta le 8.
+create or replace function public.push_not_before(p_at timestamptz)
+returns timestamptz language sql stable security definer set search_path = public, pg_temp as $$
+  select case
+    when (p_at at time zone c.time_zone)::time >= time '22:00' then ((p_at at time zone c.time_zone)::date + 1 + time '08:00') at time zone c.time_zone
+    when (p_at at time zone c.time_zone)::time < time '08:00' then ((p_at at time zone c.time_zone)::date + time '08:00') at time zone c.time_zone
+    else p_at
+  end
+  from public.arena_config c limit 1;
+$$;
+
+-- Il momento in cui esce la copertina di un giorno (all'orario scelto dall'amministratore).
+create or replace function public.cover_reveal_at(p_day date)
+returns timestamptz language sql stable security definer set search_path = public, pg_temp as $$
+  select (p_day + make_interval(mins => c.reveal_minutes)) at time zone c.time_zone from public.arena_config c limit 1;
+$$;
+
+-- Dalle notifiche dell'app a quelle sul telefono: testi definitivi, preferenze, niente doppioni in 10 minuti.
+create or replace function public.push_enqueue()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_prefs public.push_prefs;
+  v_actor text;
+  v_title text;
+  v_body text;
+  v_url text;
+  v_at timestamptz := coalesce(new.created_at, now());
+  v_dedup text := new.kind || '|' || coalesce(new.actor_id::text, '') || '|' || coalesce(new.post_id::text, '');
+  v_tier int;
+  v_reason text;
+  v_names text[] := array['Provino', 'Bozza', 'Impaginato', 'In macchina', 'Finale'];
+begin
+  if new.kind not in ('follow', 'comment', 'tier', 'cover', 'identity_ok', 'identity_ko', 'removed') then return null; end if;
+  -- Senza un telefono registrato non c'è niente da inviare (web, demo, permesso negato).
+  if not exists (select 1 from push_tokens where user_id = new.user_id) then return null; end if;
+  if exists (select 1 from profiles where id = new.user_id and banned_at is not null) then return null; end if;
+  select * into v_prefs from push_prefs where user_id = new.user_id;
+  if new.kind in ('follow', 'comment') and not coalesce(v_prefs.social, true) then return null; end if;
+  if new.kind in ('tier', 'cover') and not coalesce(v_prefs.contest, true) then return null; end if;
+  if exists (select 1 from push_outbox where user_id = new.user_id and dedup = v_dedup and created_at > now() - interval '10 minutes') then
+    return null;
+  end if;
+  select username into v_actor from profiles where id = new.actor_id;
+  if new.kind = 'follow' then
+    if v_actor is null then return null; end if;
+    v_title := 'Nuovo follower';
+    v_body := '@' || v_actor || ' ha iniziato a seguirti.';
+    v_url := '/utente/' || v_actor;
+  elsif new.kind = 'comment' then
+    if v_actor is null or new.post_id is null then return null; end if;
+    v_title := 'Nuovo commento';
+    v_body := '@' || v_actor || ': “' || left(coalesce(new.data->>'body', ''), 80)
+              || case when length(coalesce(new.data->>'body', '')) > 80 then '…' else '' end || '”';
+    v_url := '/post/' || new.post_id;
+  elsif new.kind = 'tier' then
+    v_tier := least(greatest(coalesce((new.data->>'tier')::int, 0), 0), 4);
+    v_title := 'Il tuo post è salito!';
+    v_body := 'Ora è a “' || v_names[v_tier + 1] || '” (livello ' || (v_tier + 1) || ' di 5).';
+    v_url := case when new.post_id is null then '/notifiche' else '/post/' || new.post_id end;
+  elsif new.kind = 'cover' then
+    v_title := 'Hai vinto!';
+    v_body := 'Il tuo post è la copertina di oggi: lo vede chiunque apra Virale.';
+    v_url := '/';
+    -- Mai prima che la copertina esca per tutti.
+    if new.data ? 'featured_on' then v_at := greatest(v_at, public.cover_reveal_at((new.data->>'featured_on')::date)); end if;
+  elsif new.kind = 'identity_ok' then
+    v_title := 'Età verificata';
+    v_body := 'Ora puoi pubblicare, commentare e votare.';
+    v_url := '/verifica';
+  elsif new.kind = 'identity_ko' then
+    v_reason := rtrim(nullif(trim(coalesce(new.data->>'reason', '')), ''), '.');
+    v_title := 'Documento non accettato';
+    v_body := case when coalesce((new.data->>'final')::boolean, false) then coalesce(v_reason || '.', 'Documento non accettato.')
+                   else coalesce(v_reason || '. ', '') || 'Puoi ricaricarlo.' end;
+    v_url := '/verifica';
+  else
+    v_title := 'Contenuto rimosso';
+    v_body := 'Un tuo contenuto è stato rimosso perché viola le linee guida.';
+    v_url := '/notifiche';
+  end if;
+  insert into push_outbox (user_id, kind, title, body, url, dedup, not_before)
+  values (new.user_id, new.kind, v_title, v_body, v_url, v_dedup, public.push_not_before(v_at));
+  return null;
+end;
+$$;
+drop trigger if exists trg_push_notifications on public.notifications;
+create trigger trg_push_notifications after insert or update of created_at on public.notifications
+  for each row execute function public.push_enqueue();
+
+-- Nuove segnalazioni: a moderatori e amministratori, al massimo una notifica all'ora.
+create or replace function public.push_staff_on_report()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  insert into push_outbox (user_id, kind, title, body, url, dedup, not_before)
+  select p.id, 'staff', 'Nuove segnalazioni', 'Ci sono segnalazioni da rivedere entro 24 ore.', '/moderazione', 'staff', public.push_not_before(now())
+    from profiles p
+   where (p.is_moderator or p.is_admin) and p.banned_at is null
+     and exists (select 1 from push_tokens t where t.user_id = p.id)
+     and not exists (select 1 from push_outbox o where o.user_id = p.id and o.dedup = 'staff' and o.created_at > now() - interval '1 hour');
+  return null;
+end;
+$$;
+drop trigger if exists trg_push_staff_reports on public.reports;
+create trigger trg_push_staff_reports after insert on public.reports for each row execute function public.push_staff_on_report();
+drop trigger if exists trg_push_staff_user_reports on public.user_reports;
+create trigger trg_push_staff_user_reports after insert on public.user_reports for each row execute function public.push_staff_on_report();
+
+-- L'app registra il proprio telefono (il token passa all'account attuale: un telefono, un account).
+create or replace function public.register_push_token(p_token text, p_platform text)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  if p_token is null or length(p_token) > 200 or p_token !~ '^Expo(nent)?PushToken\[[A-Za-z0-9_-]+\]$' then
+    raise exception 'Token di notifica non valido.';
+  end if;
+  if p_platform is null or p_platform not in ('ios', 'android') then raise exception 'Piattaforma non valida.'; end if;
+  insert into push_tokens (token, user_id, platform, updated_at) values (p_token, v_uid, p_platform, now())
+  on conflict (token) do update set user_id = excluded.user_id, platform = excluded.platform, updated_at = now();
+  -- Al massimo 10 telefoni per persona: i più vecchi si dimenticano.
+  delete from push_tokens where user_id = v_uid
+     and token in (select token from push_tokens where user_id = v_uid order by updated_at desc offset 10);
+end;
+$$;
+
+-- All'uscita, prima di chiudere la sessione: quel telefono non riceve più le notifiche dell'account.
+create or replace function public.unregister_push_token(p_token text)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  delete from public.push_tokens where token = p_token and user_id = auth.uid();
+$$;
+
+create or replace function public.get_push_prefs()
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object('cover', coalesce(pp.cover, true), 'contest', coalesce(pp.contest, true), 'social', coalesce(pp.social, true))
+  from (select auth.uid() as id) me left join public.push_prefs pp on pp.user_id = me.id
+  where me.id is not null;
+$$;
+
+create or replace function public.set_push_prefs(p_cover boolean, p_contest boolean, p_social boolean)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
+  insert into push_prefs (user_id, cover, contest, social)
+  values (v_uid, coalesce(p_cover, true), coalesce(p_contest, true), coalesce(p_social, true))
+  on conflict (user_id) do update set cover = excluded.cover, contest = excluded.contest, social = excluded.social;
+  return public.get_push_prefs();
+end;
+$$;
+
+-- Solo per la funzione verifica-eta (chiave di servizio): le notifiche pronte, con i token di chi le riceve.
+-- Più di 3 in attesa per la stessa persona diventano una sola. Chi non ha più telefoni registrati: chiuse.
+create or replace function public.push_claim(p_limit int default 500)
+returns table (ids bigint[], tokens text[], title text, body text, url text)
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_ids bigint[];
+begin
+  select array_agg(s.id) into v_ids from (
+    select o.id from push_outbox o
+     where o.sent_at is null and o.not_before <= now() and o.attempts < 5
+     order by o.not_before, o.id
+     limit greatest(1, least(coalesce(p_limit, 500), 1000))
+     for update skip locked) s;
+  if v_ids is null then return; end if;
+  update push_outbox o set sent_at = now()
+   where o.id = any(v_ids) and not exists (select 1 from push_tokens t where t.user_id = o.user_id);
+  update push_outbox o set attempts = o.attempts + 1 where o.id = any(v_ids) and o.sent_at is null;
+  return query
+  with r as (select o.id, o.user_id, o.title, o.body, o.url from push_outbox o where o.id = any(v_ids) and o.sent_at is null),
+       n as (select r.user_id, count(*) as cnt from r group by r.user_id),
+       tk as (select t.user_id, array_agg(t.token order by t.updated_at desc) as toks
+                from push_tokens t where t.user_id in (select n.user_id from n) group by t.user_id)
+  select array[r.id], tk.toks, r.title, r.body, r.url
+    from r join n on n.user_id = r.user_id join tk on tk.user_id = r.user_id
+   where n.cnt <= 3
+  union all
+  select array_agg(r.id order by r.id), tk.toks, 'Novità su Virale'::text, 'Hai ' || n.cnt || ' nuove notifiche.', '/notifiche'::text
+    from r join n on n.user_id = r.user_id join tk on tk.user_id = r.user_id
+   where n.cnt > 3
+   group by r.user_id, n.cnt, tk.toks;
+end;
+$$;
+
+create or replace function public.push_done(p_ids bigint[])
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update public.push_outbox set sent_at = now() where id = any(p_ids) and sent_at is null;
+$$;
+
+-- Token che Expo dice non più registrati (app disinstallata): si dimenticano.
+create or replace function public.push_drop_tokens(p_tokens text[])
+returns void language sql security definer set search_path = public, pg_temp as $$
+  delete from public.push_tokens where token = any(p_tokens);
+$$;
+
+-- La copertina per tutti, a pagine: solo dopo che è uscita, mai di notte, solo l'ultima (le vecchie si
+-- saltano), solo a chi la vuole (e non al vincitore, che ha già la sua).
+create or replace function public.push_broadcast_take(p_limit int default 500)
+returns table (featured_on date, tokens text[], title text, body text, url text)
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_b public.push_broadcasts;
+  v_latest date;
+  v_tokens text[];
+  v_last text;
+  v_winner uuid;
+  v_local time := (now() at time zone (select c.time_zone from public.arena_config c limit 1))::time;
+begin
+  if v_local < time '08:00' or v_local >= time '22:00' then return; end if;
+  select max(b.featured_on) into v_latest from push_broadcasts b where b.featured_on <= public.cover_day();
+  if v_latest is null then return; end if;
+  update push_broadcasts b set done_at = now() where b.done_at is null and b.featured_on < v_latest;
+  select * into v_b from push_broadcasts b where b.featured_on = v_latest and b.done_at is null for update skip locked;
+  if not found then return; end if;
+  select d.author_id into v_winner from daily_viral d where d.featured_on = v_b.featured_on;
+  select array_agg(x.token order by x.token), max(x.token) into v_tokens, v_last from (
+    select t.token from push_tokens t
+      join profiles p on p.id = t.user_id and p.banned_at is null
+      left join push_prefs pp on pp.user_id = t.user_id
+     where coalesce(pp.cover, true) and t.user_id is distinct from v_winner
+       and (v_b.cursor is null or t.token > v_b.cursor)
+     order by t.token
+     limit greatest(1, least(coalesce(p_limit, 500), 1000))) x;
+  if v_tokens is null then
+    update push_broadcasts b set done_at = now() where b.featured_on = v_b.featured_on;
+    return;
+  end if;
+  update push_broadcasts b set cursor = v_last where b.featured_on = v_b.featured_on;
+  return query select v_b.featured_on, v_tokens, 'È uscita la nuova copertina'::text,
+                      'Copertina N. ' || public.cover_issue(v_b.featured_on) || ': scopri chi ha vinto oggi.', '/'::text;
+end;
+$$;
+
 -- Prima volta con la gara che chiude all'orario della copertina (database che usavano la mezzanotte):
 -- se ieri non ha avuto una copertina la si sceglie adesso, e tutti i giorni di calendario passati risultano chiusi.
 do $$
@@ -3098,6 +3387,19 @@ grant execute on function public.mod_resolve_user_report(text, uuid, text) to au
 grant execute on function public.update_my_profile(text, text, text, boolean) to authenticated;
 grant execute on function public.search_profiles(text, int) to authenticated;
 grant execute on function public.create_recovery_code() to authenticated;
+grant execute on function public.register_push_token(text, text) to authenticated;
+grant execute on function public.unregister_push_token(text) to authenticated;
+grant execute on function public.get_push_prefs() to authenticated;
+grant execute on function public.set_push_prefs(boolean, boolean, boolean) to authenticated;
+-- Invio delle notifiche push dal lavoro programmato: solo con la chiave di servizio.
+revoke all on function public.push_claim(int) from public, anon, authenticated;
+revoke all on function public.push_done(bigint[]) from public, anon, authenticated;
+revoke all on function public.push_drop_tokens(text[]) from public, anon, authenticated;
+revoke all on function public.push_broadcast_take(int) from public, anon, authenticated;
+grant execute on function public.push_claim(int) to service_role;
+grant execute on function public.push_done(bigint[]) to service_role;
+grant execute on function public.push_drop_tokens(text[]) to service_role;
+grant execute on function public.push_broadcast_take(int) to service_role;
 revoke all on function public.recovery_redeem(text, text, boolean) from public, anon, authenticated;
 revoke all on function public.revoke_sessions(uuid) from public, anon, authenticated;
 grant execute on function public.recovery_redeem(text, text, boolean) to service_role;

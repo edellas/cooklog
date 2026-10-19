@@ -107,6 +107,9 @@ select cron.schedule(
      delete from public.notifications where created_at < now() - interval '90 days';
      delete from public.seen_posts where seen_at < now() - interval '30 days';
      delete from public.user_interests where updated_at < now() - interval '120 days';
+     -- Notifiche push inviate (o abbandonate dopo 5 tentativi) da più di 7 giorni; copertine annunciate da più di 30.
+     delete from public.push_outbox where coalesce(sent_at, created_at) < now() - interval '7 days';
+     delete from public.push_broadcasts where featured_on < current_date - 30;
      -- File caricati da più di un giorno e mai usati in un post (pubblicazione interrotta): in pulizia.
      insert into public.storage_purge (bucket, path)
      select o.bucket_id, o.name from storage.objects o
@@ -131,7 +134,7 @@ select cron.schedule(
 );
 
 -- 3b) Lavori ogni minuto: la funzione verifica-eta (rotta /lavori) cancella dallo Storage i file rimossi dalla
---     moderazione o di account chiusi (e, con le notifiche push configurate, le invia). Parte solo dopo aver
+--     moderazione o di account chiusi e invia le notifiche push (tramite Expo). Parte solo dopo aver
 --     creato i due segreti nel Vault (vedi PUBBLICARE.md):
 --       select vault.create_secret('https://<il-tuo-progetto>.supabase.co', 'virale_url');
 --       select vault.create_secret('<stringa segreta lunga>', 'virale_cron_secret');

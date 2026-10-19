@@ -1129,3 +1129,115 @@ do $$ declare i int; begin
 exception when others then if sqlerrm not like '%Troppi tentativi%' then raise; end if; raise notice 'ok, dopo 5 tentativi sbagliati in un''ora si ferma'; end $$;
 reset role;
 drop table recovery_code;
+
+-- ---------- Notifiche push (W21) ----------
+insert into auth.users (id) values ('00000000-0000-0000-0000-00000000d0a1'), ('00000000-0000-0000-0000-00000000d0a2'), ('00000000-0000-0000-0000-00000000d0a3');
+insert into profiles (id, username, display_name) values
+  ('00000000-0000-0000-0000-00000000d0a1', 'pusha', 'Push A'), ('00000000-0000-0000-0000-00000000d0a2', 'pushb', 'Push B'), ('00000000-0000-0000-0000-00000000d0a3', 'pushc', 'Push C');
+update profiles set created_at = now() - interval '10 days' where username in ('pusha', 'pushb', 'pushc');
+insert into identity_checks (user_id, status, deadline) select id, 'approved', now() from profiles where username in ('pusha', 'pushb', 'pushc');
+insert into posts (id, author_id, media, caption) values ('10000000-0000-0000-0000-00000000d0a1', '00000000-0000-0000-0000-00000000d0a1',
+  test_media('00000000-0000-0000-0000-00000000d0a1', 'p.jpg'), 'Post di A');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a1', false);
+do $$ begin perform register_push_token('token-a-caso', 'android'); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%Token di notifica non valido%' then raise; end if; raise notice 'ok, token di notifica in un formato non valido rifiutato'; end $$;
+select register_push_token('ExponentPushToken[telefonoA]', 'android');
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a2', false);
+select register_push_token('ExponentPushToken[telefonoA]', 'ios');
+reset role;
+do $$ begin
+  if (select user_id from push_tokens where token = 'ExponentPushToken[telefonoA]') <> '00000000-0000-0000-0000-00000000d0a2' then raise exception 'token non riassegnato'; end if;
+  raise notice 'ok, lo stesso telefono passa al nuovo account';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a2', false);
+select register_push_token('ExponentPushToken[telefonoB]', 'ios');
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a1', false);
+select register_push_token('ExponentPushToken[telefonoA]', 'android');
+do $$ begin perform push_claim(10); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, push_claim solo con la chiave di servizio'; end $$;
+reset role;
+
+-- B segue A: notifica push per A; un mi piace no.
+insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-00000000d0a2', '00000000-0000-0000-0000-00000000d0a1');
+insert into post_likes (user_id, post_id) values ('00000000-0000-0000-0000-00000000d0a2', '10000000-0000-0000-0000-00000000d0a1');
+do $$ begin
+  if not exists (select 1 from push_outbox where user_id = '00000000-0000-0000-0000-00000000d0a1' and kind = 'follow'
+                   and title = 'Nuovo follower' and body = '@pushb ha iniziato a seguirti.' and url = '/utente/pushb') then
+    raise exception 'push del follow mancante: %', (select jsonb_agg(o) from push_outbox o);
+  end if;
+  if exists (select 1 from push_outbox where kind = 'like') then raise exception 'push per un mi piace'; end if;
+  raise notice 'ok, un follow crea una notifica push, un mi piace no';
+end $$;
+-- Con "Follower e commenti" spento: niente push.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-00000000d0a1', false);
+do $$ begin
+  if (set_push_prefs(true, true, false)->>'social')::boolean then raise exception 'preferenza non salvata'; end if;
+end $$;
+reset role;
+insert into follows (follower_id, followee_id) values ('00000000-0000-0000-0000-00000000d0a3', '00000000-0000-0000-0000-00000000d0a1');
+do $$ begin
+  if exists (select 1 from push_outbox where user_id = '00000000-0000-0000-0000-00000000d0a1' and dedup like 'follow|00000000-0000-0000-0000-00000000d0a3|%') then
+    raise exception 'push inviata con social = false';
+  end if;
+  raise notice 'ok, con "Follower e commenti" spento il follow non manda push';
+end $$;
+update push_prefs set social = true where user_id = '00000000-0000-0000-0000-00000000d0a1';
+-- Un commento alle 23:30 (ora della gara) aspetta le 8 del mattino dopo.
+do $$
+declare
+  v_tz text := (select time_zone from arena_config limit 1);
+  v_at timestamptz := ((now() at time zone v_tz)::date + time '23:30') at time zone v_tz;
+  v_nb timestamptz;
+begin
+  perform notify('00000000-0000-0000-0000-00000000d0a1', 'comment', '00000000-0000-0000-0000-00000000d0a3', '10000000-0000-0000-0000-00000000d0a1',
+                 jsonb_build_object('body', repeat('bello ', 20)), v_at);
+  select not_before into v_nb from push_outbox where user_id = '00000000-0000-0000-0000-00000000d0a1' and kind = 'comment';
+  if v_nb is distinct from (((now() at time zone v_tz)::date + 1 + time '08:00') at time zone v_tz) then raise exception 'not_before %', v_nb; end if;
+  if (select body from push_outbox where user_id = '00000000-0000-0000-0000-00000000d0a1' and kind = 'comment') not like '@pushc: “bello bello%…”' then
+    raise exception 'testo del commento: %', (select body from push_outbox where kind = 'comment');
+  end if;
+  raise notice 'ok, una notifica delle 23:30 parte alle 8:00, il commento tagliato a 80 caratteri';
+end $$;
+-- Ogni copertina uscita ha la sua notifica "per tutti"; un giorno non ancora rivelato non si invia.
+do $$ begin
+  if (select count(*) from push_broadcasts) <> (select count(*) from daily_viral) or not exists (select 1 from push_broadcasts) then
+    raise exception 'push_broadcasts % / daily_viral %', (select count(*) from push_broadcasts), (select count(*) from daily_viral);
+  end if;
+  raise notice 'ok, la chiusura del giorno crea la notifica della copertina per tutti';
+end $$;
+update push_broadcasts set done_at = now();
+insert into push_broadcasts (featured_on) values (cover_day() + 1) on conflict (featured_on) do update set done_at = null, cursor = null;
+set role service_role;
+do $$ begin
+  if exists (select 1 from push_broadcast_take(100) b where b.featured_on > cover_day()) then raise exception 'copertina non ancora uscita inviata'; end if;
+  raise notice 'ok, la copertina di un giorno non ancora rivelato non si annuncia';
+end $$;
+reset role;
+-- Più di 3 notifiche in attesa per la stessa persona diventano una sola; chi non ha telefoni: chiuse.
+insert into push_outbox (user_id, kind, title, body, url, not_before)
+select '00000000-0000-0000-0000-00000000d0a2', 'follow', 'T' || i, 'B' || i, '/', now() - interval '1 minute' from generate_series(1, 4) i;
+insert into push_outbox (user_id, kind, title, body, url, not_before) values ('00000000-0000-0000-0000-00000000d0a3', 'follow', 'T', 'B', '/', now() - interval '1 minute');
+set role service_role;
+create temp table claimed as select * from push_claim(500);
+reset role;
+do $$ begin
+  if not exists (select 1 from claimed where title = 'Novità su Virale' and body = 'Hai 4 nuove notifiche.' and cardinality(ids) = 4
+                   and tokens = array['ExponentPushToken[telefonoB]']) then
+    raise exception 'raggruppamento: %', (select jsonb_agg(c) from claimed c);
+  end if;
+  if exists (select 1 from push_outbox where user_id = '00000000-0000-0000-0000-00000000d0a3' and sent_at is null) then raise exception 'riga senza telefono non chiusa'; end if;
+  raise notice 'ok, più di 3 notifiche in attesa diventano una sola; senza telefono la riga si chiude';
+end $$;
+set role service_role;
+select push_done((select array_agg(x) from claimed, unnest(ids) x));
+select push_drop_tokens(array['ExponentPushToken[telefonoB]']);
+reset role;
+do $$ begin
+  if exists (select 1 from push_outbox o join claimed c on o.id = any(c.ids) where o.sent_at is null) then raise exception 'push_done'; end if;
+  if exists (select 1 from push_tokens where token = 'ExponentPushToken[telefonoB]') then raise exception 'push_drop_tokens'; end if;
+  raise notice 'ok, push_done segna le inviate e push_drop_tokens dimentica i telefoni';
+end $$;
+drop table claimed;

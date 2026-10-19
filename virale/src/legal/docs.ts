@@ -35,7 +35,7 @@ export function ownerEmail(): string | null {
 }
 
 /** Data di entrata in vigore dei documenti (aggiornala quando li modifichi). */
-export const LEGAL_UPDATED = '16 ottobre 2026';
+export const LEGAL_UPDATED = '19 ottobre 2026';
 
 /** Età minima: in Italia 14 anni per iscriversi da soli a un servizio online (art. 2-quinquies Codice privacy). */
 export const MIN_AGE = 14;
@@ -122,6 +122,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Contenuti: foto e video che pubblichi (con le loro dimensioni e durata), didascalie, commenti.',
           'Interazioni: mi piace, salvataggi, condivisioni, commenti, follow, blocchi, segnalazioni, visualizzazioni dei post, il tempo per cui un post resta sullo schermo, il completamento e la ri-visione dei video. Ti mostriamo notifiche su chi ti segue e su chi interagisce con i tuoi post.',
           'Gusti: dalle interazioni ricaviamo punteggi su autori, hashtag e tipo di contenuto (foto o video) che ti interessano di più, che perdono peso col tempo (si dimezzano ogni 14 giorni). Servono solo a ordinare i post in “In gara” ed “Esplora”: non li mostriamo a nessuno, non li usiamo per la pubblicità e non li cediamo.',
+          'Notifiche sul telefono, solo se le attivi: un identificativo del telefono per le notifiche (token) e le categorie che hai scelto. Serve solo a inviarti le notifiche; lo cancelliamo quando esci dall’account, quando lo elimini e quando il telefono non risulta più raggiungibile (per esempio dopo aver disinstallato l’app).',
+          'Codice di recupero della password: ne conserviamo solo una forma cifrata, non il codice.',
           'Non chiediamo email, numero di telefono, posizione o rubrica. Non usiamo pubblicità né tracciamento tra app di altre aziende.',
         ],
       },
@@ -139,6 +141,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         body: [
           'Ciò che pubblichi è visibile agli altri utenti; la Copertina è visibile a chiunque apra l’app.',
           'Fornitori che trattano i dati per nostro conto come responsabili del trattamento: Supabase (database, archiviazione dei file e autenticazione) e, per la verifica automatica dell’età, Didit (didit.me). Usiamo server situati nell’Unione Europea.',
+          'Le notifiche sul telefono passano dal servizio di Expo (expo.dev) e da quelli di Apple e Google, che le recapitano al telefono: ricevono solo il token del telefono e il testo della notifica.',
           'Autorità, quando la legge lo impone.',
         ],
       },

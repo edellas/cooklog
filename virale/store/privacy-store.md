@@ -2,7 +2,8 @@
 
 Coerenti con l'Informativa privacy (`src/legal/docs.ts`) e con quello che il codice fa davvero:
 nessun SDK di analisi o pubblicità, nessun tracciamento tra app, nessuna posizione, nessun contatto.
-Se aggiungi servizi (es. Sentry, analytics, notifiche push) **aggiorna queste risposte e l'informativa**.
+Le notifiche push (facoltative) usano un token del telefono, inviato tramite Expo, Apple e Google solo per
+recapitarle. Se aggiungi servizi (es. Sentry, analytics) **aggiorna queste risposte e l'informativa**.
 
 ---
 
@@ -18,6 +19,7 @@ Se aggiungi servizi (es. Sentry, analytics, notifiche push) **aggiorna queste ri
 | Contenuti utente → Foto o video | Sì | Sì | No | Funzionalità dell'app |
 | Contenuti utente → Altri contenuti utente (didascalie, commenti, bio) | Sì | Sì | No | Funzionalità dell'app |
 | Identificatori → ID utente | Sì | Sì | No | Funzionalità dell'app |
+| Identificatori → ID dispositivo (token per le notifiche push, solo se l'utente le attiva) | Sì | Sì | No | Funzionalità dell'app |
 | Utilizzo → Interazioni con il prodotto (visioni, mi piace, salvataggi, condivisioni) | Sì | Sì | No | Funzionalità dell'app (la gara si basa su queste) |
 | Contatti → Indirizzo email | Solo se l'utente ci scrive | Sì | No | Supporto |
 
@@ -25,7 +27,7 @@ Nota: le foto del documento vengono cancellate appena l'amministratore decide. N
 (`revisione.md`) spiega che la verifica serve all'età minima di legge e che non c'è riconoscimento facciale automatico.
 
 Tutto il resto: **Non raccolto** (posizione, contatti, salute, finanze, cronologia di navigazione,
-ricerca, diagnostica, dati sensibili, identificatori del dispositivo/pubblicitari).
+ricerca, diagnostica, dati sensibili, identificatori pubblicitari).
 
 **Tracciamento:** No → non serve il prompt App Tracking Transparency.
 
@@ -44,6 +46,7 @@ ricerca, diagnostica, dati sensibili, identificatori del dispositivo/pubblicitar
 | Informazioni personali → Altre informazioni (data di nascita) | Sì | No | Obbligatorio | Funzionalità app (età minima), Sicurezza |
 | Informazioni personali → Altre informazioni (documento d'identità e selfie, solo per la verifica dell'età, cancellati dopo la decisione) | Sì | No | Obbligatorio per pubblicare | Prevenzione frodi, sicurezza e conformità |
 | Informazioni personali → ID utente | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
+| ID dispositivo o altri ID → ID dispositivo (token per le notifiche push) | Sì | No | Facoltativo (solo con le notifiche attive) | Funzionalità app (notifiche); non per pubblicità né tracciamento |
 | Foto e video → Foto | Sì | No | Facoltativo | Funzionalità app |
 | Foto e video → Video | Sì | No | Facoltativo | Funzionalità app |
 | Attività nelle app → Interazioni con l'app | Sì | No | Obbligatorio | Funzionalità app, Prevenzione frodi |

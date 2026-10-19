@@ -36,6 +36,7 @@ import { useSession } from "../src/state/session";
 import { toggleMute, useMuted } from "../src/state/sound";
 import type { DraftMedia, MediaItem, MyEntry, Post } from "../src/types";
 import { friendlyError } from '../src/services/errors';
+import { pushMissingReason, pushPermission, registerPush } from "../src/services/push";
 import { useNav } from "../src/state/nav";
 
 const MAX = 10;
@@ -734,6 +735,7 @@ function Done({
           <TierLadder entry={entry} />
         </View>
       ) : null}
+      {entry ? <PushAsk /> : null}
       <View style={{ flex: 1 }} />
       <View style={{ gap: space[2], alignSelf: "stretch" }}>
         {entry ? (
@@ -753,6 +755,60 @@ function Done({
           accessibilityRole="button"
         >
           <Txt variant="label">Fatto</Txt>
+        </Press>
+      </View>
+    </View>
+  );
+}
+
+const PUSH_ASKED = "virale.push.chiesto";
+
+/**
+ * Dopo la prima candidatura: il momento giusto per chiedere il permesso delle notifiche (mai all'avvio).
+ * Una volta sola: "Non ora" non si ripete; si possono sempre attivare dalle Impostazioni.
+ */
+function PushAsk() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (pushMissingReason) return;
+    let alive = true;
+    Promise.all([pushPermission(), getJson<boolean>(PUSH_ASKED, false)])
+      .then(([state, asked]) => {
+        if (alive && state === "undetermined" && !asked) setShow(true);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (!show) return null;
+  const close = () => {
+    setShow(false);
+    void setJson(PUSH_ASKED, true);
+  };
+  return (
+    <View style={styles.pushAsk}>
+      <View style={{ flexDirection: "row", gap: space[3], alignItems: "center" }}>
+        <Icon name="campanella" size={22} color={color.giallo} />
+        <Txt variant="label" style={{ flex: 1 }}>
+          Vuoi sapere quando il tuo post sale di gradino?
+        </Txt>
+      </View>
+      <View style={{ flexDirection: "row", gap: space[2] }}>
+        <Press
+          style={[styles.pushBtn, { backgroundColor: color.giallo, borderColor: color.giallo }]}
+          onPress={() => {
+            close();
+            void registerPush();
+          }}
+          accessibilityRole="button"
+        >
+          <Txt variant="label" tone={color.canvas}>
+            Avvisami
+          </Txt>
+        </Press>
+        <Press style={styles.pushBtn} onPress={close} accessibilityRole="button">
+          <Txt variant="label">Non ora</Txt>
         </Press>
       </View>
     </View>
@@ -887,5 +943,23 @@ const styles = StyleSheet.create({
     backgroundColor: color.raised,
     borderRadius: radius.card,
     padding: space[4],
+  },
+  pushAsk: {
+    alignSelf: "stretch",
+    gap: space[3],
+    backgroundColor: color.raised,
+    borderRadius: radius.card,
+    padding: space[4],
+    borderWidth: 1,
+    borderColor: color.giallo,
+  },
+  pushBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: radius.control,
+    borderWidth: 1,
+    borderColor: color.paper,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

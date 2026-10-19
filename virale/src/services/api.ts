@@ -1014,6 +1014,8 @@ export async function login(username: string, password: string): Promise<Me> {
 
 export async function logout(): Promise<void> {
   if (!isDemo) {
+    // Prima si stacca il telefono dalle notifiche (serve ancora la sessione), poi si esce.
+    await unregisterPushToken();
     // Solo questo dispositivo; e se non riesce lo si dice, invece di lasciare la sessione salvata.
     const { error } = await db().auth.signOut({ scope: 'local' });
     if (error) throw new Error('Uscita non riuscita. Controlla la connessione e riprova.');
@@ -2000,6 +2002,7 @@ export async function deleteAccount(): Promise<void> {
     // Prima l'account (che mette in coda di cancellazione tutti i suoi file, foto, video e documenti):
     // se cancellassimo prima i file e poi la chiamata fallisse, resterebbe un account senza più i suoi post.
     await rpc('delete_my_account');
+    await removeKey(PUSH_TOKEN_KEY);
     await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
     return;
   }
@@ -2434,6 +2437,37 @@ export async function markNotificationsRead(upTo?: string): Promise<void> {
   await withDemo((demo) => {
     demo.notifications = (demo.notifications ?? []).map((n) => (!upTo || n.createdAt <= upTo ? { ...n, read: true } : n));
   }, true);
+}
+
+// ---------------------------------------------------------------------------
+// Notifiche push (solo app per telefono, mai nella demo): il token del telefono e le preferenze
+// ---------------------------------------------------------------------------
+const PUSH_TOKEN_KEY = 'virale.push.token';
+export type PushPrefs = { cover: boolean; contest: boolean; social: boolean };
+
+/** Il telefono riceve le notifiche di questo account (il token passa all'account attuale). */
+export async function registerPushToken(token: string, platform: 'ios' | 'android'): Promise<void> {
+  if (isDemo) return;
+  await rpc('register_push_token', { p_token: token, p_platform: platform });
+  await setJson(PUSH_TOKEN_KEY, token);
+}
+
+/** Prima di uscire: questo telefono smette di ricevere le notifiche dell'account. Un errore non blocca l'uscita. */
+async function unregisterPushToken(): Promise<void> {
+  const token = await getJson<string | null>(PUSH_TOKEN_KEY, null);
+  if (!token || isDemo) return;
+  await rpc('unregister_push_token', { p_token: token }).catch(() => undefined);
+  await removeKey(PUSH_TOKEN_KEY);
+}
+
+export async function getPushPrefs(): Promise<PushPrefs> {
+  if (isDemo) return { cover: true, contest: true, social: true };
+  return rpc<PushPrefs>('get_push_prefs');
+}
+
+export async function setPushPrefs(prefs: PushPrefs): Promise<PushPrefs> {
+  if (isDemo) return prefs;
+  return rpc<PushPrefs>('set_push_prefs', { p_cover: prefs.cover, p_contest: prefs.contest, p_social: prefs.social });
 }
 
 /** dwellMs assente: post aperto da un link o dalla copertina, conta la vista ma non cambia i gusti. */

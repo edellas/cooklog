@@ -10,7 +10,8 @@
 //   GET  /verifica-eta/apri/post/<id> → link dei post condivisi (anche quelli vecchi): rimanda alla pagina
 //                                  di atterraggio del sito (VIRALE_SITO/apri.html) o, senza sito, all'app.
 //   POST /verifica-eta/lavori    → lavoro programmato (pg_cron ogni minuto, intestazione x-virale-cron):
-//                                  cancella dallo Storage i file rimossi o di account chiusi.
+//                                  cancella dallo Storage i file rimossi o di account chiusi e invia le
+//                                  notifiche push (servizio di Expo).
 //   POST /verifica-eta/recupero  → password dimenticata: { username, code, password } con il codice di
 //                                  recupero (vale una volta sola). Cambia la password e scollega i dispositivi.
 //
@@ -18,6 +19,7 @@
 //   DIDIT_API_KEY, DIDIT_WORKFLOW_ID, DIDIT_WEBHOOK_SECRET (verifica automatica dell'età)
 //   VIRALE_CRON_SECRET (lo stesso valore di "virale_cron_secret" nel Vault: vedi setup-produzione.sql)
 //   VIRALE_SITO (facoltativo: l'indirizzo del sito con apri.html, es. https://nome.github.io/cooklog)
+//   EXPO_ACCESS_TOKEN (facoltativo: serve solo se su expo.dev è attivo "Enhanced Security for Push Notifications")
 // (SUPABASE_URL e la chiave di servizio ci sono già.)
 // La funzione va creata con "Verify JWT" SPENTO: Didit non ha un utente Supabase. L'utente dell'app lo
 // controlla il codice qui sotto.
@@ -254,7 +256,85 @@ async function lavori(req: Request): Promise<Response> {
   const given = req.headers.get('x-virale-cron') ?? '';
   if (!secret || !given || !safeEqual(given, secret)) return json({ error: 'Non autorizzato.' }, 401);
   const purged = await purgeFiles();
-  return json({ ok: true, purged, pushed: 0 });
+  const pushed = await sendPushes();
+  return json({ ok: true, purged, pushed });
+}
+
+const EXPO_PUSH = 'https://exp.host/--/api/v2/push/send';
+type PushMessage = { to: string; title: string; body: string; data: { url: string | null }; channelId: string };
+type PushTicket = { status?: 'ok' | 'error'; message?: string; details?: { error?: string } };
+
+/**
+ * Invia a Expo a blocchi di 100 (il massimo per richiesta). Per ogni messaggio dice se è partito; i telefoni
+ * che Expo dà per non più registrati (app disinstallata) si raccolgono per dimenticarli.
+ */
+async function expoSend(messages: PushMessage[]): Promise<{ sent: boolean[]; dead: string[]; delivered: number }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (env('EXPO_ACCESS_TOKEN')) headers.Authorization = `Bearer ${env('EXPO_ACCESS_TOKEN')}`;
+  const sent: boolean[] = [];
+  const dead: string[] = [];
+  let delivered = 0;
+  for (let i = 0; i < messages.length; i += 100) {
+    const chunk = messages.slice(i, i + 100);
+    let tickets: PushTicket[] = [];
+    try {
+      const res = await fetch(EXPO_PUSH, { method: 'POST', headers, body: JSON.stringify(chunk) });
+      if (res.ok) tickets = ((await res.json()) as { data?: PushTicket[] }).data ?? [];
+      else console.error('verifica-eta: push', res.status, (await res.text()).slice(0, 300));
+    } catch (e) {
+      // Expo non risponde: si riprova al prossimo giro (al massimo 5 volte per notifica).
+      console.error('verifica-eta: push', e);
+    }
+    chunk.forEach((m, j) => {
+      const t = tickets[j];
+      if (t?.details?.error === 'DeviceNotRegistered') dead.push(m.to);
+      if (t?.status === 'ok') delivered += 1;
+      // Un telefono che non c'è più non va ritentato: per lui la notifica è chiusa.
+      sent.push(t?.status === 'ok' || t?.details?.error === 'DeviceNotRegistered');
+    });
+  }
+  return { sent, dead, delivered };
+}
+
+/** Le notifiche push in attesa (personali, poi "nuova copertina" a tutti, al massimo 2.000 telefoni a giro). */
+async function sendPushes(): Promise<number> {
+  const { data, error } = await admin.rpc('push_claim', { p_limit: 500 });
+  if (error) throw error;
+  const rows = (data ?? []) as { ids: number[]; tokens: string[]; title: string; body: string; url: string | null }[];
+  const owner: number[] = [];
+  const messages: PushMessage[] = [];
+  rows.forEach((r, k) => {
+    for (const to of r.tokens) {
+      messages.push({ to, title: r.title, body: r.body, data: { url: r.url }, channelId: 'default' });
+      owner.push(k);
+    }
+  });
+  const { sent, dead, delivered } = await expoSend(messages);
+  const done = new Set<number>();
+  sent.forEach((ok, i) => ok && done.add(owner[i]));
+  const ids = rows.filter((_, k) => done.has(k)).flatMap((r) => r.ids);
+  let pushed = delivered;
+  const gone = [...dead];
+  if (ids.length) {
+    const { error: doneError } = await admin.rpc('push_done', { p_ids: ids });
+    if (doneError) throw doneError;
+  }
+  for (let round = 0; round < 4; round += 1) {
+    const { data: b, error: takeError } = await admin.rpc('push_broadcast_take', { p_limit: 500 });
+    if (takeError) throw takeError;
+    const batch = (b ?? []) as { tokens: string[]; title: string; body: string; url: string | null }[];
+    if (!batch.length) break;
+    for (const x of batch) {
+      const res = await expoSend(x.tokens.map((to) => ({ to, title: x.title, body: x.body, data: { url: x.url }, channelId: 'default' })));
+      pushed += res.delivered;
+      gone.push(...res.dead);
+    }
+  }
+  if (gone.length) {
+    const { error: dropError } = await admin.rpc('push_drop_tokens', { p_tokens: gone });
+    if (dropError) console.error('verifica-eta: push, telefoni da dimenticare', dropError.message);
+  }
+  return pushed;
 }
 
 const RECOVERY_WRONG = 'Nome utente o codice non validi.';

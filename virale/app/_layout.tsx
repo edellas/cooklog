@@ -12,6 +12,7 @@ import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { isDemo, logout } from '../src/services/api';
 import { ownerEmail, ownerMissing } from '../src/legal/docs';
+import { refreshPushToken, usePushNavigation } from '../src/services/push';
 import { noteInAppNavigation } from '../src/state/nav';
 import { flushViews } from '../src/state/views';
 import { FONTS } from '../src/design/fonts';
@@ -43,6 +44,7 @@ export default function RootLayout() {
             <View style={styles.outer}>
               <View style={styles.frame}>
                 <Gate />
+                <PushBridge />
                 <Offline />
                 <Banned />
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: color.canvas } }}>
@@ -161,6 +163,20 @@ function Gate() {
       router.replace(to);
     }
   }, [me, router, segments, params]);
+  return null;
+}
+
+/**
+ * Notifiche push: a ogni accesso (e all'avvio) il token del telefono si aggiorna in silenzio, se il permesso
+ * c'è già; il tocco su una notifica apre la schermata giusta.
+ */
+function PushBridge() {
+  const { me } = useSession();
+  usePushNavigation(me !== undefined);
+  const id = me?.id;
+  useEffect(() => {
+    if (id) void refreshPushToken();
+  }, [id]);
   return null;
 }
 
