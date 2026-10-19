@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,6 +14,7 @@ import { getNotifications, markNotificationsRead, TIER_NAMES } from '../src/serv
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { AppNotification } from '../src/types';
+import { useNav } from '../src/state/nav';
 
 function text(n: AppNotification): string {
   const who = n.actor ? `@${n.actor.username}` : '';
@@ -55,7 +56,7 @@ const ICON: Record<AppNotification['kind'], IconName> = {
 /** Le notifiche: chi ti segue, mi piace e commenti, i gradini del tuo post, la copertina, la verifica. */
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
   const goBack = useGoBack('/profilo');
   const { status, refreshStatus } = useSession();
   const unread = status?.unread ?? 0;
@@ -112,9 +113,9 @@ export default function NotificationsScreen() {
 
   const open = (n: AppNotification) => {
     if (n.kind === 'identity_ko' && n.data.final) return;
-    if (n.kind === 'identity_ko' || n.kind === 'identity_ok') return router.push('/verifica' as Href);
-    if (n.post) return router.push(`/post/${n.post.id}` as Href);
-    if (n.actor) return router.push(`/utente/${n.actor.username}` as Href);
+    if (n.kind === 'identity_ko' || n.kind === 'identity_ok') return nav.push('/verifica');
+    if (n.post) return nav.push(`/post/${n.post.id}`);
+    if (n.actor) return nav.push(`/utente/${n.actor.username}`);
   };
 
   return (

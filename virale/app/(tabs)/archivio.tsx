@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,11 +11,12 @@ import { color, font, radius, space } from '../../src/design/tokens';
 import { getArchive } from '../../src/services/api';
 import { useSession } from '../../src/state/session';
 import type { Cover } from '../../src/types';
+import { useNav } from '../../src/state/nav';
 
 /** L'Archivio: tutte le copertine uscite, come una pila di numeri arretrati. */
 export default function ArchiveTab() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
   const { version } = useSession();
   const [covers, setCovers] = useState<Cover[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -72,7 +73,7 @@ export default function ArchiveTab() {
             </View>
           }
           renderItem={({ item }) => (
-            <Press style={styles.cell} onPress={() => router.push(`/copertina/${item.featuredOn}` as Href)} accessibilityRole="link" accessibilityLabel={`Copertina numero ${item.issue}`}>
+            <Press style={styles.cell} onPress={() => nav.push(`/copertina/${item.featuredOn}`)} accessibilityRole="link" accessibilityLabel={`Copertina numero ${item.issue}`}>
               <View style={styles.cover}>
                 <Thumb media={item.post.media} rounded={radius.card} />
                 <View style={styles.coverTop} pointerEvents="none">

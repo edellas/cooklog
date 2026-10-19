@@ -8,13 +8,14 @@ import { Txt } from '../../src/components/Txt';
 import { color, space } from '../../src/design/tokens';
 import { CoverView } from '../../src/screens/CoverView';
 import { getArchive } from '../../src/services/api';
-import { useGoBack } from '../../src/state/useGoBack';
+import { useNav } from '../../src/state/nav';
 import type { Cover } from '../../src/types';
+import { friendlyError } from '../../src/services/errors';
 
 /** Un numero arretrato. Se il giorno non esiste (link sbagliato, troppo vecchio) lo dice invece di girare a vuoto. */
 export default function ArchivedCover() {
   const { day } = useLocalSearchParams<{ day: string }>();
-  const goBack = useGoBack('/archivio');
+  const nav = useNav();
   const [cover, setCover] = useState<Cover | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -22,7 +23,7 @@ export default function ArchivedCover() {
     setCover(undefined);
     getArchive()
       .then((all) => alive && setCover(all.find((c) => c.featuredOn === day) ?? null))
-      .catch((e: Error) => alive && setError(e.message));
+      .catch((e: unknown) => alive && setError(friendlyError(e)));
     return () => {
       alive = false;
     };
@@ -37,7 +38,7 @@ export default function ArchivedCover() {
           <Txt variant="title" style={{ textAlign: 'center' }}>
             {error ? 'Non riesco a caricare questa copertina.' : 'Copertina non trovata.'}
           </Txt>
-          <Press style={styles.back} onPress={goBack} accessibilityRole="button" accessibilityLabel="Torna all'Archivio">
+          <Press style={styles.back} onPress={() => nav.dismissTo('/archivio')} accessibilityRole="button" accessibilityLabel="Torna all'Archivio">
             <Icon name="indietro" size={20} />
             <Txt variant="label">Archivio</Txt>
           </Press>

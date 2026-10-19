@@ -14,6 +14,7 @@ import { emitPostGone } from '../../src/state/postEvents';
 import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
 import type { Post } from '../../src/types';
+import { friendlyError } from '../../src/services/errors';
 
 type Step = 'menu' | 'segnala' | 'blocca' | 'elimina';
 
@@ -36,7 +37,7 @@ export default function PostActions() {
   useEffect(() => {
     void getPost(postId)
       .then(setPost)
-      .catch((e: Error) => setError(e.message));
+      .catch((e: unknown) => setError(friendlyError(e)));
   }, [postId]);
 
   const run = async (fn: () => Promise<void>, done: string, gone: Parameters<typeof emitPostGone>[0]) => {
@@ -50,7 +51,7 @@ export default function PostActions() {
       goBack();
       toast(done);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }

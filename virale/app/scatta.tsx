@@ -1,6 +1,6 @@
 import { usePreventRemove } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
-import { useNavigation, useRouter, type Href } from "expo-router";
+import { useNavigation } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -35,6 +35,8 @@ import { getJson, removeKey, setJson } from "../src/services/storage";
 import { useSession } from "../src/state/session";
 import { toggleMute, useMuted } from "../src/state/sound";
 import type { DraftMedia, MediaItem, MyEntry, Post } from "../src/types";
+import { friendlyError } from '../src/services/errors';
+import { useNav } from "../src/state/nav";
 
 const MAX = 10;
 /** La fotocamera è stata aperta da qui (per recuperare lo scatto se Android chiude l'app nel frattempo). */
@@ -42,7 +44,7 @@ const CAMERA_KEY = "virale.scatta.fotocamera";
 
 export default function CreateScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
   const { bump, status } = useSession();
   // Scaduto il tempo per il documento si guarda soltanto: lo si dice subito, non dopo aver scelto le foto.
   const blocked = status?.identity?.canAct === false;
@@ -220,7 +222,7 @@ export default function CreateScreen() {
       bump();
       setDone(res);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
       setProgress(null);
@@ -237,7 +239,7 @@ export default function CreateScreen() {
         onGo={() => {
           // Si chiude questa schermata e si va alla scheda Provini (non una seconda barra di schede sopra).
           allowLeave.current = true;
-          router.dismissTo("/provini" as Href);
+          nav.dismissTo("/provini");
         }}
       />
     );
@@ -288,7 +290,7 @@ export default function CreateScreen() {
         {blocked ? (
           <Press
             style={styles.blocked}
-            onPress={() => router.replace("/verifica" as Href)}
+            onPress={() => nav.replace("/verifica")}
             accessibilityRole="button"
           >
             <Icon name="documento" size={24} color={color.matita} />

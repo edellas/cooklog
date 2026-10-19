@@ -1,7 +1,6 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
-import { useRouter, type Href } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -20,8 +19,11 @@ import { duration, ease } from '../design/motion';
 import { color, font, radius, space } from '../design/tokens';
 import { msUntil, msUntilReveal } from '../engine/engine';
 import { postLink, registerShare, toggleLike, toggleSave } from '../services/api';
+import { actionError } from '../services/errors';
 import { shareText } from '../services/share';
+import { useNav } from '../state/nav';
 import { emitPostChange, onPostChange, withRecentChanges } from '../state/postEvents';
+import { useActGuard } from '../state/useActGuard';
 import { useSession } from '../state/session';
 import { toggleMute, useMuted } from '../state/sound';
 import { useGoBack } from '../state/useGoBack';
@@ -48,8 +50,9 @@ export function CoverView({
   onDayEnd?: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const goBack = useGoBack();
+  const nav = useNav();
+  const goBack = useGoBack('/archivio');
+  const canAct = useActGuard();
   const toast = useToast();
   const reduced = useReducedMotion();
   // I tab restano montati: fuori fuoco la copertina non deve continuare a riprodurre video.
@@ -83,33 +86,36 @@ export function CoverView({
   const first = post.media[0];
   const like = (on: boolean) => {
     if (post.likedByMe === on) return;
+    if (on && !canAct()) return;
     haptic('light');
     const likeCount = Math.max(0, post.likeCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, likedByMe: on, likeCount }));
     emitPostChange(post.id, { likedByMe: on, likeCount });
-    toggleLike(post.id, on).catch(() => {
+    toggleLike(post.id, on).catch((e: unknown) => {
       setPost((p) => ({ ...p, likedByMe: !on, likeCount: post.likeCount }));
       emitPostChange(post.id, { likedByMe: !on, likeCount: post.likeCount });
-      toast('Non sono riuscito a salvare il mi piace. Riprova.', 'error');
+      toast(actionError(e, 'Cerchio non salvato. Riprova.'), 'error');
     });
   };
   const save = () => {
     const on = !post.savedByMe;
+    if (on && !canAct()) return;
     const saveCount = Math.max(0, post.saveCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, savedByMe: on, saveCount }));
     emitPostChange(post.id, { savedByMe: on, saveCount });
-    toggleSave(post.id, on).catch(() => {
+    toggleSave(post.id, on).catch((e: unknown) => {
       setPost((p) => ({ ...p, savedByMe: !on, saveCount: post.saveCount }));
       emitPostChange(post.id, { savedByMe: !on, saveCount: post.saveCount });
-      toast('Non sono riuscito a salvarla. Riprova.', 'error');
+      toast(actionError(e, 'Salvataggio non riuscito. Riprova.'), 'error');
     });
   };
   const share = async () => {
+    if (!canAct()) return;
     const text = isToday ? `La copertina di Virale di oggi: @${post.author.username}` : `La copertina di Virale del ${longDate(cover.featuredOn)}: @${post.author.username}`;
     const link = postLink(post.id);
     const res = await shareText(link ? `${text}\n${link}` : text);
     if (res === 'none') return;
-    if (res === 'copied') toast('Testo copiato: incollalo dove vuoi.');
+    if (res === 'copied') toast(link ? 'Link copiato: incollalo dove vuoi.' : 'Testo copiato: incollalo dove vuoi.');
     registerShare(post.id).catch(() => undefined);
   };
 
@@ -123,7 +129,7 @@ export function CoverView({
           muted={muted}
           onToggleMute={toggleMute}
           onDoubleTap={() => like(true)}
-          onLongPress={() => router.push(`/azioni/${post.id}` as Href)}
+          onLongPress={() => nav.push(`/azioni/${post.id}`)}
           controlsTop={insets.top + 132}
         />
       </Animated.View>
@@ -157,7 +163,7 @@ export function CoverView({
       <View style={[styles.bottom, !isToday && { paddingBottom: insets.bottom + space[4] }]} pointerEvents="box-none">
         <Press
           style={styles.authorRow}
-          onPress={() => router.push(`/utente/${post.author.username}` as Href)}
+          onPress={() => nav.push(`/utente/${post.author.username}`)}
           accessibilityRole="link"
           accessibilityLabel={`Profilo di ${post.author.displayName}, @${post.author.username}`}>
           <Monogram name={post.author.displayName} seed={post.author.username} size={44} />
@@ -188,7 +194,7 @@ export function CoverView({
 
         <View style={styles.actions}>
           <CoverAction icon="cerchia" label={formatCount(post.likeCount)} on={post.likedByMe} tone={color.matita} onPress={() => like(!post.likedByMe)} a11y="Cerchia" />
-          <CoverAction icon="commento" label="Commenta" onPress={() => router.push(`/commenti/${post.id}` as Href)} a11y="Commenti" />
+          <CoverAction icon="commento" label="Commenta" onPress={() => nav.push(`/commenti/${post.id}`)} a11y="Commenti" />
           <CoverAction
             icon="salva"
             label={post.savedByMe ? 'Salvata' : 'Salva'}
@@ -203,7 +209,7 @@ export function CoverView({
             onPress={() => void share()}
             a11y="Condividi"
           />
-          <Press style={styles.more} onPress={() => router.push(`/azioni/${post.id}` as Href)} accessibilityRole="button" accessibilityLabel="Segnala o blocca">
+          <Press style={styles.more} onPress={() => nav.push(`/azioni/${post.id}`)} accessibilityRole="button" accessibilityLabel="Segnala o blocca">
             <Icon name="altro" size={22} color={color.paperDim} />
           </Press>
         </View>
@@ -212,7 +218,7 @@ export function CoverView({
           <View style={styles.band}>
             <Icon name="orologio" size={18} color={color.canvas} strokeWidth={2} />
             <Countdown onEnd={onDayEnd} revealMinutes={revealMinutes} closesAt={status?.settings.closesAt} />
-            <Press onPress={() => router.push('/regole' as Href)} accessibilityRole="button">
+            <Press onPress={() => nav.push('/regole')} accessibilityRole="button">
               <Txt variant="meta" tone={color.canvas} style={styles.link}>
                 Come si sceglie
               </Txt>

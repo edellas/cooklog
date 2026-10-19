@@ -38,6 +38,7 @@ import type {
 } from '../types';
 import { Platform } from 'react-native';
 
+import { canActKnown, friendlyError } from './errors';
 import { getJson, removeKey, setJson } from './storage';
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from './supabase';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -113,7 +114,7 @@ function db() {
 
 async function rpc<T>(fn: string, args?: Record<string, unknown>): Promise<T> {
   const { data, error } = await db().rpc(fn, args);
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(friendlyError(error));
   return data as T;
 }
 
@@ -201,7 +202,7 @@ async function putFile(path: string, uri: string, contentType: string, onFractio
   if (Platform.OS === 'web') {
     const blob = await (await fetch(uri)).blob();
     const { error } = await db().storage.from('media').upload(path, blob, { contentType });
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(storageMessage(error));
     onFraction?.(1);
     return;
   }
@@ -220,16 +221,29 @@ async function putFile(path: string, uri: string, contentType: string, onFractio
   );
   const res = await task.uploadAsync();
   if (!res || res.status >= 300) {
-    let message = `errore ${res?.status ?? 'di rete'}`;
+    let message = '';
     try {
       const body = JSON.parse(res?.body ?? '{}') as { message?: string; error?: string };
-      message = body.message ?? body.error ?? message;
+      message = body.message ?? body.error ?? '';
     } catch {
       // risposta non JSON
     }
-    throw new Error(/row-level security|policy/i.test(message) ? 'Hai caricato troppi file oggi: riprova domani.' : message);
+    throw new Error(storageMessage({ message, status: res?.status ?? 0 }));
   }
   onFraction?.(1);
+}
+
+/**
+ * Errore dello Storage in italiano. La regola di caricamento rifiuta sia chi ha superato il tetto giornaliero
+ * sia chi ha la verifica dell'età scaduta: si distingue con lo stato dell'utente.
+ */
+function storageMessage(error: { message?: string; status?: number; statusCode?: string | number }): string {
+  const message = error.message ?? '';
+  if (/row-level security|policy|unauthorized|403/i.test(message) || Number(error.status ?? error.statusCode) === 403) {
+    return canActKnown() === false ? 'Per pubblicare serve la verifica dell’età.' : 'Hai caricato troppi file oggi: riprova domani.';
+  }
+  if (!message && !error.status) return 'Connessione assente. Riprova.';
+  return friendlyError({ ...error, message, name: 'StorageApiError' });
 }
 
 async function upload(userId: string, raw: NewPost['media'][number], index: number, onFraction?: (f: number) => void): Promise<MediaItem> {
@@ -585,11 +599,11 @@ export async function getMe(): Promise<Me | null> {
   if (!isDemo) {
     // Un errore di rete NON significa "nessun account": lo si segnala, così l'app propone di riprovare.
     const { data, error } = await db().auth.getSession();
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(friendlyError(error));
     const id = data.session?.user.id;
     if (!id) return null;
     const { data: row, error: e2 } = await db().from('profiles').select('id, username, display_name').eq('id', id).maybeSingle();
-    if (e2) throw new Error(e2.message);
+    if (e2) throw new Error(friendlyError(e2));
     return row ? { id: row.id, username: row.username, displayName: row.display_name } : null;
   }
   return withDemo((demo) => demo.me);
@@ -864,7 +878,7 @@ export async function logout(): Promise<void> {
   if (!isDemo) {
     // Solo questo dispositivo; e se non riesce lo si dice, invece di lasciare la sessione salvata.
     const { error } = await db().auth.signOut({ scope: 'local' });
-    if (error) throw new Error('Non sono riuscito a uscire. Controlla la connessione e riprova.');
+    if (error) throw new Error('Uscita non riuscita. Controlla la connessione e riprova.');
     return;
   }
   await withDemo((demo) => {
@@ -880,8 +894,8 @@ function authMessage(message: string): string {
   if (/weak|leaked|pwned/i.test(message)) return 'Password troppo debole o già comparsa in furti di dati: scegline un\'altra.';
   if (/at least \d+ characters|too short/i.test(message)) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
   if (/rate limit|too many/i.test(message)) return 'Troppi tentativi: aspetta qualche minuto e riprova.';
-  if (/network|fetch/i.test(message)) return 'Connessione assente: riprova.';
-  return message;
+  if (/network|fetch/i.test(message)) return 'Connessione assente. Riprova.';
+  return friendlyError({ message, name: 'AuthApiError' });
 }
 
 function passwordProblem(password: string, username: string): string | null {
@@ -1041,7 +1055,7 @@ export async function toggleLike(postId: string, on: boolean): Promise<void> {
       const me = await uid();
       const q = on ? db().from('post_likes').insert({ post_id: postId, user_id: me }) : db().from('post_likes').delete().match({ post_id: postId, user_id: me });
       const { error } = await q;
-      if (error && error.code !== '23505') throw new Error(error.message);
+      if (error && error.code !== '23505') throw new Error(friendlyError(error));
     });
   }
   await withDemo((demo) => {
@@ -1066,11 +1080,13 @@ export async function toggleSave(postId: string, on: boolean): Promise<void> {
       const me = await uid();
       const q = on ? db().from('post_saves').insert({ post_id: postId, user_id: me }) : db().from('post_saves').delete().match({ post_id: postId, user_id: me });
       const { error } = await q;
-      if (error && error.code !== '23505') throw new Error(error.message);
+      if (error && error.code !== '23505') throw new Error(friendlyError(error));
     });
   }
   await withDemo((demo) => {
     const p = stored(demo, postId);
+    // Come sul server: con la verifica scaduta non si salva.
+    if (on) demoAssertCanAct(demo);
     const has = demo.saves.includes(postId);
     if (on && !has) {
       demo.saves.push(postId);
@@ -1124,7 +1140,7 @@ export async function addComment(postId: string, body: string): Promise<Comment>
   if (!isDemo) {
     const me = await uid();
     const { data, error } = await db().from('comments').insert({ post_id: postId, user_id: me, body: text }).select('id, created_at').single();
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(error.code === '42501' && canActKnown() !== false ? 'Questo post non è più disponibile.' : friendlyError(error));
     const who = await getMe();
     if (!who) throw new Error('Sessione scaduta: riapri l’app.');
     return { id: data.id, postId, body: text, createdAt: data.created_at, author: who };
@@ -1144,7 +1160,7 @@ export async function addComment(postId: string, body: string): Promise<Comment>
 export async function deleteComment(postId: string, commentId: string): Promise<void> {
   if (!isDemo) {
     const { data, error } = await db().from('comments').delete().eq('id', commentId).select('id');
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(friendlyError(error));
     if (!data?.length) throw new Error('Puoi eliminare solo i tuoi commenti.');
     return;
   }
@@ -1265,7 +1281,7 @@ export async function toggleFollow(userId: string, on: boolean): Promise<void> {
       const me = await uid();
       const q = on ? db().from('follows').insert({ follower_id: me, followee_id: userId }) : db().from('follows').delete().match({ follower_id: me, followee_id: userId });
       const { error } = await q;
-      if (error && error.code !== '23505') throw new Error(error.code === '42501' ? 'Serve la verifica dell’età per seguire altre persone.' : error.message);
+      if (error && error.code !== '23505') throw new Error(friendlyError(error));
     });
   }
   await withDemo((demo) => {
@@ -1313,7 +1329,7 @@ export async function publish(input: NewPost, onProgress?: (fraction: number) =>
       for (const [i, m] of input.media.entries()) media.push(await upload(me, m, i, (f) => onProgress?.((i + f) / n)));
     } catch (e) {
       await removeUploads(media);
-      throw new Error(`Caricamento non riuscito: ${(e as Error).message}`);
+      throw new Error(friendlyError(e));
     }
     const { data, error } = await db()
       .from('posts')
@@ -1326,12 +1342,12 @@ export async function publish(input: NewPost, onProgress?: (fraction: number) =>
       .single();
     if (error) {
       await removeUploads(media);
-      throw new Error(error.message);
+      throw new Error(friendlyError(error));
     }
     let contestError: string | null = null;
     if (input.joinContest) {
       const { error: e2 } = await db().rpc('arena_submit', { p_post_id: data.id });
-      if (e2) contestError = e2.message;
+      if (e2) contestError = friendlyError(e2);
     }
     // Il post esiste già: da qui in poi niente più errori, al massimo lo si compone in locale.
     const post = await getPost(data.id).catch(
@@ -1517,7 +1533,7 @@ export async function listBlocked(): Promise<Author[]> {
 export async function deletePost(postId: string): Promise<void> {
   if (!isDemo) {
     const { data, error } = await db().from('posts').delete().eq('id', postId).select('media');
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(friendlyError(error));
     if (!data?.length) throw new Error('Puoi eliminare solo i tuoi post.');
     // Anche i file: un post eliminato non deve restare raggiungibile dal suo indirizzo.
     const media = (data[0].media as { url: string }[] | null) ?? [];
@@ -1750,7 +1766,7 @@ export async function submitIdentity(documentUri: string, selfieUri: string): Pr
       const buffer = await (await fetch(uri)).arrayBuffer();
       const path = `${me}/${Date.now()}-${name}.jpg`;
       const { error } = await bucket.upload(path, buffer, { contentType: 'image/jpeg', upsert: false });
-      if (error) throw new Error(`Caricamento non riuscito: ${error.message}`);
+      if (error) throw new Error(storageMessage(error));
       return path;
     };
     const doc = await put(documentUri, 'documento');
@@ -1972,7 +1988,7 @@ export async function purgeStorage(): Promise<number> {
     for (let i = 0; i < paths.length; i += 100) {
       const chunk = paths.slice(i, i + 100);
       const { error } = await db().storage.from(bucket).remove(chunk);
-      if (error) throw new Error(`Pulizia dei file non riuscita: ${error.message}`);
+      if (error) throw new Error(`Pulizia dei file non riuscita: ${friendlyError(error)}`);
       await rpc('storage_purge_done', { p_bucket: bucket, p_paths: chunk });
       done += chunk.length;
     }

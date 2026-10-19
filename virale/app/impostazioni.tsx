@@ -1,5 +1,5 @@
 import * as Linking from 'expo-linking';
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,11 +17,13 @@ import { Field } from '../src/components/Field';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { Author } from '../src/types';
+import { friendlyError } from '../src/services/errors';
+import { useNav } from '../src/state/nav';
 
 export default function Settings() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const goBack = useGoBack();
+  const nav = useNav();
+  const goBack = useGoBack('/profilo');
   const toast = useToast();
   const { me, setMe, bump, status } = useSession();
   const [blocked, setBlocked] = useState<Author[] | null>(null);
@@ -51,7 +53,7 @@ export default function Settings() {
       bump();
       toast(`@${a.username} sbloccato.`);
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(friendlyError(e), 'error');
     } finally {
       setUnblocking(null);
     }
@@ -63,7 +65,7 @@ export default function Settings() {
       await logout();
       setMe(null);
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(friendlyError(e), 'error');
     }
   };
 
@@ -81,7 +83,7 @@ export default function Settings() {
       haptic('success');
       setMe(null);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
       setDeleting(false);
     }
   };
@@ -99,9 +101,9 @@ export default function Settings() {
         {status?.isAdmin || status?.isModerator ? (
           <Section title={status.isAdmin ? 'Amministrazione' : 'Moderazione'}>
             {status.isAdmin ? (
-              <Row icon="impostazioni" label="Copertina e documenti" hint="Orario della copertina, verifica dell’età." onPress={() => router.push('/amministrazione' as Href)} />
+              <Row icon="impostazioni" label="Copertina e documenti" hint="Orario della copertina, verifica dell’età." onPress={() => nav.push('/amministrazione')} />
             ) : null}
-            <Row icon="scudo" label="Segnalazioni da rivedere" hint="Rispondi entro 24 ore: è un requisito degli store." onPress={() => router.push('/moderazione' as Href)} />
+            <Row icon="scudo" label="Segnalazioni da rivedere" hint="Rispondi entro 24 ore: è un requisito degli store." onPress={() => nav.push('/moderazione')} />
           </Section>
         ) : null}
 
@@ -118,7 +120,7 @@ export default function Settings() {
                     ? 'Scaduta: carica il documento per tornare a pubblicare.'
                     : 'Da fare: carica il documento d’identità.'
             }
-            onPress={() => router.push('/verifica' as Href)}
+            onPress={() => nav.push('/verifica')}
           />
           {status?.needsPassword ? (
             <PasswordSet />
@@ -159,9 +161,9 @@ export default function Settings() {
 
         <Section title="Regole e privacy">
           {(['linee-guida', 'termini', 'privacy'] as DocSlug[]).map((slug) => (
-            <Row key={slug} icon="documento" label={DOCS[slug].title} onPress={() => router.push(`/legale/${slug}` as Href)} />
+            <Row key={slug} icon="documento" label={DOCS[slug].title} onPress={() => nav.push(`/legale/${slug}`)} />
           ))}
-          <Row icon="info" label="Come si diventa copertina" onPress={() => router.push('/regole' as Href)} />
+          <Row icon="info" label="Come si diventa copertina" onPress={() => nav.push('/regole')} />
         </Section>
 
         <Section title="Aiuto">
@@ -212,7 +214,7 @@ function PasswordSet() {
       await refreshStatus();
       toast('Password impostata: ora puoi uscire e rientrare con nome utente e password.');
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -273,7 +275,7 @@ function PasswordChange() {
       setNext('');
       setAgain('');
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }

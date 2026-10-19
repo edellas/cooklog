@@ -16,6 +16,7 @@ import { completePrivateData, getStatus, startAgeCheck, submitIdentity } from '.
 import { getJson, removeKey, setJson } from '../src/services/storage';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
+import { friendlyError } from '../src/services/errors';
 
 const DRAFT_KEY = 'virale.verifica.bozza';
 /** Verifica Didit aperta e non ancora conclusa (quando, e lo stato di prima): sopravvive a un riavvio dell'app. */
@@ -171,7 +172,7 @@ export default function VerifyScreen() {
       // Su iPhone e sul web si arriva qui quando il browser viene chiuso; su Android subito (si aspetta il ritorno).
       if (Platform.OS !== 'android') void checkResult();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       if (alive.current && !polling.current) setChecking(false);
     }
@@ -239,7 +240,7 @@ export default function VerifyScreen() {
       setDoc(null);
       setSelfie(null);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -410,7 +411,7 @@ function PrivateData({ onDone }: { onDone: () => void }) {
       await completePrivateData(first, last, `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
       onDone();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }

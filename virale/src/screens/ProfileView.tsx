@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View, type NativeScrollEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,14 +14,18 @@ import { color, font, radius, space } from '../design/tokens';
 import { blockUser, getProfile, getProfilePosts, isDemo, resetDemo, toggleFollow } from '../services/api';
 import { useToast } from '../components/Toast';
 import { seedFeed } from '../state/feedSeed';
+import { useNav } from '../state/nav';
 import { emitFollowChange } from '../state/postEvents';
+import { useActGuard } from '../state/useActGuard';
 import { useSession } from '../state/session';
 import { useGoBack } from '../state/useGoBack';
 import type { MyEntry, Post, Profile } from '../types';
+import { actionError, friendlyError } from '../services/errors';
 
 export function ProfileView({ username, showBack }: { username: string; showBack?: boolean }) {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
+  const canAct = useActGuard();
   const { version, setMe, bump, status } = useSession();
   const [data, setData] = useState<{ profile: Profile; posts: Post[]; saved: Post[]; entry: MyEntry | null } | null>(null);
   const [tab, setTab] = useState<'post' | 'salvati'>('post');
@@ -63,7 +67,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           });
           setError(null);
         })
-        .catch((e: Error) => setError(e.message)),
+        .catch((e: unknown) => setError(friendlyError(e))),
     [username],
   );
   useFocusEffect(
@@ -124,13 +128,17 @@ export function ProfileView({ username, showBack }: { username: string; showBack
 
   const follow = () => {
     const on = !profile.followedByMe;
+    if (on && !canAct()) return;
     haptic('light');
     setData({ ...data, profile: { ...profile, followedByMe: on, followers: Math.max(0, profile.followers + (on ? 1 : -1)) } });
     emitFollowChange(profile.id, on);
-    toggleFollow(profile.id, on).catch(() => {
+    toggleFollow(profile.id, on).catch((e: unknown) => {
       setData((d) => (d ? { ...d, profile: { ...d.profile, followedByMe: !on, followers: profile.followers } } : d));
       emitFollowChange(profile.id, !on);
-      toast('Non ci sono riuscito. Riprova.', 'error');
+      toast(
+        actionError(e, on ? `Non è stato possibile seguire @${profile.username}. Riprova.` : `Non è stato possibile smettere di seguire @${profile.username}. Riprova.`),
+        'error',
+      );
     });
   };
   const block = async () => {
@@ -142,7 +150,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
       goBack();
     } catch (e) {
       setConfirmBlock(false);
-      toast((e as Error).message, 'error');
+      toast(friendlyError(e), 'error');
     }
   };
 
@@ -178,7 +186,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
             <View style={{ flexDirection: 'row', gap: space[2] }}>
               <Press
                 style={styles.back}
-                onPress={() => router.push('/notifiche' as Href)}
+                onPress={() => nav.push('/notifiche')}
                 accessibilityRole="button"
                 accessibilityLabel={status?.unread ? `Notifiche, ${status.unread} da leggere` : 'Notifiche'}>
                 <Icon name="campanella" />
@@ -190,7 +198,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
                   </View>
                 ) : null}
               </Press>
-              <Press style={styles.back} onPress={() => router.push('/impostazioni' as Href)} accessibilityRole="button" accessibilityLabel="Impostazioni">
+              <Press style={styles.back} onPress={() => nav.push('/impostazioni')} accessibilityRole="button" accessibilityLabel="Impostazioni">
                 <Icon name="impostazioni" />
               </Press>
             </View>
@@ -216,7 +224,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         ) : null}
 
         {profile.isMe && status?.needsPassword ? (
-          <Press style={[styles.verify, styles.verifyLate]} onPress={() => router.push('/impostazioni' as Href)} accessibilityRole="button">
+          <Press style={[styles.verify, styles.verifyLate]} onPress={() => nav.push('/impostazioni')} accessibilityRole="button">
             <Icon name="chiave" size={22} color={color.matita} />
             <View style={{ flex: 1, gap: 2 }}>
               <Txt variant="label">Imposta una password</Txt>
@@ -228,7 +236,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         ) : null}
 
         {profile.isMe && status?.identity && status.identity.status !== 'approved' ? (
-          <Press style={[styles.verify, !status.identity.canAct && styles.verifyLate]} onPress={() => router.push('/verifica' as Href)} accessibilityRole="button">
+          <Press style={[styles.verify, !status.identity.canAct && styles.verifyLate]} onPress={() => nav.push('/verifica')} accessibilityRole="button">
             <Icon name="documento" size={22} color={status.identity.canAct ? color.giallo : color.matita} />
             <View style={{ flex: 1, gap: 2 }}>
               <Txt variant="label">
@@ -251,8 +259,8 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         ) : null}
 
         <View style={styles.stats}>
-          <Stat value={profile.followers} label="follower" onPress={() => router.push(`/seguaci/${profile.username}?tipo=followers` as Href)} />
-          <Stat value={profile.following} label="seguiti" onPress={() => router.push(`/seguaci/${profile.username}?tipo=following` as Href)} />
+          <Stat value={profile.followers} label="follower" onPress={() => nav.push(`/seguaci/${profile.username}?tipo=followers`)} />
+          <Stat value={profile.following} label="seguiti" onPress={() => nav.push(`/seguaci/${profile.username}?tipo=following`)} />
           <Stat value={profile.covers} label={profile.covers === 1 ? 'copertina' : 'copertine'} highlight={profile.covers > 0} />
         </View>
         <View style={styles.viewsLine} accessible accessibilityLabel={`${formatCount(profile.views)} visualizzazioni dei post`}>
@@ -263,7 +271,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
         </View>
 
         {profile.isMe ? (
-          <Press style={styles.secondary} onPress={() => router.push('/regole' as Href)} accessibilityRole="button">
+          <Press style={styles.secondary} onPress={() => nav.push('/regole')} accessibilityRole="button">
             <Icon name="info" size={20} />
             <Txt variant="label">Come si diventa copertina</Txt>
           </Press>
@@ -308,7 +316,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
           </View>
         ) : null}
         {!entry && profile.isMe ? (
-          <Press style={styles.contestEmpty} onPress={() => router.push('/scatta' as Href)} accessibilityRole="button">
+          <Press style={styles.contestEmpty} onPress={() => nav.push('/scatta')} accessibilityRole="button">
             <Txt variant="label">Oggi non sei in gara.</Txt>
             <Txt variant="small" tone={color.paperDim}>
               Pubblica foto o video e candidali: domani potresti essere tu la copertina.
@@ -334,7 +342,7 @@ export function ProfileView({ username, showBack }: { username: string; showBack
                 // Come su TikTok: dal post toccato si scorrono tutti gli altri della griglia.
                 const kind = tab === 'post' ? 'posts' : 'saved';
                 seedFeed(profile.username, kind, grid);
-                router.push(`/scorri/${profile.username}?da=${p.id}&tipo=${kind}` as Href);
+                nav.push(`/scorri/${profile.username}?da=${p.id}&tipo=${kind}`);
               }}
               accessibilityRole="link"
               accessibilityLabel={`Post di @${p.author.username}${p.media.length > 1 ? `, ${p.media.length} elementi` : ''}${p.caption ? `: ${p.caption.slice(0, 60)}` : ''}`}>

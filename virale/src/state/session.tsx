@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AppState } from 'react-native';
 
 import { getMe, getStatus } from '../services/api';
+import { friendlyError, setCanAct } from '../services/errors';
 import { supabase } from '../services/supabase';
 import type { Me, Status } from '../types';
 import { forgetRecentChanges } from './postEvents';
@@ -36,6 +37,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     generation.current += 1;
     clearViews();
     forgetRecentChanges();
+    setCanAct(null);
     setStatus(null);
     setMeState(next);
   }, []);
@@ -44,7 +46,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setError(null);
     getMe()
       .then(setMeState)
-      .catch((e: Error) => setError(e.message));
+      .catch((e: unknown) => setError(friendlyError(e)));
   }, []);
   useEffect(retry, [retry]);
 
@@ -61,7 +63,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const gen = generation.current;
     try {
       const next = await getStatus();
-      if (gen === generation.current) setStatus(next);
+      if (gen === generation.current) {
+        setCanAct(next.identity ? next.identity.canAct : null);
+        setStatus(next);
+      }
     } catch {
       // Si riprova al prossimo giro.
     }

@@ -17,6 +17,7 @@ import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
 import { queueView } from '../../src/state/views';
 import type { Post } from '../../src/types';
+import { friendlyError } from '../../src/services/errors';
 
 /**
  * I post di un profilo (o i salvati) uno sotto l'altro, a tutto schermo come il feed: si parte dal post
@@ -26,7 +27,7 @@ export default function ScrollPostsScreen() {
   const { username, da, tipo } = useLocalSearchParams<{ username: string; da?: string; tipo?: string }>();
   const kind = tipo === 'saved' ? 'saved' : 'posts';
   const insets = useSafeAreaInsets();
-  const goBack = useGoBack();
+  const goBack = useGoBack(`/utente/${username}`);
   const focused = useIsFocused();
   const { me } = useSession();
   const [seed] = useState(() => takeSeed(username, kind) ?? []);
@@ -50,7 +51,7 @@ export default function ScrollPostsScreen() {
         setPosts(list);
         if (!list.length) setError(kind === 'saved' ? 'Nessun post salvato.' : 'Nessun post per ora.');
       })
-      .catch((e: Error) => alive && setError(e.message));
+      .catch((e: unknown) => alive && setError(friendlyError(e)));
     return () => {
       alive = false;
     };

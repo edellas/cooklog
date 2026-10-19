@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter, type Href } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -29,12 +29,14 @@ import { emitPostChange } from "../../src/state/postEvents";
 import { useSession } from "../../src/state/session";
 import { useGoBack } from "../../src/state/useGoBack";
 import type { Comment } from "../../src/types";
+import { friendlyError } from '../../src/services/errors';
+import { useNav } from "../../src/state/nav";
 
 /** Commenti in un foglio nativo (formSheet): si apre a metà, si trascina fino in cima, si chiude con un gesto. */
 export default function CommentsSheet() {
   const { postId } = useLocalSearchParams<{ postId: string }>();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
   const goBack = useGoBack();
   const { me, status } = useSession();
   const blocked = status?.identity?.canAct === false;
@@ -94,7 +96,7 @@ export default function CommentsSheet() {
       // Il conteggio sotto il post si aggiorna con il numero vero (l'elenco qui può essere filtrato o troncato).
       syncCount(true);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     } finally {
       setSending(false);
     }
@@ -122,7 +124,7 @@ export default function CommentsSheet() {
       setItems(next);
       syncCount(false);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     }
   };
 
@@ -202,7 +204,7 @@ export default function CommentsSheet() {
                 {/* Toccando l'autore si apre il suo profilo: da lì lo si può bloccare. */}
                 <Press
                   onPress={() =>
-                    router.push(`/utente/${item.author.username}` as Href)
+                    nav.push(`/utente/${item.author.username}`)
                   }
                   accessibilityRole="link"
                   accessibilityLabel={`Profilo di @${item.author.username}`}
@@ -220,7 +222,7 @@ export default function CommentsSheet() {
                       variant="meta"
                       style={{ fontFamily: font.uiBold }}
                       onPress={() =>
-                        router.push(`/utente/${item.author.username}` as Href)
+                        nav.push(`/utente/${item.author.username}`)
                       }
                     >
                       @{item.author.username}
@@ -284,7 +286,7 @@ export default function CommentsSheet() {
             styles.composer,
             { paddingBottom: Math.max(insets.bottom, space[3]) },
           ]}
-          onPress={() => router.push("/verifica" as Href)}
+          onPress={() => nav.push("/verifica")}
           accessibilityRole="button"
         >
           <Txt

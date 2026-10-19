@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,9 @@ import { listFollows, toggleFollow } from '../../src/services/api';
 import { emitFollowChange } from '../../src/state/postEvents';
 import { useGoBack } from '../../src/state/useGoBack';
 import type { FollowRow } from '../../src/types';
+import { actionError, friendlyError } from '../../src/services/errors';
+import { useActGuard } from '../../src/state/useActGuard';
+import { useNav } from '../../src/state/nav';
 
 type Kind = 'followers' | 'following';
 
@@ -20,8 +23,9 @@ type Kind = 'followers' | 'following';
 export default function FollowsScreen() {
   const { username, tipo } = useLocalSearchParams<{ username: string; tipo?: Kind }>();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const goBack = useGoBack();
+  const nav = useNav();
+  const goBack = useGoBack(`/utente/${username}`);
+  const canAct = useActGuard();
   const toast = useToast();
   const [kind, setKind] = useState<Kind>(tipo === 'following' ? 'following' : 'followers');
   const [rows, setRows] = useState<FollowRow[] | null>(null);
@@ -38,7 +42,7 @@ export default function FollowsScreen() {
     setError(null);
     listFollows(username, kind)
       .then((r) => alive && setRows(r))
-      .catch((e: Error) => alive && setError(e.message))
+      .catch((e: unknown) => alive && setError(friendlyError(e)))
       .finally(() => alive && setRefreshing(false));
     return () => {
       alive = false;
@@ -73,14 +77,15 @@ export default function FollowsScreen() {
 
   const follow = (row: FollowRow) => {
     const on = !row.followedByMe;
+    if (on && !canAct()) return;
     haptic('light');
     setRows((list) => (list ?? []).map((x) => (x.id === row.id ? { ...x, followedByMe: on } : x)));
     emitFollowChange(row.id, on);
-    toggleFollow(row.id, on).catch(() => {
-        setRows((list) => (list ?? []).map((x) => (x.id === row.id ? { ...x, followedByMe: !on } : x)));
-        emitFollowChange(row.id, !on);
-        toast('Non ci sono riuscito. Riprova.', 'error');
-      });
+    toggleFollow(row.id, on).catch((e: unknown) => {
+      setRows((list) => (list ?? []).map((x) => (x.id === row.id ? { ...x, followedByMe: !on } : x)));
+      emitFollowChange(row.id, !on);
+      toast(actionError(e, on ? `Non è stato possibile seguire @${row.username}. Riprova.` : `Non è stato possibile smettere di seguire @${row.username}. Riprova.`), 'error');
+    });
   };
 
   return (
@@ -137,7 +142,7 @@ export default function FollowsScreen() {
           }
           renderItem={({ item }) => (
             <View style={styles.row}>
-              <Press style={styles.person} onPress={() => router.push(`/utente/${item.username}` as Href)} accessibilityRole="link" accessibilityLabel={`Profilo di @${item.username}`}>
+              <Press style={styles.person} onPress={() => nav.push(`/utente/${item.username}`)} accessibilityRole="link" accessibilityLabel={`Profilo di @${item.username}`}>
                 <Monogram name={item.displayName} seed={item.username} size={40} />
                 <View style={{ flexShrink: 1 }}>
                   <Txt variant="label" numberOfLines={1}>

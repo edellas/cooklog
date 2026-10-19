@@ -1,4 +1,4 @@
-import { Tabs, useRouter, type Href } from 'expo-router';
+import { Tabs } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -8,6 +8,7 @@ import { Press } from '../../src/components/Press';
 import { Txt } from '../../src/components/Txt';
 import { useSession } from '../../src/state/session';
 import { color, radius } from '../../src/design/tokens';
+import { useNav } from '../../src/state/nav';
 
 const ITEMS: Record<string, { icon: IconName; label: string }> = {
   index: { icon: 'copertina', label: 'Copertina' },
@@ -30,7 +31,7 @@ export default function TabsLayout() {
 
 function TabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
   const { status } = useSession();
   const unread = status?.unread ?? 0;
   const routes = state.routes;
@@ -63,7 +64,7 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
     <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
       {item(0)}
       {item(1)}
-      <Press style={styles.item} onPress={() => router.push('/scatta' as Href)} hapticOnPress="light" accessibilityRole="button" accessibilityLabel="Nuovo post">
+      <Press style={styles.item} onPress={() => nav.push('/scatta')} hapticOnPress="light" accessibilityRole="button" accessibilityLabel="Nuovo post">
         <View style={styles.create}>
           <Icon name="scatta" size={22} color={color.canvas} strokeWidth={2.4} />
         </View>

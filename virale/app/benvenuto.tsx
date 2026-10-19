@@ -1,6 +1,5 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter, type Href } from 'expo-router';
 import { useEffect, useRef, useState, type Ref } from 'react';
 import { ActivityIndicator, BackHandler, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
@@ -17,6 +16,8 @@ import { color, font, radius, space } from '../src/design/tokens';
 import { getSettings, isDemo, login, PASSWORD_MIN, register, usernameAvailable, validateRegistration } from '../src/services/api';
 import type { RegisterInput } from '../src/types';
 import { useSession } from '../src/state/session';
+import { friendlyError } from '../src/services/errors';
+import { useNav } from '../src/state/nav';
 
 const COLUMNS = [
   ['cinqueterre', 'gatto-neve', 'selfie', 'lava', 'sposi'],
@@ -162,7 +163,7 @@ function PasswordField({
 }
 
 function Docs() {
-  const router = useRouter();
+  const nav = useNav();
   return (
     <View style={styles.docs}>
       {(
@@ -172,7 +173,7 @@ function Docs() {
           ['privacy', 'Privacy'],
         ] as const
       ).map(([slug, label]) => (
-        <Press key={slug} style={styles.doc} onPress={() => router.push(`/legale/${slug}` as Href)} accessibilityRole="link" accessibilityLabel={`Leggi ${label}`}>
+        <Press key={slug} style={styles.doc} onPress={() => nav.push(`/legale/${slug}`)} accessibilityRole="link" accessibilityLabel={`Leggi ${label}`}>
           <Txt variant="small" style={styles.link}>
             {label}
           </Txt>
@@ -232,7 +233,7 @@ function RegisterForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () =
       setError(null);
       setMe(await register(input));
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
       setBusy(false);
     } finally {
       inFlight.current = false;
@@ -387,7 +388,7 @@ function LoginForm({ onSwitch, onBack }: { onSwitch: () => void; onBack: () => v
       setError(null);
       setMe(await login(username, password));
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
       setBusy(false);
     } finally {
       inFlight.current = false;

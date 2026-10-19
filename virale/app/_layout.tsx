@@ -1,5 +1,5 @@
 import { useFonts } from 'expo-font';
-import { Stack, usePathname, useRouter, useSegments, type Href } from 'expo-router';
+import { Stack, useGlobalSearchParams, useRouter, useSegments, type Href } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
@@ -12,6 +12,7 @@ import { Press } from '../src/components/Press';
 import { Txt } from '../src/components/Txt';
 import { isDemo, logout } from '../src/services/api';
 import { OWNER } from '../src/legal/docs';
+import { noteInAppNavigation } from '../src/state/nav';
 import { flushViews } from '../src/state/views';
 import { FONTS } from '../src/design/fonts';
 import { color } from '../src/design/tokens';
@@ -107,6 +108,9 @@ function Misconfigured() {
   );
 }
 
+/** Rotte che si possono aprire da un link (o ricaricando la pagina sul web): ritrovate dopo l'accesso. */
+const OPENABLE = new Set(['post', 'utente', 'scorri', 'copertina', 'commenti', 'seguaci', 'regole', 'notifiche', 'verifica', 'cerca']);
+
 /**
  * Chi non ha ancora un profilo passa dal benvenuto. Termini e privacy restano leggibili anche prima:
  * si devono poter leggere prima di accettarli.
@@ -114,26 +118,33 @@ function Misconfigured() {
 function Gate() {
   const { me } = useSession();
   const segments = useSegments();
-  const pathname = usePathname();
+  const params = useGlobalSearchParams();
   const router = useRouter();
-  // Un link aperto da fuori (un post condiviso) prima di accedere: dopo l'accesso si va lì, non in copertina.
-  const intended = useRef<string | null>(null);
+  // Un link aperto da fuori (un post condiviso, una copertina) prima di accedere: dopo l'accesso si va lì,
+  // con i suoi parametri, non in copertina.
+  const intended = useRef<Href | null>(null);
   useEffect(() => {
     if (me === undefined) return;
     const onWelcome = segments[0] === 'benvenuto';
     const open = onWelcome || segments[0] === 'legale';
     if (!me && !open) {
-      if (me === null && /^\/(post|utente)\//.test(pathname)) intended.current = pathname;
+      if (me === null && OPENABLE.has(segments[0] ?? '')) {
+        const clean: Record<string, string> = {};
+        for (const [k, v] of Object.entries(params)) if (typeof v === 'string') clean[k] = v;
+        intended.current = { pathname: `/${segments.join('/')}`, params: clean } as Href;
+      }
       // Uscendo (account eliminato, demo azzerata) non deve restare nulla sotto il benvenuto.
       if (router.canDismiss()) router.dismissAll();
+      noteInAppNavigation();
       router.replace('/benvenuto' as Href);
     }
     if (me && onWelcome) {
-      const to = intended.current ?? '/';
+      const to = intended.current ?? ('/' as Href);
       intended.current = null;
-      router.replace(to as Href);
+      noteInAppNavigation();
+      router.replace(to);
     }
-  }, [me, router, segments, pathname]);
+  }, [me, router, segments, params]);
   return null;
 }
 

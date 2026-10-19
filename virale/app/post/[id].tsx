@@ -14,6 +14,7 @@ import { useSession } from '../../src/state/session';
 import { useGoBack } from '../../src/state/useGoBack';
 import { queueView } from '../../src/state/views';
 import type { Post } from '../../src/types';
+import { friendlyError } from '../../src/services/errors';
 
 export default function PostScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -41,7 +42,7 @@ export default function PostScreen() {
         // Se il post non c'è più si torna indietro; un errore di rete invece lascia il post com'era.
         if (loaded.current) {
           if (/non trovato|non più disponibile/i.test(e.message)) goBack();
-        } else setError(e.message);
+        } else setError(friendlyError(e));
       });
     return () => {
       alive = false;

@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,6 +14,8 @@ import { ageOn, diagnoseAgeCheck, getIdentityQueue, MIN_AGE_YEARS, purgeStorage,
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
 import type { IdentityItem } from '../src/types';
+import { friendlyError } from '../src/services/errors';
+import { useNav } from '../src/state/nav';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const hhmm = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
@@ -25,7 +27,7 @@ const dateIt = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString('it-
  */
 export default function AdminScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const nav = useNav();
   const goBack = useGoBack('/impostazioni');
   const toast = useToast();
   const { status, refreshStatus, bump } = useSession();
@@ -49,7 +51,7 @@ export default function AdminScreen() {
         setQueue(q);
         setQueueError(null);
       })
-      .catch((e: Error) => setQueueError(e.message));
+      .catch((e: unknown) => setQueueError(friendlyError(e)));
   }, [isAdmin]);
   useFocusEffect(loadQueue);
   // Ogni apertura cancella i file rimasti in coda (documenti già decisi, media di account chiusi).
@@ -60,7 +62,7 @@ export default function AdminScreen() {
         .then((n) => {
           if (n) toast(`Cancellati ${n} file non più necessari.`);
         })
-        .catch((e: Error) => toast(e.message, 'error'));
+        .catch((e: unknown) => toast(friendlyError(e), 'error'));
     }, [toast, isAdmin]),
   );
 
@@ -94,7 +96,7 @@ export default function AdminScreen() {
       bump();
       toast(`Fatto: la copertina compare alle ${hhmm(revealNow)}.`);
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(friendlyError(e), 'error');
     } finally {
       setSaving(false);
     }
@@ -163,7 +165,7 @@ export default function AdminScreen() {
                     setIdProvider(id)
                       .then(() => refreshStatus())
                       .then(() => toast(id === 'didit' ? 'Verifica automatica attiva.' : 'Verifica con le foto attiva.'))
-                      .catch((e: Error) => toast(e.message, 'error'));
+                      .catch((e: unknown) => toast(friendlyError(e), 'error'));
                   }}
                   accessibilityRole="radio"
                   accessibilityState={{ checked: on }}>
@@ -221,7 +223,7 @@ export default function AdminScreen() {
           )}
         </View>
 
-        <Press style={styles.link} onPress={() => router.push('/moderazione' as Href)} accessibilityRole="button">
+        <Press style={styles.link} onPress={() => nav.push('/moderazione')} accessibilityRole="button">
           <Icon name="scudo" size={20} />
           <Txt variant="label" style={{ flex: 1 }}>
             Segnalazioni da moderare
@@ -267,7 +269,7 @@ function Review({ item, onDone }: { item: IdentityItem; onDone: () => void }) {
       toast(decision === 'approve' ? `@${item.username}: età verificata.` : decision === 'reject' ? `@${item.username}: documento rifiutato.` : `@${item.username}: espulso.`);
       onDone();
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(friendlyError(e), 'error');
       setBusy(false);
       // Spesso significa che qualcun altro ha già deciso o che l'utente ha rimandato le foto: si ricarica la coda.
       onDone();

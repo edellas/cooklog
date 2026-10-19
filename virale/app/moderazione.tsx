@@ -12,6 +12,7 @@ import { color, radius, space } from '../src/design/tokens';
 import { getModQueue, isDemo, modResolve, REPORT_REASONS, type ModItem } from '../src/services/api';
 import { useSession } from '../src/state/session';
 import { useGoBack } from '../src/state/useGoBack';
+import { friendlyError } from '../src/services/errors';
 
 const label = (r: string) => REPORT_REASONS.find((x) => x.key === r)?.label ?? r;
 
@@ -22,7 +23,7 @@ const label = (r: string) => REPORT_REASONS.find((x) => x.key === r)?.label ?? r
  */
 export default function Moderation() {
   const insets = useSafeAreaInsets();
-  const goBack = useGoBack();
+  const goBack = useGoBack('/impostazioni');
   const toast = useToast();
   const { bump } = useSession();
   const [items, setItems] = useState<ModItem[] | null>(null);
@@ -34,7 +35,7 @@ export default function Moderation() {
   const load = useCallback(() => {
     void getModQueue()
       .then(setItems)
-      .catch((e: Error) => setError(e.message));
+      .catch((e: unknown) => setError(friendlyError(e)));
   }, []);
   useEffect(load, [load]);
 
@@ -53,7 +54,7 @@ export default function Moderation() {
       setItems((list) => (list ?? []).filter((x) => x.post.id !== item.post.id));
       toast(action === 'dismiss' ? 'Post ripristinato.' : action === 'remove' ? 'Post rimosso.' : `@${item.post.author.username} espulso.`);
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(friendlyError(e), 'error');
     } finally {
       setBusy(null);
     }

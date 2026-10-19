@@ -1,4 +1,3 @@
-import { useRouter, type Href } from 'expo-router';
 import { memo, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withSpring, withTiming } from 'react-native-reanimated';
@@ -6,8 +5,11 @@ import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSeque
 import { formatCount, timeAgo } from '../design/format';
 import { color, radius, space } from '../design/tokens';
 import { postLink, registerShare, TIER_NAMES, toggleFollow, toggleLike, toggleSave } from '../services/api';
+import { actionError } from '../services/errors';
 import { shareText } from '../services/share';
+import { useNav } from '../state/nav';
 import { emitFollowChange, emitPostChange, onFollowChange, onPostChange, withRecentChanges } from '../state/postEvents';
+import { useActGuard } from '../state/useActGuard';
 import { toggleMute, useMuted } from '../state/sound';
 import type { Post } from '../types';
 import { Icon } from './Icon';
@@ -42,8 +44,9 @@ export const PostCard = memo(function PostCard({
   viewKey?: number;
   blind?: boolean;
 }) {
-  const router = useRouter();
+  const nav = useNav();
   const toast = useToast();
+  const canAct = useActGuard();
   const muted = useMuted();
   const [post, setPost] = useState(() => withRecentChanges(initial));
   const [following, setFollowing] = useState(() => withRecentChanges(initial).followingAuthor);
@@ -75,37 +78,40 @@ export const PostCard = memo(function PostCard({
 
   const like = (on: boolean) => {
     if (post.likedByMe === on) return;
+    if (on && !canAct()) return;
     haptic('light');
     const likeCount = Math.max(0, post.likeCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, likedByMe: on, likeCount }));
     emitPostChange(post.id, { likedByMe: on, likeCount });
     if (on) onInteract?.(post.id, 'liked');
-    toggleLike(post.id, on).catch(() => {
+    toggleLike(post.id, on).catch((e: unknown) => {
       const back = { likedByMe: !on, likeCount: post.likeCount };
       setPost((p) => ({ ...p, ...back }));
       emitPostChange(post.id, back);
-      toast('Non sono riuscito a salvare il mi piace. Riprova.', 'error');
+      toast(actionError(e, 'Cerchio non salvato. Riprova.'), 'error');
     });
   };
   const save = () => {
     const on = !post.savedByMe;
+    if (on && !canAct()) return;
     const saveCount = Math.max(0, post.saveCount + (on ? 1 : -1));
     setPost((p) => ({ ...p, savedByMe: on, saveCount }));
     emitPostChange(post.id, { savedByMe: on, saveCount });
     if (on) onInteract?.(post.id, 'saved');
-    toggleSave(post.id, on).catch(() => {
+    toggleSave(post.id, on).catch((e: unknown) => {
       const back = { savedByMe: !on, saveCount: post.saveCount };
       setPost((p) => ({ ...p, ...back }));
       emitPostChange(post.id, back);
-      toast('Non sono riuscito a salvarlo. Riprova.', 'error');
+      toast(actionError(e, 'Salvataggio non riuscito. Riprova.'), 'error');
     });
   };
   const share = async () => {
+    if (!canAct()) return;
     const text = post.caption ? `@${post.author.username} su Virale: “${post.caption}”` : `Guarda il post di @${post.author.username} su Virale`;
     const link = postLink(post.id);
     const res = await shareText(link ? `${text}\n${link}` : text);
     if (res === 'none') return;
-    if (res === 'copied') toast('Testo copiato: incollalo dove vuoi.');
+    if (res === 'copied') toast(link ? 'Link copiato: incollalo dove vuoi.' : 'Testo copiato: incollalo dove vuoi.');
     onInteract?.(post.id, 'shared');
     registerShare(post.id)
       .then((first) => {
@@ -114,13 +120,14 @@ export const PostCard = memo(function PostCard({
       .catch(() => undefined);
   };
   const follow = () => {
+    if (!canAct()) return;
     setFollowing(true);
     emitFollowChange(post.author.id, true);
     haptic('light');
-    toggleFollow(post.author.id, true).catch(() => {
+    toggleFollow(post.author.id, true).catch((e: unknown) => {
       setFollowing(false);
       emitFollowChange(post.author.id, false);
-      toast('Non sono riuscito a seguirlo. Riprova.', 'error');
+      toast(actionError(e, `Non è stato possibile seguire @${post.author.username}. Riprova.`), 'error');
     });
   };
 
@@ -136,7 +143,7 @@ export const PostCard = memo(function PostCard({
           muted={muted}
           onToggleMute={toggleMute}
           onDoubleTap={() => like(true)}
-          onLongPress={() => router.push(`/azioni/${post.id}` as Href)}
+          onLongPress={() => nav.push(`/azioni/${post.id}`)}
           onVideoProgress={onVideoProgress ? (p) => onVideoProgress(post.id, p) : undefined}
           viewKey={viewKey}
           overlay={
@@ -157,7 +164,7 @@ export const PostCard = memo(function PostCard({
         <View style={styles.authorRow}>
           <Press
             style={styles.author}
-            onPress={() => router.push(`/utente/${post.author.username}` as Href)}
+            onPress={() => nav.push(`/utente/${post.author.username}`)}
             accessibilityRole="link"
             accessibilityLabel={`Profilo di ${post.author.displayName}, @${post.author.username}`}>
             <Monogram name={post.author.displayName} seed={post.author.username} size={34} />
@@ -201,14 +208,14 @@ export const PostCard = memo(function PostCard({
           <Action
             icon="commento"
             label={formatCount(post.commentCount)}
-            onPress={() => router.push(`/commenti/${post.id}` as Href)}
+            onPress={() => nav.push(`/commenti/${post.id}`)}
             a11y="Commenti"
           />
           <Action icon="salva" label={blind ? '' : formatCount(post.saveCount)} on={post.savedByMe} tone={color.giallo} filled onPress={save} a11y={post.savedByMe ? 'Togli dai salvati' : 'Salva'} />
           <Action icon="condividi" label={blind ? '' : formatCount(post.shareCount)} onPress={() => void share()} a11y="Condividi" />
           <Press
             style={styles.more}
-            onPress={() => router.push(`/azioni/${post.id}` as Href)}
+            onPress={() => nav.push(`/azioni/${post.id}`)}
             accessibilityRole="button"
             accessibilityLabel={isMine ? 'Opzioni del post' : 'Segnala o blocca'}>
             <Icon name="altro" size={22} color={color.paperDim} />
