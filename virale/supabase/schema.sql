@@ -496,7 +496,7 @@ create table if not exists public.arena_config (
   upper_share numeric not null default 0.5,
   -- Ora locale dopo la quale non si accettano nuove candidature (tutti hanno tempo di essere visti).
   submission_cutoff_hour int not null default 20,
-  -- Le viste di account più giovani di così non contano (anti account-fantoccio).
+  -- Le segnalazioni di account più giovani di così non pesano (anti account-fantoccio). Le visualizzazioni contano subito.
   min_viewer_account_age interval not null default interval '24 hours',
   stat_shards int not null default 16,
   -- Minuti dopo la mezzanotte (ora di Roma) in cui compare la nuova copertina: lo decide l'amministratore.
@@ -516,6 +516,9 @@ alter table public.arena_config add column if not exists reveal_minutes int not 
 alter table public.arena_config add column if not exists id_grace_days int not null default 7 check (id_grace_days between 1 and 60);
 -- Come si verifica l'età: 'manual' (foto controllate dall'amministratore) o 'didit' (verifica automatica, sezione 16).
 alter table public.arena_config add column if not exists id_provider text not null default 'manual' check (id_provider in ('manual', 'didit'));
+-- Quando chiude la gara in corso (ed esce la copertina). Lo fissa il server: alla chiusura passa al prossimo
+-- orario di uscita; se l'amministratore cambia orario, diventa il primo scoccare dell'orario nuovo.
+alter table public.arena_config add column if not exists next_close_at timestamptz;
 
 -- Giorni di gara già chiusi (anche senza vincitore): il giorno di gara non torna mai indietro, nemmeno se
 -- l'amministratore sposta l'orario più avanti dopo la chiusura.
@@ -529,12 +532,27 @@ revoke all on public.arena_closed_days from anon, authenticated;
 -- Il giorno di gara va da un orario di rivelazione al successivo (ora italiana): all'orario scelto
 -- dall'amministratore la gara chiude, si sceglie il vincitore e la nuova copertina esce subito.
 -- Con l'orario a mezzanotte (0) è il giorno di calendario.
+-- Il giorno in corso è quello dopo l'ultimo chiuso: avanza solo quando una gara chiude davvero (all'orario fissato
+-- in next_close_at), così spostare l'orario non salta né accorcia mai una gara a metà. Prima della prima chiusura
+-- (database nuovo) vale il giorno di calendario calcolato con l'orario di uscita.
 create or replace function public.arena_today()
 returns date language sql stable security definer set search_path = public, pg_temp as $$
-  select greatest(
-           ((now() at time zone c.time_zone) - make_interval(mins => c.reveal_minutes))::date,
-           coalesce((select max(d.contest_day) + 1 from public.arena_closed_days d), '-infinity'::date))
+  select coalesce((select max(d.contest_day) + 1 from public.arena_closed_days d),
+                  ((now() at time zone c.time_zone) - make_interval(mins => c.reveal_minutes))::date)
   from public.arena_config c limit 1;
+$$;
+
+-- Il primo momento dopo p_t in cui, a Roma, è l'orario di uscita scelto (ora legale compresa).
+create or replace function public.arena_next_reveal_after(p_t timestamptz)
+returns timestamptz language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  c public.arena_config := public.arena_cfg();
+  v_local timestamp := p_t at time zone c.time_zone;
+  v_cand timestamp := v_local::date + make_interval(mins => c.reveal_minutes);
+begin
+  if v_cand <= v_local then v_cand := v_cand + interval '1 day'; end if;
+  return v_cand at time zone c.time_zone;
+end;
 $$;
 
 -- La data di calendario a Roma: per l'età (un compleanno vale da mezzanotte, non dall'orario della gara).
@@ -757,8 +775,7 @@ begin
   if not public.can_act(v_uid) then raise exception 'Per partecipare devi verificare la tua età: carica il documento dal profilo.'; end if;
   -- Le candidature restano aperte per le prime submission_cutoff_hour ore della gara (di norma 20 su 24):
   -- le ultime ore servono a far vedere a tutti i post appena candidati.
-  if extract(epoch from ((now() at time zone v_cfg.time_zone) - make_interval(mins => v_cfg.reveal_minutes))::time) / 60
-     >= v_cfg.submission_cutoff_hour * 60 then
+  if now() >= coalesce(v_cfg.next_close_at, public.arena_next_reveal_after(now())) - make_interval(hours => 24 - v_cfg.submission_cutoff_hour) then
     raise exception 'Candidature chiuse: riaprono alle %, quando esce la nuova copertina.',
       to_char(make_time(v_cfg.reveal_minutes / 60, v_cfg.reveal_minutes % 60, 0), 'HH24:MI');
   end if;
@@ -1536,9 +1553,8 @@ begin
   returning served_at into v_served;
   if not found then return false; end if;
 
-  -- Gli account appena creati, o senza età verificata, guardano ma non votano.
-  if exists (select 1 from profiles where id = v_uid and created_at > now() - v_cfg.min_viewer_account_age)
-     or not public.can_vote(v_uid) then
+  -- Senza età verificata si guarda, ma la visualizzazione non conta per la gara.
+  if not public.can_vote(v_uid) then
     return false;
   end if;
 
@@ -1612,8 +1628,7 @@ begin
   update arena_views set credited = credited || v_kind
    where entry_id = v_entry and viewer_id = new.user_id and recorded_at is not null and counted
      and not (v_kind = any (credited))
-     and exists (select 1 from profiles where id = new.user_id and banned_at is null
-                   and created_at <= now() - v_cfg.min_viewer_account_age)
+     and exists (select 1 from profiles where id = new.user_id and banned_at is null)
      and public.can_vote(new.user_id);
   if not found then return null; end if;
   insert into arena_entry_stats as st (entry_id, shard, likes, comments, saves, shares)
@@ -1718,13 +1733,24 @@ $$;
 create or replace function public.arena_close_due()
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  v_cfg public.arena_config := public.arena_cfg();
-  v_natural date := ((now() at time zone v_cfg.time_zone) - make_interval(mins => v_cfg.reveal_minutes))::date;
+  v_next timestamptz;
+  v_day date;
 begin
-  if not exists (select 1 from arena_closed_days where contest_day = v_natural - 1)
-     and not exists (select 1 from arena_closed_days where contest_day >= v_natural) then
-    perform public.arena_close_day(v_natural - 1);
+  -- Una sola chiusura alla volta (il cron ogni minuto e l'amministratore che cambia orario).
+  perform pg_advisory_xact_lock(hashtext('arena_close_due'));
+  select next_close_at into v_next from arena_config limit 1;
+  if v_next is null then
+    -- Prima volta: la prossima uscita dopo l'ultima chiusura (o, su un database nuovo, dopo adesso).
+    v_next := public.arena_next_reveal_after(coalesce((select max(closed_at) from arena_closed_days), now()));
+    update arena_config set next_close_at = v_next where id;
   end if;
+  if now() < v_next then return; end if;
+  -- È l'ora: si chiude la gara in corso, esce la copertina, e la prossima chiusura è all'uscita successiva.
+  -- (Se il server è rimasto fermo, al giro dopo chiude anche la successiva: le date restano allineate.)
+  v_day := public.arena_today();
+  insert into arena_closed_days (contest_day, closed_at) values (v_day, v_next) on conflict do nothing;
+  perform public.arena_close_day(v_day);
+  update arena_config set next_close_at = public.arena_next_reveal_after(v_next) where id;
 end;
 $$;
 
@@ -1884,7 +1910,8 @@ returns jsonb language sql stable security definer set search_path = public, pg_
                             'id_provider', c.id_provider,
                             -- Gara in corso e quando finisce (è anche quando esce la prossima copertina).
                             'contest_day', public.arena_today(),
-                            'closes_at', ((public.arena_today() + 1)::timestamp + make_interval(mins => c.reveal_minutes)) at time zone c.time_zone)
+                            'closes_at', coalesce(c.next_close_at,
+                                                  ((public.arena_today() + 1)::timestamp + make_interval(mins => c.reveal_minutes)) at time zone c.time_zone))
   from arena_config c limit 1;
 $$;
 
@@ -1895,8 +1922,12 @@ begin
   if p_reveal_minutes not between 0 and 1439 then raise exception 'Orario non valido.'; end if;
   if p_id_grace_days not between 1 and 60 then raise exception 'I giorni per il documento vanno da 1 a 60.'; end if;
   -- Supabase rifiuta gli UPDATE senza WHERE (estensione safeupdate) anche dentro le funzioni.
-  update arena_config set reveal_minutes = p_reveal_minutes, id_grace_days = p_id_grace_days where id;
-  -- Se il nuovo orario per oggi è già passato, la gara chiude adesso e la copertina esce subito.
+  -- Orario cambiato: la gara in corso chiude al primo scoccare dell'orario nuovo (oggi, se non è ancora passato).
+  update arena_config
+     set next_close_at = case when reveal_minutes <> p_reveal_minutes then null else next_close_at end,
+         reveal_minutes = p_reveal_minutes, id_grace_days = p_id_grace_days
+   where id;
+  update arena_config set next_close_at = public.arena_next_reveal_after(now()) where id and next_close_at is null;
   perform public.arena_close_due();
   return public.get_settings();
 end;
@@ -2243,10 +2274,9 @@ returns jsonb language sql stable security definer set search_path = public, pg_
                  and (n.kind <> 'cover' or coalesce((n.data->>'featured_on')::date, '-infinity'::date) <= public.cover_day())
                  and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))),
     'needs_private', not exists (select 1 from profile_private where id = auth.uid()),
-    -- Se il voto conta (età verificata e account con più di 24 ore) e da quando conterà per gli account nuovi.
-    'voter', (select jsonb_build_object('can_vote', public.can_vote(p.id) and p.created_at <= now() - c.min_viewer_account_age,
-                                        'from', p.created_at + c.min_viewer_account_age)
-                from profiles p, arena_config c where p.id = auth.uid() limit 1),
+    -- Se le visualizzazioni di chi guarda contano per la gara (serve solo l'età verificata).
+    'voter', (select jsonb_build_object('can_vote', public.can_vote(p.id), 'from', null)
+                from profiles p where p.id = auth.uid() limit 1),
     'settings', public.get_settings()
   );
 $$;

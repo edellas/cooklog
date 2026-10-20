@@ -140,7 +140,7 @@ export type Status = {
   needsPassword: boolean;
   unread: number;
   settings: Settings;
-  /** Se il voto di chi guarda conta nella gara (età verificata, account con più di 24 ore) e da quando. */
+  /** Se le visualizzazioni di chi guarda contano nella gara (serve l'età verificata). */
   voter?: { canVote: boolean; from: string | null } | null;
 };
 

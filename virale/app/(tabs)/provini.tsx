@@ -625,10 +625,10 @@ function VoterBand({ status, onOpen, onClose }: { status: NonNullable<ReturnType
     ? `${from.toDateString() === new Date().toDateString() ? 'oggi' : from.toDateString() === new Date(Date.now() + 86400000).toDateString() ? 'domani' : from.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })} alle ${from.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`
     : 'domani';
   const text = expired
-    ? 'Verifica scaduta: puoi guardare ma non votare.'
+    ? 'Verifica scaduta: puoi guardare, ma le tue visualizzazioni non contano per la gara.'
     : unverified
-      ? 'Il tuo voto conterà dopo la verifica dell’età.'
-      : `Il tuo voto conterà da ${when}: gli account nuovi guardano per 24 ore.`;
+      ? 'Le tue visualizzazioni conteranno per la gara dopo la verifica dell’età.'
+      : `Le tue visualizzazioni conteranno per la gara da ${when}.`;
   const action = expired || unverified;
   return (
     <View style={styles.band}>

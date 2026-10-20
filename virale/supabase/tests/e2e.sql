@@ -282,18 +282,22 @@ select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004
 select admin_set_settings(1439, 10) ->> 'reveal_minutes' as nuovo_orario;
 reset role;
 do $$ begin
-  -- Ieri è già chiuso: spostare l'orario più avanti non riapre un giorno chiuso, la gara di oggi si allunga
-  -- fino alle 23:59 di domani.
+  -- Ieri è già chiuso: spostare l'orario non riapre un giorno chiuso; la gara in corso chiude al primo
+  -- scoccare dell'orario nuovo (le 23:59 di oggi, o di domani se sono già passate).
   if arena_today() <> (now() at time zone 'Europe/Rome')::date then
     raise exception 'il giorno di gara è tornato indietro: %', arena_today();
   end if;
-  if (get_settings() ->> 'closes_at')::timestamptz <> ((arena_today() + 1)::timestamp + interval '23 hours 59 minutes') at time zone 'Europe/Rome' then
+  if (get_settings() ->> 'closes_at')::timestamptz <> arena_next_reveal_after(now() - interval '1 minute')
+     and (get_settings() ->> 'closes_at')::timestamptz <> arena_next_reveal_after(now()) then
     raise exception 'fine della gara sbagliata: %', get_settings() ->> 'closes_at';
+  end if;
+  if (get_settings() ->> 'closes_at')::timestamptz - now() > interval '24 hours' then
+    raise exception 'la gara chiude oltre il prossimo orario: %', get_settings() ->> 'closes_at';
   end if;
   if cover_day() <> arena_today() then raise exception 'copertina e gara su giorni diversi'; end if;
   raise notice 'ok, il giorno di gara non torna mai su un giorno chiuso';
 end $$;
-update arena_config set reveal_minutes = 0;
+update arena_config set reveal_minutes = 0, next_close_at = null where id;
 select cover_day() = arena_today() as dopo_la_rivelazione_si_vede_oggi;
 set role authenticated;
 
@@ -717,16 +721,36 @@ reset role;
 do $$ declare d date; w uuid; begin
   update arena_config set reveal_minutes = 0 where id;
   d := arena_today() - 1;
-  delete from daily_viral where contest_day = d or featured_on = d + 1;
+  delete from daily_viral where contest_day >= d or featured_on >= d + 1;
   delete from arena_closed_days where contest_day >= d;
+  insert into arena_closed_days (contest_day) values (d - 1) on conflict do nothing;
+  if arena_today() <> d then raise exception 'preparazione: gara in corso %', arena_today(); end if;
   update arena_entries set contest_day = d where post_id = '30000000-0000-0000-0000-000000000002';
+  -- Non è ancora l'ora: non chiude.
+  update arena_config set next_close_at = now() + interval '5 minutes' where id;
+  perform arena_close_due();
+  if exists (select 1 from daily_viral where contest_day = d) then raise exception 'chiusa prima dell''orario'; end if;
+  -- È l'ora: chiude, esce la copertina (anche senza voti validi) e la prossima chiusura è all'uscita dopo.
+  update arena_config set next_close_at = now() - interval '1 minute' where id;
   perform arena_close_due();
   select entry_id into w from daily_viral where contest_day = d;
   if w is null then raise exception 'nessuna copertina senza voti'; end if;
   if not exists (select 1 from arena_closed_days where contest_day = d) then raise exception 'giorno non segnato come chiuso'; end if;
   if arena_today() <> d + 1 then raise exception 'giorno di gara sbagliato dopo la chiusura'; end if;
-  raise notice 'ok, la gara chiude da sola e la copertina esce anche senza voti validi';
+  if (select next_close_at from arena_config limit 1) <= now() then raise exception 'prossima chiusura non fissata'; end if;
+  raise notice 'ok, la gara chiude all''orario fissato e la copertina esce anche senza voti validi';
 end $$;
+-- L'amministratore sposta l'orario: la gara in corso chiude al primo scoccare dell'orario nuovo, non dopo.
+do $$ declare m int; t timestamptz; begin
+  m := ((extract(hour from now() at time zone 'Europe/Rome') * 60 + extract(minute from now() at time zone 'Europe/Rome'))::int + 30) % 1440;
+  update arena_config set reveal_minutes = 0, next_close_at = now() + interval '20 hours' where id;
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000004', false);
+  perform admin_set_settings(m, 10);
+  t := (select next_close_at from arena_config limit 1);
+  if t - now() > interval '31 minutes' or t <= now() then raise exception 'orario nuovo non rispettato: %', t; end if;
+  raise notice 'ok, spostando l''orario la gara chiude al nuovo orario (tra mezz''ora, non domani)';
+end $$;
+update arena_config set reveal_minutes = 0, next_close_at = null where id;
 select set_config('request.jwt.claim.sub', '', false);
 do $$ begin
   if (select c ->> 'featured_on' from get_today_cover() c)::date is distinct from arena_today() then raise exception 'copertina appena uscita non visibile'; end if;
@@ -1129,11 +1153,12 @@ set role authenticated;
 do $$ declare v jsonb; begin
   perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000301', true);
   v := my_status() -> 'voter';
-  if (v ->> 'can_vote')::boolean or v ->> 'from' is null then raise exception 'account appena creato: %', v; end if;
+  -- Età verificata: le visualizzazioni contano subito, anche per un account appena creato.
+  if not (v ->> 'can_vote')::boolean then raise exception 'account appena creato e verificato: %', v; end if;
   perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000101', true);
   v := my_status() -> 'voter';
   if not (v ->> 'can_vote')::boolean then raise exception 'account verificato di 10 giorni senza voto: %', v; end if;
-  raise notice 'ok, my_status dice se il voto conta e da quando';
+  raise notice 'ok, my_status dice se le visualizzazioni contano (età verificata, subito)';
 end $$;
 reset role;
 
