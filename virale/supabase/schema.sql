@@ -2942,7 +2942,14 @@ begin
       return 'review';
     end if;
   end if;
-  -- Stessa persona o stesso documento già usati per un altro account verificato: decide una persona.
+  -- Stesso documento già usato per verificare un altro account: è la stessa persona, si rifiuta subito.
+  -- (Si conserva solo l'impronta del numero del documento, mai il numero.)
+  if public.identity_duplicate(p_user_id, null, public.doc_key(p_document_number)) is not null then
+    perform public.identity_apply(p_user_id, 'reject',
+      'Questo documento è già stato usato per verificare un altro account. Su Virale ogni persona può avere un solo account: accedi con quello', null);
+    return 'rejected';
+  end if;
+  -- Stessa persona (nome e data di nascita) con un documento diverso: potrebbero essere due omonimi, decide una persona.
   -- Si confrontano sia i nomi letti sul documento sia quelli dichiarati (che possono essere parziali).
   v_dup := coalesce(
     public.identity_duplicate(p_user_id, public.person_key(p_first_name, p_last_name, p_birth_date), public.doc_key(p_document_number)),
