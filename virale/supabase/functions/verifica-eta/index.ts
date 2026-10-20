@@ -246,9 +246,16 @@ async function webhook(req: Request): Promise<Response> {
   const signedAt = typeof event.timestamp === 'number' ? event.timestamp : typeof event.created_at === 'number' ? event.created_at : null;
   if (signedAt !== null && Math.abs(Date.now() / 1000 - signedAt) > 300) return json({ error: 'Richiesta scaduta.' }, 401);
   if (!event.session_id || !event.vendor_data || event.vendor_data.startsWith('diagnosi-')) return json({ ok: true });
+  // "Testa Webhook" della console di Didit: firma giusta, ma sessione e utente sono finti. Si risponde ok.
+  const test = req.headers.get('x-didit-test-webhook') === 'true' || (event as { metadata?: { test_webhook?: boolean } }).metadata?.test_webhook === true;
+  if (test) return json({ ok: true, test: true });
+  // vendor_data è sempre l'id dell'utente Virale: altro (vecchie sessioni, prove) si ignora.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(event.vendor_data)) return json({ ok: true, ignored: true });
   if (!['Approved', 'Declined', 'In Review'].includes(event.status ?? '')) return json({ ok: true });
 
   const res = await fetch(`${DIDIT}/session/${encodeURIComponent(event.session_id)}/decision/`, { headers: { 'x-api-key': env('DIDIT_API_KEY') } });
+  // Sessione non più su Didit (già decisa e cancellata): niente da fare, e Didit non deve ritentare.
+  if (res.status === 404) return json({ ok: true, ignored: true });
   // Se Didit non risponde, un errore fa ripetere l'avviso più tardi.
   if (!res.ok) return json({ error: await diditProblem(res, 'decision') }, 502);
   const decision = (await res.json()) as Decision;
