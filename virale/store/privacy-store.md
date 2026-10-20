@@ -10,7 +10,7 @@ un fornitore che tratta i dati per nostro conto, non una "condivisione", e non c
 (i dati sono gli stessi: foto, video, didascalie). L'accesso con **Google o Facebook** passa dalla pagina del
 provider nel browser (OAuth gestito da Supabase, nessun SDK di Google o Meta nell'app): riceviamo nome, email,
 immagine del profilo (non usata) e un identificativo, usati solo per l'accesso; l'email non è visibile agli altri
-utenti e non pubblichiamo nulla sui social. Se aggiungi servizi (es. Sentry, analytics)
+utenti e non pubblichiamo nulla sui social. Si entra solo così: l'app non ha password né codici di recupero. Se aggiungi servizi (es. Sentry, analytics)
 **aggiorna queste risposte e l'informativa**.
 
 ---
@@ -57,7 +57,7 @@ ricerca, diagnostica, altri dati sensibili, identificatori pubblicitari).
 | Informazioni personali → Altre informazioni (data di nascita) | Sì | No | Obbligatorio | Funzionalità app (età minima), Sicurezza |
 | Informazioni personali → Altre informazioni (documento d'identità e selfie, solo per la verifica dell'età, cancellati dopo la decisione; con la verifica automatica Didit confronta il volto del selfie con la foto del documento, un trattamento biometrico fatto solo con il consenso esplicito) | Sì | No | Obbligatorio per pubblicare | Prevenzione frodi, sicurezza e conformità |
 | Informazioni personali → ID utente (anche l'identificativo dell'account Google o Facebook usato per entrare) | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
-| Informazioni personali → Indirizzo email (ricevuto da Google o Facebook con l'accesso; mai mostrato agli altri utenti) | Sì | No | Obbligatorio per i nuovi account | Gestione account |
+| Informazioni personali → Indirizzo email (ricevuto da Google o Facebook con l'accesso; mai mostrato agli altri utenti) | Sì | No | Obbligatorio (manca solo per gli account Facebook senza email) | Gestione account |
 | ID dispositivo o altri ID → ID dispositivo (token per le notifiche push) | Sì | No | Facoltativo (solo con le notifiche attive) | Funzionalità app (notifiche); non per pubblicità né tracciamento |
 | Foto e video → Foto (post e foto profilo) | Sì | No | Facoltativo | Funzionalità app, Sicurezza (controllo automatico prima della pubblicazione) |
 | Foto e video → Video | Sì | No | Facoltativo | Funzionalità app, Sicurezza (controllo automatico prima della pubblicazione) |

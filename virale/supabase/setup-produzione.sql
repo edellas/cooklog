@@ -130,8 +130,8 @@ select cron.schedule(
       where o.bucket_id = 'avatars' and o.created_at < now() - interval '1 day'
         and not exists (select 1 from public.profiles p where p.avatar_path = o.name)
      on conflict do nothing;
-     -- Utenti di accesso rimasti senza profilo: registrazione con password interrotta dopo un giorno (liberano
-     -- il nome), accesso con Google/Facebook con il profilo mai completato dopo 7 giorni (vedi schema.sql).
+     -- Utenti di accesso rimasti senza profilo: accesso con Google/Facebook con il profilo mai completato,
+     -- dopo 7 giorni (vedi purge_orphan_logins in schema.sql).
      select public.purge_orphan_logins() $$
 );
 

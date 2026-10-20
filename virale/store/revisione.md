@@ -7,16 +7,16 @@ senza restrizioni di accesso").
 ---
 
 ## Accesso
-Account di prova già verificato, con nome utente e password (crealo prima di inviare l'app e scrivi qui le credenziali):
-- Nome utente: `<revisore_apple>` — Password: `<password>`
-- On the welcome screen tap "Hai un account con password? Accedi" (Have an account with a password? Sign in).
+Account di prova già verificato: un account Google creato apposta per la revisione, già iscritto a Virale con l'età
+verificata (crealo prima di inviare l'app e scrivi qui l'indirizzo e le credenziali di accesso a Google):
+- Google account: `<revisore.virale@gmail.com>` — credentials: `<…>`
+- On the welcome screen tap **"Continua con Google"** (Continue with Google) and choose this account.
 
-New users sign up with **"Continua con Google"** or **"Continua con Facebook"** (Sign in with Google / Facebook,
-in the system browser), then complete their profile: username, first and last name, date of birth, acceptance of
-the Terms. We only use the account to sign in: nothing is posted to the user's social profiles and the email is
-never shown to other users.
-Older accounts sign in with username and password; "Password dimenticata?" (Forgot password) on that screen lets
-them choose a new password with their one-time **recovery code** (Settings → "Codice di recupero").
+The only way to sign in is **"Continua con Google"** or **"Continua con Facebook"** (Sign in with Google / Facebook,
+in the system browser). The first time, users complete their profile: username, first and last name, date of birth,
+acceptance of the Terms. We only use the account to sign in: nothing is posted to the user's social profiles and the
+email is never shown to other users. The app has no passwords of its own. The reviewer can also sign up with any
+Google or Facebook account.
 Note for the reviewer: a new account must confirm its age within 7 days by uploading a photo of an ID
 document and a selfie; until the deadline every feature works. New accounts cannot vote in the daily
 contest for their first 24 hours (anti-fraud). Reporting, blocking and account deletion work immediately.
