@@ -1852,10 +1852,73 @@ returns boolean language sql stable security definer set search_path = public, a
      and not exists (select 1 from auth.users where lower(email) = lower(p_username) || '@' || public.login_domain());
 $$;
 
+-- Le regole di un profilo nuovo (le stesse per nome utente e password e per Google/Facebook): nome utente,
+-- nome e cognome, data di nascita ed età minima, accettazione dei termini. Solleva l'errore da mostrare.
+create or replace function public.check_new_profile(p_user text, p_first text, p_last text, p_birth date, p_accept boolean)
+returns void language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if not coalesce(p_accept, false) then raise exception 'Per registrarti devi accettare termini e linee guida.'; end if;
+  if not public.username_format_ok(p_user) then
+    raise exception 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso, con almeno una lettera o un numero. Il punto non può stare all’inizio, alla fine o due volte di fila.';
+  end if;
+  if public.username_reserved(p_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
+  if exists (select 1 from banned_usernames where username = p_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
+  if length(coalesce(p_first, '')) not between 1 and 60 or length(coalesce(p_last, '')) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
+  if public.name_bad_chars(p_first) or public.name_bad_chars(p_last) then raise exception 'Nome e cognome contengono caratteri non validi.'; end if;
+  -- Il nome mostrato ("Nome I.") non può spacciarsi per l'app o per chi la gestisce.
+  if public.display_name_reserved(left(p_first, 36) || ' ' || left(p_last, 1)) then
+    raise exception 'Questo nome non è disponibile: scrivi il tuo nome e cognome veri.';
+  end if;
+  if p_birth is null or p_birth < date '1900-01-01' or p_birth > public.rome_today() then
+    raise exception 'Data di nascita non valida.';
+  end if;
+  if p_birth > (public.rome_today() - make_interval(years => public.min_age_years()))::date then
+    raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
+  end if;
+end;
+$$;
+
+-- Crea profilo pubblico, dati privati (nome, cognome, data di nascita) e scadenza per il documento.
+-- Il nome mostrato agli altri è "Nome I." (iniziale del cognome): il cognome completo resta privato.
+-- Solo per complete_registration e complete_social_profile, dopo i loro controlli.
+create or replace function public.create_profile(p_uid uuid, p_user text, p_first text, p_last text, p_birth date)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_cfg public.arena_config := public.arena_cfg();
+  -- "Nome I.": al massimo 36 + 3 = 39 caratteri, dentro il limite di 40 anche con un nome lunghissimo.
+  v_name text := left(p_first, 36) || ' ' || upper(left(p_last, 1)) || '.';
+begin
+  insert into profiles (id, username, display_name) values (p_uid, p_user, v_name);
+  insert into profile_private (id, first_name, last_name, birth_date) values (p_uid, p_first, p_last, p_birth);
+  insert into identity_checks (user_id, deadline) values (p_uid, now() + make_interval(days => v_cfg.id_grace_days));
+  return jsonb_build_object('id', p_uid, 'username', p_user, 'display_name', v_name);
+end;
+$$;
+
+-- L'email interna di accesso con password (nomeutente@dominio)?
+create or replace function public.is_login_email(p_email text)
+returns boolean language sql immutable as $$
+  select coalesce(right(lower(p_email), length(public.login_domain()) + 1) = '@' || public.login_domain(), false);
+$$;
+
+-- Si entra con nome utente e password: l'email di accesso è quella interna del proprio nome utente.
+-- (Chi entra con Google o Facebook non ha una password; gli account anonimi di prima non l'hanno ancora.)
+create or replace function public.has_password_login(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
+  select exists (select 1 from auth.users u join public.profiles p on p.id = u.id
+                  where u.id = p_uid and lower(u.email) = p.username || '@' || public.login_domain());
+$$;
+
+-- Si entra con Google o Facebook (Supabase Auth OAuth): ha un'identità di un provider esterno e non l'email interna.
+create or replace function public.is_social_user(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
+  select exists (select 1 from auth.identities i where i.user_id = p_uid and i.provider not in ('email', 'phone', 'anonymous'))
+     and not exists (select 1 from auth.users u where u.id = p_uid and public.is_login_email(u.email));
+$$;
+
 /**
- * Completa la registrazione dopo la creazione dell'utente in Supabase Auth: profilo pubblico,
- * dati privati (nome, cognome, data di nascita) e scadenza per il documento.
- * Il nome mostrato agli altri è "Nome I." (iniziale del cognome): il cognome completo resta privato.
+ * Completa la registrazione con nome utente e password, dopo la creazione dell'utente in Supabase Auth
+ * (email interna nomeutente@dominio).
  */
 create or replace function public.complete_registration(
   p_username text, p_first_name text, p_last_name text, p_birth_date date, p_accept_terms boolean
@@ -1863,43 +1926,62 @@ create or replace function public.complete_registration(
 returns jsonb language plpgsql security definer set search_path = public, auth, pg_temp as $$
 declare
   v_uid uuid := auth.uid();
-  v_cfg public.arena_config := public.arena_cfg();
   v_user text := lower(trim(p_username));
-  v_first text := trim(p_first_name);
-  v_last text := trim(p_last_name);
 begin
   if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
   if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
-  if not coalesce(p_accept_terms, false) then raise exception 'Per registrarti devi accettare termini e linee guida.'; end if;
-  if not public.username_format_ok(v_user) then
-    raise exception 'Nome utente: da 3 a 24 caratteri tra lettere minuscole, numeri, punto e trattino basso, con almeno una lettera o un numero. Il punto non può stare all’inizio, alla fine o due volte di fila.';
-  end if;
-  if public.username_reserved(v_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
+  perform public.check_new_profile(v_user, trim(p_first_name), trim(p_last_name), p_birth_date, p_accept_terms);
   -- Il nome utente è legato all'email interna di accesso: non si registra "alice" con l'accesso di "bob".
   if (select lower(email) from auth.users where id = v_uid) is distinct from v_user || '@' || public.login_domain() then
     raise exception 'Nome utente non valido per questo accesso.';
   end if;
-  if exists (select 1 from banned_usernames where username = v_user) then raise exception 'Questo nome utente non è disponibile.'; end if;
-  if length(v_first) not between 1 and 60 or length(v_last) not between 1 and 60 then raise exception 'Scrivi nome e cognome.'; end if;
-  if public.name_bad_chars(v_first) or public.name_bad_chars(v_last) then raise exception 'Nome e cognome contengono caratteri non validi.'; end if;
-  -- Il nome mostrato ("Nome I.") non può spacciarsi per l'app o per chi la gestisce.
-  if public.display_name_reserved(left(v_first, 36) || ' ' || left(v_last, 1)) then
-    raise exception 'Questo nome non è disponibile: scrivi il tuo nome e cognome veri.';
-  end if;
-  if p_birth_date is null or p_birth_date < date '1900-01-01' or p_birth_date > public.rome_today() then
-    raise exception 'Data di nascita non valida.';
-  end if;
-  if p_birth_date > (public.rome_today() - make_interval(years => public.min_age_years()))::date then
-    raise exception 'Per usare Virale devi avere almeno % anni.', public.min_age_years();
-  end if;
-
-  -- "Nome I.": al massimo 36 + 3 = 39 caratteri, dentro il limite di 40 anche con un nome lunghissimo.
-  insert into profiles (id, username, display_name) values (v_uid, v_user, left(v_first, 36) || ' ' || upper(left(v_last, 1)) || '.');
-  insert into profile_private (id, first_name, last_name, birth_date) values (v_uid, v_first, v_last, p_birth_date);
-  insert into identity_checks (user_id, deadline) values (v_uid, now() + make_interval(days => v_cfg.id_grace_days));
-  return jsonb_build_object('id', v_uid, 'username', v_user, 'display_name', left(v_first, 36) || ' ' || upper(left(v_last, 1)) || '.');
+  return public.create_profile(v_uid, v_user, trim(p_first_name), trim(p_last_name), p_birth_date);
 exception when unique_violation then
   raise exception 'Questo nome utente è già preso.';
+end;
+$$;
+
+/**
+ * Primo accesso con Google o Facebook: l'utente esiste in Supabase Auth (con l'email vera del provider, che
+ * non si mostra a nessuno) ma non ha ancora un profilo. Lo completa da sé, con le stesse regole e la stessa
+ * scadenza per il documento della registrazione con password. Il nome utente si sceglie qui e non è legato
+ * all'email; un nome già preso, riservato, di un espulso o di una registrazione con password in corso è rifiutato.
+ */
+create or replace function public.complete_social_profile(
+  p_username text, p_first_name text, p_last_name text, p_birth_date date, p_accept_terms boolean
+)
+returns jsonb language plpgsql security definer set search_path = public, auth, pg_temp as $$
+declare
+  v_uid uuid := auth.uid();
+  v_user text := lower(trim(p_username));
+begin
+  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
+  if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
+  if not public.is_social_user(v_uid) then raise exception 'Questo accesso non è con Google o Facebook.'; end if;
+  perform public.check_new_profile(v_user, trim(p_first_name), trim(p_last_name), p_birth_date, p_accept_terms);
+  if exists (select 1 from profiles where username = v_user)
+     or exists (select 1 from auth.users where lower(email) = v_user || '@' || public.login_domain()) then
+    raise exception 'Questo nome utente è già preso.';
+  end if;
+  return public.create_profile(v_uid, v_user, trim(p_first_name), trim(p_last_name), p_birth_date);
+exception when unique_violation then
+  raise exception 'Questo nome utente è già preso.';
+end;
+$$;
+
+-- Utenti di accesso rimasti senza profilo (li cancella la pulizia notturna, setup-produzione.sql): una
+-- registrazione con password interrotta dopo un giorno (così il nome utente si libera); un accesso con Google o
+-- Facebook mai completato dopo 7 giorni, per dare il tempo di finire il profilo.
+create or replace function public.purge_orphan_logins()
+returns int language plpgsql security definer set search_path = public, auth, pg_temp as $$
+declare
+  v_n int;
+begin
+  delete from auth.users u
+   where not exists (select 1 from public.profiles p where p.id = u.id)
+     and u.created_at < now() - case when public.is_login_email(u.email) then interval '1 day' else interval '7 days' end;
+  get diagnostics v_n = row_count;
+  return v_n;
 end;
 $$;
 
@@ -2274,6 +2356,8 @@ returns jsonb language sql stable security definer set search_path = public, pg_
                  and (n.kind <> 'cover' or coalesce((n.data->>'featured_on')::date, '-infinity'::date) <= public.cover_day())
                  and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))),
     'needs_private', not exists (select 1 from profile_private where id = auth.uid()),
+    -- Si entra con nome utente e password (false per Google/Facebook): l'app mostra cambio password e codice di recupero.
+    'has_password', public.has_password_login(auth.uid()),
     -- Se le visualizzazioni di chi guarda contano per la gara (serve solo l'età verificata).
     'voter', (select jsonb_build_object('can_vote', public.can_vote(p.id), 'from', null)
                 from profiles p where p.id = auth.uid() limit 1),
@@ -3118,18 +3202,36 @@ returns boolean language sql stable security definer set search_path = public, p
      );
 $$;
 
--- Il nome di accesso è legato al nome utente: un account non può prendersi altri nomi cambiando email.
+-- L'email di accesso non si cambia dall'app (in Supabase la conferma via email è spenta, quindi un cambio sarebbe
+-- immediato). Con nome utente e password l'email interna è legata al nome utente: un account non può prendersi
+-- altri nomi cambiando email. Con Google o Facebook l'email è quella data dal provider: non la si può sostituire
+-- con un indirizzo qualsiasi (altrimenti chi poi entrasse con Google con quell'indirizzo finirebbe collegato a
+-- questo account), né con un'email interna senza profilo (terrebbe occupato un nome utente).
+-- L'accesso con Google/Facebook non tocca auth.users.email (crea l'utente o aggiorna solo l'identità): non è bloccato.
 create or replace function public.guard_login_email()
 returns trigger language plpgsql security definer set search_path = public, auth, pg_temp as $$
 declare
   v_username text;
+  v_new text := lower(coalesce(new.email, ''));
 begin
   if new.email is not distinct from old.email then return new; end if;
   select username into v_username from public.profiles where id = new.id;
-  if v_username is not null and lower(coalesce(new.email, '')) <> v_username || '@' || public.login_domain() then
-    raise exception 'Il nome di accesso non si può cambiare.';
+  -- Email interna: solo quella del proprio nome utente (per esempio gli account anonimi di prima che impostano la password).
+  if public.is_login_email(v_new) then
+    if v_username is null or v_new <> v_username || '@' || public.login_domain() then
+      raise exception 'Il nome di accesso non si può cambiare.';
+    end if;
+    return new;
   end if;
-  return new;
+  -- Chi entra con nome utente e password non cambia (né toglie) la sua email interna.
+  if public.is_login_email(old.email) then raise exception 'Il nome di accesso non si può cambiare.'; end if;
+  -- Altrimenti solo un'email già confermata da Google o Facebook per questo stesso utente.
+  if v_new <> '' and exists (select 1 from auth.identities i
+                              where i.user_id = new.id and i.provider not in ('email', 'phone', 'anonymous')
+                                and lower(i.identity_data ->> 'email') = v_new) then
+    return new;
+  end if;
+  raise exception 'L’email di accesso non si può cambiare.';
 end;
 $$;
 do $$ begin
@@ -3264,6 +3366,8 @@ declare
 begin
   if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
   if not exists (select 1 from profile_private where id = v_uid) then raise exception 'Prima inserisci nome, cognome e data di nascita.'; end if;
+  -- Chi entra con Google o Facebook non ha una password da recuperare.
+  if not public.has_password_login(v_uid) then raise exception 'Il tuo account non ha una password: non serve un codice di recupero.'; end if;
   if (select count(*) from rate_events where user_id = v_uid and kind = 'recovery_code' and at > now() - interval '1 hour') >= 5 then
     raise exception 'Hai creato troppi codici in poco tempo: riprova tra un’ora.';
   end if;
@@ -3293,7 +3397,8 @@ begin
   select p.id, v.recovery_hash into v_id, v_hash
     from profiles p join profile_private v on v.id = p.id
    where p.username = lower(trim(regexp_replace(coalesce(p_username, ''), '^@+', ''))) and p.banned_at is null;
-  if v_id is null then return null; end if;
+  -- Solo gli account con nome utente e password (chi entra con Google o Facebook non ha una password).
+  if v_id is null or not public.has_password_login(v_id) then return null; end if;
   if (select count(*) from rate_events where user_id = v_id and kind = 'recovery_fail' and at > now() - interval '1 hour') >= 5 then
     raise exception 'Troppi tentativi: riprova tra un’ora.';
   end if;
@@ -3707,6 +3812,14 @@ grant execute on function public.can_act(uuid) to authenticated;
 grant execute on function public.is_admin(uuid) to authenticated;
 grant execute on function public.username_available(text) to anon, authenticated;
 grant execute on function public.complete_registration(text, text, text, date, boolean) to authenticated;
+-- Primo accesso con Google/Facebook: solo chi ha una sessione (anon no). Le funzioni di appoggio non si chiamano dall'app.
+revoke all on function public.complete_social_profile(text, text, text, date, boolean) from public, anon;
+grant execute on function public.complete_social_profile(text, text, text, date, boolean) to authenticated;
+revoke all on function public.create_profile(uuid, text, text, text, date) from public, anon, authenticated;
+revoke all on function public.check_new_profile(text, text, text, date, boolean) from public, anon, authenticated;
+revoke all on function public.has_password_login(uuid) from public, anon, authenticated;
+revoke all on function public.is_social_user(uuid) from public, anon, authenticated;
+revoke all on function public.purge_orphan_logins() from public, anon, authenticated;
 grant execute on function public.my_status() to authenticated;
 grant execute on function public.get_settings() to anon, authenticated;
 grant execute on function public.admin_set_settings(int, int) to authenticated;

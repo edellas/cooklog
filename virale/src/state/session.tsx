@@ -1,10 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 
-import { getMe, getStatus } from '../services/api';
+import { getAuthState, getStatus } from '../services/api';
 import { friendlyError, setCanAct } from '../services/errors';
+import { finishWebRedirect } from '../services/oauth';
 import { supabase } from '../services/supabase';
-import type { Me, Status } from '../types';
+import type { Me, SocialDraft, Status } from '../types';
 import { forgetRecentChanges } from './postEvents';
 import { clearViews } from './views';
 
@@ -14,6 +15,10 @@ type Session = {
   error: string | null;
   retry: () => void;
   setMe: (me: Me | null) => void;
+  /** Entrato con Google o Facebook, profilo da completare: l'app mostra solo "Completa il profilo". */
+  pending: SocialDraft | null;
+  /** Rilegge chi è collegato (dopo l'accesso con Google/Facebook): restituisce lo stato letto. */
+  refreshAuth: () => Promise<{ me: Me | null; pending: SocialDraft | null }>;
   /** Stesso utente con nome o foto cambiati: niente azzeramento dello stato (non è un cambio di account). */
   updateMe: (me: Me) => void;
   /** Verifica dell'età, ruoli, notifiche non lette, impostazioni. Null finché non arriva. */
@@ -34,6 +39,7 @@ export function currentMe(): Me | null {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [me, setMeState] = useState<Me | null | undefined>(undefined);
+  const [pending, setPending] = useState<SocialDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [version, setVersion] = useState(0);
@@ -47,17 +53,45 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     forgetRecentChanges();
     setCanAct(null);
     setStatus(null);
+    setPending(null);
     setMeState(next);
   }, []);
 
   const updateMe = useCallback((next: Me) => setMeState((cur) => (cur && cur.id === next.id ? next : cur)), []);
 
+  /** Cresce a ogni lettura dell'account: una lettura partita prima (all'avvio) non sovrascrive una più recente. */
+  const authReads = useRef(0);
+
   const retry = useCallback(() => {
     setError(null);
-    getMe()
-      .then(setMeState)
-      .catch((e: unknown) => setError(friendlyError(e)));
+    const read = ++authReads.current;
+    // Sul web, di ritorno da Google/Facebook, prima si scambia il codice dell'indirizzo con la sessione.
+    finishWebRedirect()
+      .catch(() => undefined)
+      .then(getAuthState)
+      .then((st) => {
+        if (read !== authReads.current) return;
+        setPending(st.pending);
+        setMeState(st.me);
+      })
+      .catch((e: unknown) => {
+        if (read === authReads.current) setError(friendlyError(e));
+      });
   }, []);
+
+  const refreshAuth = useCallback(async () => {
+    authReads.current += 1;
+    setError(null);
+    const st = await getAuthState();
+    if (st.me) {
+      if (st.me.id !== current?.id) setMe(st.me);
+    } else {
+      if (current) setMe(null);
+      setPending(st.pending);
+      setMeState(null);
+    }
+    return st;
+  }, [setMe]);
   useEffect(retry, [retry]);
 
   // Sessione chiusa altrove (password cambiata su un altro telefono, token scaduto): si torna al benvenuto.
@@ -102,8 +136,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
   const value = useMemo(
-    () => ({ me, setMe, updateMe, error, retry, status, refreshStatus, version, bump }),
-    [me, setMe, updateMe, error, retry, status, refreshStatus, version, bump],
+    () => ({ me, setMe, pending, refreshAuth, updateMe, error, retry, status, refreshStatus, version, bump }),
+    [me, setMe, pending, refreshAuth, updateMe, error, retry, status, refreshStatus, version, bump],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -32,10 +32,13 @@ import type {
   NotificationKind,
   Post,
   Profile,
-  RegisterInput,
+  ProfileInput,
   Settings,
+  SocialDraft,
+  SocialProvider,
   Status,
 } from '../types';
+import type { User } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
 
 import { charCount } from '../design/text';
@@ -469,6 +472,8 @@ type DemoDb = {
   seen?: Record<string, number>;
   /** Post già stati in gara (id → giorno): come sul server, ogni post partecipa una volta sola. */
   contested?: Record<string, string>;
+  /** Accesso con Google/Facebook simulato, profilo ancora da completare. */
+  pending?: SocialDraft | null;
 };
 
 type DemoUserReport = {
@@ -487,7 +492,10 @@ type DemoUserState = Pick<DemoDb, 'likes' | 'saves' | 'following' | 'blocked' | 
 
 type DemoAccount = {
   me: Me;
+  /** Vuota per gli account che entrano con Google/Facebook (simulati): con la password non si entra. */
   passwordHash: string;
+  /** Account creato con l'accesso simulato di Google o Facebook. */
+  social?: SocialProvider;
   firstName: string;
   lastName: string;
   birthDate: string;
@@ -804,17 +812,26 @@ function toCover(demo: DemoDb, cv: DemoDb['covers'][number]): Cover {
 // ===========================================================================
 
 export async function getMe(): Promise<Me | null> {
+  return (await getAuthState()).me;
+}
+
+/**
+ * Chi è collegato: `me` con il profilo; `pending` se è entrato con Google o Facebook ma il profilo è ancora da
+ * completare (l'app mostra solo "Completa il profilo"); entrambi null senza accesso.
+ * Un errore di rete NON significa "nessun account": lo si segnala, così l'app propone di riprovare.
+ */
+export async function getAuthState(): Promise<{ me: Me | null; pending: SocialDraft | null }> {
   if (!isDemo) {
-    // Un errore di rete NON significa "nessun account": lo si segnala, così l'app propone di riprovare.
     const { data, error } = await db().auth.getSession();
     if (error) throw new Error(friendlyError(error));
-    const id = data.session?.user.id;
-    if (!id) return null;
-    const { data: row, error: e2 } = await db().from('profiles').select('id, username, display_name').eq('id', id).maybeSingle();
+    const user = data.session?.user;
+    if (!user) return { me: null, pending: null };
+    const { data: row, error: e2 } = await db().from('profiles').select('id, username, display_name').eq('id', user.id).maybeSingle();
     if (e2) throw new Error(friendlyError(e2));
-    return row ? { id: row.id, username: row.username, displayName: row.display_name } : null;
+    if (row) return { me: { id: row.id, username: row.username, displayName: row.display_name }, pending: null };
+    return { me: null, pending: socialDraft(user) };
   }
-  return withDemo((demo) => demo.me);
+  return withDemo((demo) => ({ me: demo.me, pending: demo.me ? null : (demo.pending ?? null) }));
 }
 
 /**
@@ -823,6 +840,26 @@ export async function getMe(): Promise<Me | null> {
  */
 const LOGIN_DOMAIN = process.env.EXPO_PUBLIC_LOGIN_DOMAIN || 'utenti.virale.invalid';
 const loginEmail = (username: string) => `${username.trim().toLowerCase().replace(/^@/, '')}@${LOGIN_DOMAIN}`;
+const isLoginEmail = (email: string | null | undefined) => Boolean(email && email.toLowerCase().endsWith(`@${LOGIN_DOMAIN}`));
+
+const SOCIAL_PROVIDERS: SocialProvider[] = ['google', 'facebook'];
+/** Con quale provider esterno si entra (null con nome utente e password o con i vecchi account anonimi). */
+function socialProviderOf(user: User): SocialProvider | null {
+  if (user.is_anonymous || isLoginEmail(user.email)) return null;
+  const used = [user.app_metadata?.provider, ...((user.app_metadata?.providers as string[] | undefined) ?? [])];
+  return SOCIAL_PROVIDERS.find((p) => used.includes(p)) ?? null;
+}
+/** Il profilo da completare dopo il primo accesso con Google/Facebook, con nome e cognome proposti dal provider. */
+function socialDraft(user: User): SocialDraft | null {
+  const provider = socialProviderOf(user);
+  if (!provider) return null;
+  const m = (user.user_metadata ?? {}) as Record<string, unknown>;
+  const text = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
+  const full = text(m.full_name) || text(m.name);
+  const firstName = text(m.given_name) || text(m.first_name) || full.split(' ')[0] || '';
+  const lastName = text(m.family_name) || text(m.last_name) || full.split(' ').slice(1).join(' ');
+  return { provider, email: user.email || null, firstName: firstName.slice(0, 60), lastName: lastName.slice(0, 60) };
+}
 /** Stesse regole di username_format_ok / username_reserved in schema.sql (solo per le iscrizioni nuove). */
 const USERNAME = /^[a-z0-9_.]{3,24}$/;
 const RESERVED_USERNAMES = ['virale', 'admin', 'amministratore', 'moderatore', 'moderazione', 'supporto', 'assistenza', 'staff', 'ufficiale', 'official', 'help', 'aiuto', 'copertina', 'provini', 'sistema', 'root'];
@@ -845,24 +882,24 @@ export function ageOn(birthDate: string, today = arenaDay()): number {
   return ty - by - (tm < bm || (tm === bm && td < bd) ? 1 : 0);
 }
 
-/** I campi del modulo di registrazione, nell'ordine in cui compaiono: l'errore va sotto quello giusto. */
-export type RegisterField = 'first' | 'last' | 'birth' | 'username' | 'password' | 'again' | 'terms';
-export type RegistrationProblem = { field: RegisterField; message: string };
+/** I campi del modulo "Completa il profilo", nell'ordine in cui compaiono: l'errore va sotto quello giusto. */
+export type ProfileField = 'first' | 'last' | 'birth' | 'username' | 'terms';
+export type ProfileProblem = { field: ProfileField; message: string };
 
 /**
- * Controlli del modulo di registrazione, campo per campo e nell'ordine del modulo (gli stessi li rifà il
- * server). `again` è la password ripetuta: si controlla solo se passata.
+ * Controlli del profilo al primo accesso, campo per campo e nell'ordine del modulo (gli stessi li rifà il
+ * server, check_new_profile in schema.sql).
  */
-export function validateRegistration(input: RegisterInput, again?: string): RegistrationProblem | null {
+export function validateProfile(input: ProfileInput): ProfileProblem | null {
   const u = input.username.trim().toLowerCase();
-  const bad = (field: RegisterField, message: string): RegistrationProblem => ({ field, message });
+  const bad = (field: ProfileField, message: string): ProfileProblem => ({ field, message });
   if (!input.firstName.trim()) return bad('first', 'Scrivi nome e cognome.');
   if (!input.lastName.trim()) return bad('last', 'Scrivi nome e cognome.');
   if (input.firstName.trim().length > 60) return bad('first', 'Nome e cognome: al massimo 60 caratteri.');
   if (input.lastName.trim().length > 60) return bad('last', 'Nome e cognome: al massimo 60 caratteri.');
   if (NAME_BAD_CHARS.test(input.firstName.trim())) return bad('first', 'Nome e cognome contengono caratteri non validi.');
   if (NAME_BAD_CHARS.test(input.lastName.trim())) return bad('last', 'Nome e cognome contengono caratteri non validi.');
-  // Il nome mostrato ("Nome I.") non può spacciarsi per l'app o per chi la gestisce (come complete_registration).
+  // Il nome mostrato ("Nome I.") non può spacciarsi per l'app o per chi la gestisce (come check_new_profile).
   if (displayNameReserved(`${input.firstName.trim().slice(0, 36)} ${input.lastName.trim().slice(0, 1)}`)) {
     return bad('first', 'Questo nome non è disponibile: scrivi il tuo nome e cognome veri.');
   }
@@ -874,10 +911,6 @@ export function validateRegistration(input: RegisterInput, again?: string): Regi
   if (ageOn(input.birthDate) < MIN_AGE_YEARS) return bad('birth', `Per usare Virale devi avere almeno ${MIN_AGE_YEARS} anni.`);
   if (!usernameFormatOk(u)) return bad('username', USERNAME_RULES);
   if (usernameReserved(u)) return bad('username', USERNAME_RESERVED);
-  const weak = passwordProblem(input.password, u);
-  if (weak) return bad('password', weak);
-  if (again !== undefined && !again) return bad('again', 'Ripeti la password.');
-  if (again !== undefined && again !== input.password) return bad('again', 'Le due password non coincidono.');
   if (!input.acceptedTerms) return bad('terms', 'Per registrarti devi accettare termini e linee guida.');
   return null;
 }
@@ -1041,61 +1074,45 @@ export async function usernameAvailable(username: string): Promise<boolean> {
   return withDemo((demo) => !Object.values(demo.people).some((p) => p.username === u) && !demo.accounts?.[u]);
 }
 
-/** Registrazione: nome, cognome, data di nascita, nome utente e password. */
-export async function register(input: RegisterInput): Promise<Me> {
-  const problem = validateRegistration(input);
+/**
+ * Primo accesso con Google o Facebook: si completa il profilo (nome utente, nome, cognome, data di nascita,
+ * termini). Da qui in poi tutto come per gli altri account, verifica dell'età compresa.
+ */
+export async function completeSocialProfile(input: ProfileInput): Promise<Me> {
+  const problem = validateProfile(input);
   if (problem) throw new Error(problem.message);
   const username = input.username.trim().toLowerCase();
   if (!isDemo) {
-    // Prima si controlla il nome: così non resta un utente di autenticazione "orfano" con un nome già preso.
-    if (!(await rpc<boolean>('username_available', { p_username: username }))) {
-      throw new Error('Questo nome utente è già preso. Se è tuo, usa "Ho già un account".');
-    }
-    let { data, error } = await db().auth.signUp({ email: loginEmail(username), password: input.password });
-    if (error && /already registered|already exists/i.test(error.message)) {
-      // Una registrazione interrotta (per esempio senza rete) ha lasciato l'utente senza profilo: si riprende.
-      const res = await db().auth.signInWithPassword({ email: loginEmail(username), password: input.password });
-      if (res.error) throw new Error('Questo nome utente è già preso. Se è tuo, usa "Ho già un account".');
-      if (await getMe()) {
-        await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
-        throw new Error('Hai già un account con questo nome: usa "Ho già un account".');
-      }
-      data = { user: res.data.user, session: res.data.session };
-      error = null;
-    }
-    if (error) throw new Error(authMessage(error.message));
-    if (!data.session) {
-      throw new Error('Registrazione non completata: in Supabase va disattivata la conferma via email (Authentication → Sign In / Providers → Email).');
-    }
-    const row = await rpc<{ id: string; username: string; display_name: string }>('complete_registration', {
-      p_username: username,
-      p_first_name: input.firstName.trim(),
-      p_last_name: input.lastName.trim(),
-      p_birth_date: input.birthDate,
-      p_accept_terms: input.acceptedTerms,
-    }).catch(async (e: Error) => {
-      // Senza profilo l'utente di accesso resterebbe "orfano" e terrebbe occupato il nome: lo si elimina.
-      // Ma solo se il profilo davvero non c'è (un secondo tocco su "Registrati" non deve cancellare il primo).
-      const existing = await getMe().catch(() => null);
-      if (existing) return { id: existing.id, username: existing.username, display_name: existing.displayName };
-      await rpc('delete_my_account').catch(() => undefined);
-      await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
+    try {
+      const row = await rpc<{ id: string; username: string; display_name: string }>('complete_social_profile', {
+        p_username: username,
+        p_first_name: input.firstName.trim(),
+        p_last_name: input.lastName.trim(),
+        p_birth_date: input.birthDate,
+        p_accept_terms: input.acceptedTerms,
+      });
+      return { id: row.id, username: row.username, displayName: row.display_name };
+    } catch (e) {
+      // Un secondo tocco (o una risposta persa per strada) mentre il primo ha già creato il profilo: si entra.
+      const done = await getMe().catch(() => null);
+      if (done) return done;
       throw e;
-    });
-    return { id: row.id, username: row.username, displayName: row.display_name };
+    }
   }
-  const passwordHash = await demoHash(username, input.password);
   return withDemo((demo) => {
+    const pending = demo.pending;
+    if (!pending) throw new Error(SESSION_ERROR);
     if (Object.values(demo.people).some((p) => p.username === username) || demo.accounts?.[username]) throw new Error('Questo nome utente è già preso.');
-    saveDemoUser(demo);
     const first = input.firstName.trim();
     const last = input.lastName.trim();
     // Come sul server: "Nome I.", contando i caratteri (un'emoji è uno solo, non due).
     const me: Me = { id: `me-${username}`, username, displayName: `${Array.from(first).slice(0, 36).join('')} ${(Array.from(last)[0] ?? '').toUpperCase()}.` };
     const deadline = new Date(Date.now() + demo.settings!.idGraceDays * 86400_000).toISOString();
-    demo.accounts![username] = {
+    demo.accounts ??= {};
+    demo.accounts[username] = {
       me,
-      passwordHash,
+      passwordHash: '',
+      social: pending.provider,
       firstName: first,
       lastName: last,
       birthDate: input.birthDate,
@@ -1103,9 +1120,52 @@ export async function register(input: RegisterInput): Promise<Me> {
       createdAt: new Date().toISOString(),
     };
     demo.people[me.id] = { ...me, bio: '', followers: 0, following: 0 };
-    restoreDemoUser(demo, demo.accounts![username]);
+    demo.pending = null;
+    restoreDemoUser(demo, demo.accounts[username]);
     demo.people[me.id].following = demo.following.length;
     return me;
+  }, true);
+}
+
+/**
+ * "Completa il profilo" abbandonato: si esce e, se il profilo davvero non c'è, si cancella subito l'utente di
+ * accesso con i dati ricevuti dal provider (altrimenti li cancella la pulizia notturna dopo 7 giorni).
+ */
+export async function cancelSocialProfile(): Promise<void> {
+  if (!isDemo) {
+    const st = await getAuthState().catch(() => null);
+    if (st && !st.me && st.pending) await rpc('delete_my_account').catch(() => undefined);
+    await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
+    return;
+  }
+  await withDemo((demo) => {
+    demo.pending = null;
+  }, true);
+}
+
+/** Demo: gli account creati sul dispositivo con l'accesso simulato di quel provider (come la scelta dell'account di Google). */
+export async function demoSocialAccounts(provider: SocialProvider): Promise<Me[]> {
+  return withDemo((demo) => Object.values(demo.accounts ?? {}).filter((a) => a.social === provider).map((a) => a.me));
+}
+
+/**
+ * Demo: accesso simulato con Google o Facebook. Con un nome utente si rientra in quell'account; senza, si
+ * comincia un account nuovo (profilo da completare). Nessun dato lascia il dispositivo.
+ */
+export async function demoSocialSignIn(provider: SocialProvider, username: string | null): Promise<Me | null> {
+  return withDemo((demo) => {
+    if (username) {
+      const acc = demo.accounts?.[username];
+      if (!acc || acc.social !== provider) throw new Error('Account non trovato su questo dispositivo.');
+      saveDemoUser(demo);
+      restoreDemoUser(demo, acc);
+      demo.pending = null;
+      return acc.me;
+    }
+    saveDemoUser(demo);
+    demo.me = null;
+    demo.pending = { provider, email: null, firstName: '', lastName: '' };
+    return null;
   }, true);
 }
 
@@ -1118,7 +1178,7 @@ export async function login(username: string, password: string): Promise<Me> {
     const me = await getMe();
     if (!me) {
       await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
-      throw new Error('La registrazione di questo account non è stata completata: registrati di nuovo con lo stesso nome utente e la stessa password.');
+      throw new Error('La registrazione di questo account non è stata completata. Entra con Google o Facebook per creare il tuo account.');
     }
     return me;
   }
@@ -2393,6 +2453,7 @@ type StatusJson = {
   is_admin: boolean;
   banned?: boolean;
   needs_private?: boolean;
+  has_password?: boolean;
   voter?: { can_vote: boolean; from: string | null } | null;
   unread: number;
   settings: {
@@ -2409,9 +2470,15 @@ export async function getStatus(): Promise<Status> {
   if (!isDemo) {
     const [r, session] = await Promise.all([rpc<StatusJson>('my_status'), db().auth.getSession()]);
     const user = session.data.session?.user;
+    const social = user ? socialProviderOf(user) : null;
+    // Con un server non ancora aggiornato (senza has_password) si guarda l'email di accesso.
+    const hasPassword = typeof r.has_password === 'boolean' ? r.has_password : isLoginEmail(user?.email);
     return {
       // Account creati con il vecchio "Entra" (anonimi): non hanno password finché non la impostano.
-      needsPassword: Boolean(user && (user.is_anonymous || !user.email)),
+      // Chi entra con Google o Facebook non ne ha bisogno.
+      needsPassword: Boolean(user) && !hasPassword && !social,
+      hasPassword,
+      social,
       identity: r.identity
         ? {
             status: r.identity.status,
@@ -2441,6 +2508,8 @@ export async function getStatus(): Promise<Status> {
       banned: Boolean(acc?.bannedAt),
       needsPrivate: false,
       needsPassword: false,
+      hasPassword: Boolean(acc?.passwordHash),
+      social: acc?.social ?? null,
       unread: (demo.notifications ?? []).filter((n) => !n.read && (!n.actor || !demo.blocked.includes(n.actor.id))).length,
       settings: demo.settings!,
       // Come sul server: le visualizzazioni contano per la gara con l'età verificata, subito.
@@ -2850,7 +2919,7 @@ export async function purgeStorage(): Promise<number> {
 
 /** Per chi si era iscritto prima: nome, cognome e data di nascita, necessari per verificare l'età. */
 export async function completePrivateData(firstName: string, lastName: string, birthDate: string): Promise<void> {
-  const problem = validateRegistration({ username: 'utente', firstName, lastName, birthDate, password: 'a1aaaaaaaa', acceptedTerms: true });
+  const problem = validateProfile({ username: 'utente', firstName, lastName, birthDate, acceptedTerms: true });
   if (problem) throw new Error(problem.message);
   if (!isDemo) {
     await rpc('complete_private_data', { p_first_name: firstName.trim(), p_last_name: lastName.trim(), p_birth_date: birthDate });

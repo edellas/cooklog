@@ -1163,6 +1163,9 @@ end $$;
 reset role;
 
 -- ---------- Codice di recupero della password (W20) ----------
+-- Un account con nome utente e password: l'email di accesso è quella interna del nome utente.
+update auth.users u set email = p.username || '@utenti.virale.invalid' from profiles p
+ where p.id = u.id and u.id = '00000000-0000-0000-0000-000000000102';
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000102', false);
 create temp table recovery_code as select create_recovery_code() as code;
@@ -1651,4 +1654,146 @@ do $$ begin
   if exists (select 1 from media_checks where owner_id = '00000000-0000-0000-0000-0000000c0de1' and kind = 'caption') then raise exception 'esito di una didascalia rimasto'; end if;
   if not exists (select 1 from media_checks where path = '00000000-0000-0000-0000-0000000c0de1/ok.jpg') then raise exception 'esito di un file pubblicato cancellato'; end if;
   raise notice 'ok, esiti del controllo: restano solo quelli dei file pubblicati';
+end $$;
+
+-- ---------- Accesso con Google / Facebook: utente di accesso senza profilo che completa il profilo ----------
+reset role;
+select set_config('request.jwt.claim.sub', '', false);
+insert into auth.users (id, email) values
+  ('00000000-0000-0000-0000-0000000005a1', 'anna.social@gmail.com'),
+  ('00000000-0000-0000-0000-0000000005a2', null),
+  ('00000000-0000-0000-0000-0000000005a3', 'inattesa@utenti.virale.invalid');
+insert into auth.identities (user_id, provider, provider_id, identity_data) values
+  ('00000000-0000-0000-0000-0000000005a1', 'google', 'g-5a1', '{"email": "anna.social@gmail.com", "full_name": "Anna Social"}'),
+  ('00000000-0000-0000-0000-0000000005a2', 'facebook', 'f-5a2', '{"name": "Bruno"}'),
+  ('00000000-0000-0000-0000-0000000005a3', 'email', '00000000-0000-0000-0000-0000000005a3', '{"email": "inattesa@utenti.virale.invalid"}');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000005a1', false);
+do $$ begin
+  if not (my_status() ->> 'needs_private')::boolean then raise exception 'senza profilo: mancano i dati privati'; end if;
+  -- Nome già preso, riservato, di un espulso o di una registrazione con password in corso; formato sbagliato.
+  begin perform complete_social_profile('gara1', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%già preso%' then raise; end if; end;
+  begin perform complete_social_profile('GARA1 ', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%già preso%' then raise; end if; end;
+  begin perform complete_social_profile('admin_anna', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  begin perform complete_social_profile('supporto', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  begin perform complete_social_profile('cattivo', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non è disponibile%' then raise; end if; end;
+  begin perform complete_social_profile('inattesa', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%già preso%' then raise; end if; end;
+  begin perform complete_social_profile('.anna', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like 'Nome utente:%' then raise; end if; end;
+  raise notice 'ok, accesso social: nome utente preso, riservato, di un espulso o in registrazione rifiutato';
+end $$;
+do $$ begin
+  begin perform complete_social_profile('anna_s', 'Anna', 'Social', (current_date - interval '13 years')::date, true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%almeno 14 anni%' then raise; end if; end;
+  begin perform complete_social_profile('anna_s', 'Anna', 'Social', current_date + 1, true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%Data di nascita non valida%' then raise; end if; end;
+  begin perform complete_social_profile('anna_s', 'Anna', 'Social', '2001-02-03', false); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%accettare termini%' then raise; end if; end;
+  begin perform complete_social_profile('anna_s', 'Staff', 'Virale', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%nome e cognome veri%' then raise; end if; end;
+  begin perform complete_social_profile('anna_s', ' ', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%Scrivi nome e cognome%' then raise; end if; end;
+  if exists (select 1 from profiles where id = auth.uid()) then raise exception 'profilo creato da un tentativo rifiutato'; end if;
+  raise notice 'ok, accesso social: minorenne, data, termini e nomi non validi rifiutati';
+end $$;
+-- Con l'accesso social non si usa la registrazione con password (il nome è legato all'email interna).
+do $$ begin perform complete_registration('anna_s', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non valido per questo accesso%' then raise; end if; raise notice 'ok, registrazione con password non usabile da un accesso social'; end $$;
+select complete_social_profile(' Anna_S ', ' Anna ', 'Social', '2001-02-03', true) ->> 'display_name' as nome_mostrato_social;
+do $$
+declare s jsonb := my_status();
+begin
+  if (select username || '|' || display_name from profiles where id = auth.uid()) <> 'anna_s|Anna S.' then raise exception 'profilo social: %', (select username || '|' || display_name from profiles where id = auth.uid()); end if;
+  if (select first_name || ' ' || last_name || ' ' || birth_date from profile_private where id = auth.uid()) <> 'Anna Social 2001-02-03' then raise exception 'dati privati social'; end if;
+  if (s -> 'identity' ->> 'status') <> 'missing' or not (s -> 'identity' ->> 'can_act')::boolean then raise exception 'verifica social: %', s -> 'identity'; end if;
+  if (select deadline from identity_checks where user_id = auth.uid()) - make_interval(days => (get_settings() ->> 'id_grace_days')::int)
+     not between now() - interval '1 minute' and now() + interval '1 minute' then
+    raise exception 'scadenza del documento social';
+  end if;
+  if (s ->> 'needs_private')::boolean or (s ->> 'has_password')::boolean then raise exception 'stato social: %', s; end if;
+  raise notice 'ok, accesso social: profilo completato con dati privati, scadenza del documento e nessuna password';
+end $$;
+do $$ begin perform complete_social_profile('anna_due', 'Anna', 'Social', '2001-02-03', true); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%già un profilo%' then raise; end if; raise notice 'ok, accesso social: secondo completamento rifiutato'; end $$;
+do $$ begin perform create_recovery_code(); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non ha una password%' then raise; end if; raise notice 'ok, accesso social: niente codice di recupero'; end $$;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000007', false);
+do $$ begin
+  if not (my_status() ->> 'has_password')::boolean then raise exception 'account con password senza has_password'; end if;
+  raise notice 'ok, account con nome utente e password: has_password';
+end $$;
+-- Un utente con l'email interna (registrazione con password interrotta) non completa come utente social.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000005a3', false);
+do $$ begin perform complete_social_profile('altro_nome', 'Ugo', 'Rossi', '1990-01-01', true); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%non è con Google o Facebook%' then raise; end if; raise notice 'ok, email interna: niente profilo social'; end $$;
+-- Senza sessione: rifiutato.
+reset role;
+select set_config('request.jwt.claim.sub', '', false);
+set role anon;
+do $$ begin perform complete_social_profile('anonimo', 'Ano', 'Nimo', '1990-01-01', true); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, anon non completa un profilo'; end $$;
+set role authenticated;
+do $$ begin perform complete_social_profile('anonimo', 'Ano', 'Nimo', '1990-01-01', true); raise exception 'NON DOVEVA PASSARE';
+exception when others then if sqlerrm not like '%Autenticazione richiesta%' then raise; end if; raise notice 'ok, senza utente niente profilo'; end $$;
+reset role;
+-- Il codice di recupero non vale per chi entra con Google/Facebook, anche se un'impronta ci fosse.
+update profile_private set recovery_hash = crypt('ABCDABCDABCDABCD', gen_salt('bf', 4)) where id = '00000000-0000-0000-0000-0000000005a1';
+do $$ begin
+  if recovery_redeem('anna_s', 'ABCD-ABCD-ABCD-ABCD', false) is not null then raise exception 'recupero della password per un account social'; end if;
+  raise notice 'ok, accesso social: recupero della password rifiutato';
+end $$;
+-- Email di accesso: nessun cambio arbitrario; l'accesso con Google/Facebook non è bloccato.
+do $$ begin
+  begin update auth.users set email = 'altro@gmail.com' where id = '00000000-0000-0000-0000-0000000005a1'; raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non si può cambiare%' then raise; end if; end;
+  begin update auth.users set email = null where id = '00000000-0000-0000-0000-0000000005a1'; raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non si può cambiare%' then raise; end if; end;
+  begin update auth.users set email = 'gara1@utenti.virale.invalid' where id = '00000000-0000-0000-0000-0000000005a1'; raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non si può cambiare%' then raise; end if; end;
+  -- Senza profilo un'email interna terrebbe occupato un nome utente.
+  begin update auth.users set email = 'libero@utenti.virale.invalid' where id = '00000000-0000-0000-0000-0000000005a2'; raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non si può cambiare%' then raise; end if; end;
+  -- Con nome utente e password l'email interna resta quella.
+  begin update auth.users set email = 'inattesa@gmail.com' where id = '00000000-0000-0000-0000-0000000005a3'; raise exception 'NON DOVEVA PASSARE';
+  exception when others then if sqlerrm not like '%non si può cambiare%' then raise; end if; end;
+  -- Un'email confermata da un provider per lo stesso utente si accetta.
+  insert into auth.identities (user_id, provider, provider_id, identity_data)
+    values ('00000000-0000-0000-0000-0000000005a1', 'facebook', 'f-5a1', '{"email": "Anna.Nuova@gmail.com"}');
+  update auth.users set email = 'anna.nuova@gmail.com' where id = '00000000-0000-0000-0000-0000000005a1';
+  update auth.users set email = 'anna.nuova@gmail.com', created_at = created_at where id = '00000000-0000-0000-0000-0000000005a1';
+  raise notice 'ok, email di accesso: niente cambi arbitrari, email del provider accettata';
+end $$;
+-- Pulizia notturna degli utenti di accesso senza profilo: password dopo un giorno, social dopo 7 giorni.
+update auth.users set created_at = now() - interval '3 days'
+ where id in ('00000000-0000-0000-0000-0000000005a1', '00000000-0000-0000-0000-0000000005a2', '00000000-0000-0000-0000-0000000005a3');
+do $$ begin
+  perform purge_orphan_logins();
+  if exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000005a3') then raise exception 'registrazione con password interrotta non cancellata'; end if;
+  if not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000005a2') then raise exception 'accesso social che sta completando il profilo cancellato'; end if;
+  update auth.users set created_at = now() - interval '8 days' where id in ('00000000-0000-0000-0000-0000000005a1', '00000000-0000-0000-0000-0000000005a2');
+  perform purge_orphan_logins();
+  if exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000005a2') then raise exception 'accesso social abbandonato non cancellato'; end if;
+  if not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000005a1') then raise exception 'utente con profilo cancellato dalla pulizia'; end if;
+  raise notice 'ok, pulizia: registrazioni interrotte dopo un giorno, accessi social senza profilo dopo 7 giorni';
+end $$;
+set role authenticated;
+do $$ begin perform purge_orphan_logins(); raise exception 'NON DOVEVA PASSARE';
+exception when insufficient_privilege then raise notice 'ok, pulizia degli accessi non chiamabile dall''app'; end $$;
+-- Eliminazione dell'account anche per chi entra con Google/Facebook.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000005a1', false);
+select delete_my_account();
+reset role;
+select set_config('request.jwt.claim.sub', '', false);
+do $$ begin
+  if exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000005a1') or exists (select 1 from profiles where username = 'anna_s')
+     or exists (select 1 from auth.identities where user_id = '00000000-0000-0000-0000-0000000005a1') then
+    raise exception 'account social non eliminato';
+  end if;
+  raise notice 'ok, account social eliminato con profilo e identità';
 end $$;

@@ -26,6 +26,7 @@ import {
 } from '../src/services/api';
 import { openPushSettings, pushMissingReason, pushPermission, registerPush, type PushState } from '../src/services/push';
 import { invite, inviteText } from '../src/services/share';
+import { PROVIDER_NAME } from '../src/services/oauth';
 import { RecoveryCodeCard } from '../src/components/RecoveryCode';
 import { flushViews } from '../src/state/views';
 import { Field } from '../src/components/Field';
@@ -141,8 +142,23 @@ export default function Settings() {
             <PasswordSet />
           ) : (
             <>
-              <PasswordChange />
-              <RecoveryCode />
+              {/* Cambio password e codice di recupero solo per chi entra con nome utente e password. */}
+              {status?.hasPassword ? (
+                <>
+                  <PasswordChange />
+                  <RecoveryCode />
+                </>
+              ) : status?.social ? (
+                <View style={styles.row}>
+                  <Icon name="chiave" size={22} />
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Txt variant="label">{`Accedi con ${PROVIDER_NAME[status.social]}`}</Txt>
+                    <Txt variant="small" tone={color.paperFaint}>
+                      {`Non serve una password: per entrare tocca “Continua con ${PROVIDER_NAME[status.social]}”.`}
+                    </Txt>
+                  </View>
+                </View>
+              ) : null}
               <Press style={styles.row} onPress={() => void exit()} accessibilityRole="button">
                 <Icon name="esci" size={22} />
                 <Txt variant="label" style={{ flex: 1 }}>

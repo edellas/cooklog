@@ -24,9 +24,80 @@ ti dice cosa manca ancora.
 
 ## 0. Hai già Virale su Supabase? Aggiorna così (in quest'ordine)
 
-Questa versione aggiunge foto profilo, ricerca, segnalazione di commenti e profili, codice di recupero della
+Questa versione aggiunge l'accesso con Google e Facebook, foto profilo, ricerca, segnalazione di commenti e profili, codice di recupero della
 password, notifiche push, pulizia automatica dei file e pagina per i link condivisi. Si fa tutto dal browser
 (anche del telefono): supabase.com, expo.dev, GitHub, Firebase.
+
+**Accesso con Google e Facebook (nuovo).** Chi si iscrive ora entra con "Continua con Google" o "Continua con
+Facebook"; al primo accesso completa il profilo (nome utente, nome, cognome, data di nascita, termini), poi tutto
+come prima, verifica dell'età compresa. Gli account già creati continuano a entrare con nome utente e password
+("Hai un account con password? Accedi"). Nell'app non ci sono chiavi né moduli nuovi: l'accesso passa dal browser
+e da Supabase. Serve una **build nuova** (passo 9) e va **rieseguito `supabase/schema.sql`** (passo 2): crea la
+funzione che completa il profilo e i controlli sull'email di accesso. Finché un provider non è acceso, il suo
+pulsante risponde "L'accesso con … non è ancora attivo". Si fa tutto dal browser, anche del telefono (per Google
+Cloud e Meta conviene la "versione desktop" del sito). Al posto di `<progetto>` metti il codice del tuo progetto
+Supabase (quello di `https://<progetto>.supabase.co`, in Project Settings → API).
+
+A. **Supabase → Authentication → URL Configuration**:
+   - **Site URL**: l'indirizzo del sito, `https://edellas.github.io/cooklog`;
+   - **Redirect URLs** → *Add URL*: `virale://auth` (è dove torna l'app dopo l'accesso; scritto esattamente così).
+     Se un giorno pubblichi anche la versione web dell'app, aggiungi pure il suo indirizzo (per esempio `https://app.tuosito.it`).
+
+B. **Google** (gratis) — su <https://console.cloud.google.com>:
+   1. In alto, menu dei progetti → **Nuovo progetto** → nome `Virale` → Crea, e selezionalo.
+   2. Menu ☰ → **API e servizi** → **Schermata consenso OAuth** (oggi si chiama *Google Auth Platform*) → **Inizia**:
+      nome app `Virale`, email di assistenza (la tua), pubblico **Esterno**, email di contatto, accetta e crea.
+   3. **Branding**: home page `https://edellas.github.io/cooklog`, privacy `https://edellas.github.io/cooklog/privacy.html`,
+      termini `https://edellas.github.io/cooklog/termini.html`; domini autorizzati `edellas.github.io` e `supabase.co`.
+      **Non caricare il logo**: con il logo Google chiede una verifica che dura settimane; senza, con i soli dati di
+      base, non serve.
+   4. **Accesso ai dati** (*Data access*): bastano `openid`, `.../auth/userinfo.email` e `.../auth/userinfo.profile`
+      (sono quelli di base, non "sensibili": nessuna verifica). Salva.
+   5. **Client** → **Crea client** → tipo **Applicazione web** (*Web application*), nome `Virale Supabase`.
+      In **URI di reindirizzamento autorizzati** aggiungi `https://<progetto>.supabase.co/auth/v1/callback`
+      (lo trovi già scritto, da copiare, in Supabase → Authentication → Sign In / Providers → Google → *Callback URL*).
+      Crea e copia **ID client** e **Client secret**.
+      Non servono client "Android" o "iOS": quelli servono solo all'accesso nativo con l'SDK di Google, che l'app non
+      usa (l'accesso passa dal browser e Google parla solo con Supabase).
+   6. **Pubblico** (*Audience*) → **Pubblica app** → stato **In produzione**. Finché resta "Test" entrano solo gli
+      indirizzi aggiunti come utenti di prova (massimo 100).
+   7. **Supabase → Authentication → Sign In / Providers → Google**: attivalo, incolla **Client ID** e **Client Secret**, Save.
+
+C. **Facebook** (gratis) — su <https://developers.facebook.com> (accedi con Facebook; la prima volta conferma
+   l'account sviluppatore con il numero di telefono):
+   1. **Le mie app** → **Crea app** → caso d'uso **"Autenticare e richiedere dati agli utenti con Facebook Login"**
+      (nelle versioni vecchie della procedura: tipo **Consumatore**), nome `Virale`, email di contatto → Crea.
+   2. **Casi d'uso → Facebook Login → Personalizza → Autorizzazioni**: aggiungi **email** (`public_profile` c'è già).
+      Bastano queste due: non serve la revisione dell'app (App Review).
+   3. **Facebook Login → Impostazioni**: *Login OAuth client* e *Login OAuth web* attivi; in **URI di reindirizzamento
+      OAuth validi** metti `https://<progetto>.supabase.co/auth/v1/callback`. Salva.
+   4. **Impostazioni app → Di base**: URL della privacy `https://edellas.github.io/cooklog/privacy.html`, URL dei
+      termini `https://edellas.github.io/cooklog/termini.html`, **eliminazione dei dati** → "URL delle istruzioni per
+      l'eliminazione dei dati" `https://edellas.github.io/cooklog/eliminazione-account.html`, icona 1024×1024
+      (`assets/icon.png`), categoria. Salva e copia **ID app** e **Chiave segreta** (Mostra).
+   5. In alto: **Modalità app → Live** (pubblica). In "Sviluppo" entrano solo gli account con un ruolo nell'app.
+      Se Meta lo chiede, completa la **verifica dell'azienda** o dello sviluppatore individuale.
+   6. **Supabase → Authentication → Sign In / Providers → Facebook**: attivalo, incolla **Facebook client ID** (ID app)
+      e **Facebook secret** (chiave segreta), Save. Se c'è l'opzione **"Allow users without an email"**, attivala: così
+      entra anche chi ha Facebook registrato solo con il numero di telefono (senza, l'app gli spiega di aggiungere
+      un'email a Facebook o di usare Google).
+
+D. **Controllo** (con la build nuova, non con Expo Go): "Continua con Google" → scegli l'account → torni nell'app su
+   **Completa il profilo** → "Entra in Virale". Poi Impostazioni → Esci → di nuovo "Continua con Google": entri
+   direttamente. Prova anche Facebook, "Annulla ed esci" su Completa il profilo e l'accesso con password di un
+   account vecchio. Su Supabase → Authentication → Users trovi i nuovi utenti con il provider.
+
+Da sapere:
+- **Instagram**: un "Accedi con Instagram" per le persone comuni non esiste più. Meta ha chiuso la Instagram Basic
+  Display API il 4 dicembre 2024; l'accesso con Instagram che resta è solo per account business e creator. Chi
+  usa Instagram ha un account Meta e può usare "Continua con Facebook".
+- **iPhone**: le regole dell'App Store (linea guida 4.8, *Login Services*) chiedono che un'app con accesso tramite
+  Google o Facebook offra anche un accesso equivalente che rispetti la privacy: in pratica **"Accedi con Apple"**.
+  Non c'è ancora: va aggiunto (Supabase lo supporta) **prima di inviare l'app ad Apple**. Su Android non serve.
+- Nella schermata di Google compare "procedi su `<progetto>.supabase.co`": è normale. Per mostrare un tuo dominio
+  serve il *Custom Domain* di Supabase (a pagamento), facoltativo.
+- Chi inizia con Google/Facebook e non completa il profilo viene cancellato dopo 7 giorni dalla pulizia notturna
+  (subito se tocca "Annulla ed esci"); le registrazioni con password interrotte dopo un giorno, come prima.
 
 **Controllo automatico dei contenuti (OpenAI) — fallo per primo, in quest'ordine.** Prima di pubblicare, foto,
 fotogrammi dei video, didascalie e foto profilo passano dal servizio di moderazione di OpenAI (modello
@@ -93,15 +164,17 @@ possono salvare. Regole e soglie sono all'inizio della sezione "Controllo automa
 9. **Build nuova** (servono le dipendenze native nuove: notifiche e appunti):
    `eas build --platform android --profile preview` (anche dal sito expo.dev). Sul telefono prova:
    un video da 60 secondi, la notifica "nuovo follower" con un secondo account, un link condiviso aperto da
-   WhatsApp, "Password dimenticata?" con il codice, la tastiera su iPhone mentre scrivi la didascalia.
-10. **Testi legali**: l'informativa privacy cambia (foto profilo, ricerca, codice di recupero, token delle notifiche):
+   WhatsApp, "Continua con Google" e "Continua con Facebook" (punto D sopra), "Password dimenticata?" con il codice
+   (su un account con password), la tastiera su iPhone mentre scrivi la didascalia.
+10. **Testi legali**: l'informativa privacy cambia (accesso con Google e Facebook, foto profilo, ricerca, codice di recupero, token delle notifiche):
     falla rileggere all'avvocato.
 11. **Schede degli store**: aggiorna le risposte privacy secondo `store/privacy-store.md` e carica i nuovi screenshot.
 12. **Moderazione ogni giorno**: Impostazioni → Segnalazioni da rivedere, **entrambe** le schede (Post; Commenti e
     profili), entro 24 ore. In cima alla scheda Post ci sono i post messi in revisione dal controllo automatico:
     restano nascosti (e fuori dalla gara) finché non tocchi **Approva** o **Rimuovi**. Le notifiche push allo staff ti avvisano (al massimo una all'ora).
 13. **Nome utente ufficiale**: i nomi che cominciano con `virale` sono riservati. Per avere `@virale`, registrati con
-    un altro nome e rinomina dal SQL Editor (anche l'email interna, che segue il nome utente):
+    un altro nome e rinomina dal SQL Editor (se entri con Google o Facebook basta la prima riga; con nome utente e
+    password anche l'email interna, che segue il nome utente):
     ```sql
     update public.profiles set username = 'virale' where username = 'il_tuo_nome';
     update auth.users set email = 'virale@utenti.virale.invalid' where email = 'il_tuo_nome@utenti.virale.invalid';
@@ -117,6 +190,8 @@ possono salvare. Regole e soglie sono all'inizio della sezione "Controllo automa
    - Se scegli *account personale*, prima della pubblicazione dovrai fare il test chiuso con 12 persone per 14 giorni (passo 9).
 3. **Expo** — <https://expo.dev/signup> (gratis).
 4. **Supabase** — <https://supabase.com/dashboard> (gratis).
+5. **Google Cloud** — <https://console.cloud.google.com> e **Meta for Developers** — <https://developers.facebook.com>
+   (gratis), per "Continua con Google" e "Continua con Facebook" (sezione 0, punti B e C).
 
 Sia Apple sia Google ti chiederanno se sei un **"operatore commerciale" (trader)** ai sensi del
 Digital Services Act. Se l'app non ti fa guadagnare (niente pubblicità, niente vendite) puoi
@@ -157,8 +232,9 @@ contenuti degli utenti, aperto dai 14 anni.
    della copertina (lo scegli nell'app, Impostazioni → Copertina e documenti); a quell'ora la gara chiude e
    la nuova copertina esce subito.
 4. **Authentication → Sign In / Providers**:
-   - **Email**: attivo, ma con **Confirm email** spento. L'app si accede con nome utente e password:
+   - **Email**: attivo, ma con **Confirm email** spento. Gli account creati con nome utente e password entrano così:
      Supabase vuole un'email, quindi l'app ne usa una interna (`nomeutente@utenti.virale.invalid`) che non riceve posta.
+   - **Google** e **Facebook**: attivi, come spiegato nella sezione 0 ("Accesso con Google e Facebook", punti A–C).
    - **Allow anonymous sign-ins**: spento (non serve più).
    - In **Authentication → Policies** (o *Password*): lunghezza minima della password **8**.
 5. Dopo esserti registrato dall'app, diventa amministratore (modera, verifica i documenti, sceglie l'orario
@@ -169,7 +245,8 @@ contenuti degli utenti, aperto dai 14 anni.
     where is_admin or is_moderator or username = 'il_tuo_username';
    ```
    L'amministratore è anche moderatore. Nessuno può darsi un ruolo dall'app: si cambia solo da qui.
-6. **Password dimenticata**: di solito l'utente fa da solo con il **codice di recupero** che riceve all'iscrizione
+6. **Password dimenticata** (solo account con nome utente e password: chi entra con Google o Facebook non ha una
+   password): di solito l'utente fa da solo con il **codice di recupero** che riceve all'iscrizione
    (accesso → "Password dimenticata?"; un codice nuovo si crea da Impostazioni → Codice di recupero).
    Se ha perso anche il codice, dopo aver verificato che l'account è suo, reimpostala dal SQL Editor e
    comunicagliela, chiedendogli di cambiarla da Impostazioni → Cambia password:

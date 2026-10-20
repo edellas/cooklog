@@ -57,6 +57,8 @@ export default function RootLayout() {
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: color.canvas } }}>
                   <Stack.Screen name="(tabs)" />
                   <Stack.Screen name="benvenuto" options={{ animation: 'fade', gestureEnabled: false }} />
+                  <Stack.Screen name="completa-profilo" options={{ animation: 'fade', gestureEnabled: false }} />
+                  <Stack.Screen name="auth" options={{ animation: 'none', gestureEnabled: false }} />
                   <Stack.Screen name="scatta" options={{ presentation: 'fullScreenModal' }} />
                   <Stack.Screen name="copertina-del-giorno" options={{ presentation: 'fullScreenModal', animation: 'fade', gestureEnabled: false }} />
                   <Stack.Screen
@@ -137,12 +139,16 @@ function Misconfigured() {
 /** Rotte che si possono aprire da un link (o ricaricando la pagina sul web): ritrovate dopo l'accesso. */
 const OPENABLE = new Set(['post', 'utente', 'scorri', 'copertina', 'commenti', 'seguaci', 'regole', 'notifiche', 'verifica', 'cerca']);
 
+/** Schermate dell'accesso: entrati (o con il profilo completato) si va oltre. */
+const ENTRY = new Set(['benvenuto', 'completa-profilo', 'auth']);
+
 /**
- * Chi non ha ancora un profilo passa dal benvenuto. Termini e privacy restano leggibili anche prima:
- * si devono poter leggere prima di accettarli.
+ * Chi non ha ancora un profilo passa dal benvenuto. Chi è entrato con Google o Facebook ma non ha completato
+ * il profilo resta su "Completa il profilo" finché non lo fa (o rinuncia). Termini e privacy restano leggibili
+ * anche prima: si devono poter leggere prima di accettarli. La rotta /auth riceve il ritorno da Google/Facebook.
  */
 function Gate() {
-  const { me } = useSession();
+  const { me, pending } = useSession();
   const segments = useSegments();
   const params = useGlobalSearchParams();
   const router = useRouter();
@@ -151,10 +157,17 @@ function Gate() {
   const intended = useRef<Href | null>(null);
   useEffect(() => {
     if (me === undefined) return;
-    const onWelcome = segments[0] === 'benvenuto';
-    const open = onWelcome || segments[0] === 'legale';
-    if (!me && !open) {
-      if (me === null && OPENABLE.has(segments[0] ?? '')) {
+    const screen = segments[0] ?? '';
+    if (!me) {
+      if (pending) {
+        if (screen !== 'completa-profilo' && screen !== 'legale') {
+          noteInAppNavigation();
+          router.replace('/completa-profilo' as Href);
+        }
+        return;
+      }
+      if (screen === 'benvenuto' || screen === 'legale' || screen === 'auth') return;
+      if (me === null && OPENABLE.has(screen)) {
         const clean: Record<string, string> = {};
         for (const [k, v] of Object.entries(params)) if (typeof v === 'string') clean[k] = v;
         intended.current = { pathname: `/${segments.join('/')}`, params: clean } as Href;
@@ -163,19 +176,22 @@ function Gate() {
       if (router.canDismiss()) router.dismissAll();
       noteInAppNavigation();
       router.replace('/benvenuto' as Href);
+      return;
     }
-    if (me && onWelcome) {
+    if (ENTRY.has(screen)) {
       const to = intended.current ?? ('/' as Href);
       intended.current = null;
+      // Il ritorno da Google/Facebook (/auth) può essere finito sopra il benvenuto: non resta sotto.
+      if (screen !== 'benvenuto' && router.canDismiss()) router.dismissAll();
       noteInAppNavigation();
       router.replace(to);
     }
-  }, [me, router, segments, params]);
+  }, [me, pending, router, segments, params]);
   return null;
 }
 
 /** Schermate durante le quali la copertina obbligatoria aspetta: non si interrompe chi sta finendo qualcosa. */
-const COVER_WAITS = new Set(['benvenuto', 'legale', 'copertina-del-giorno', 'scatta', 'verifica', 'modifica-profilo']);
+const COVER_WAITS = new Set(['benvenuto', 'completa-profilo', 'auth', 'legale', 'copertina-del-giorno', 'scatta', 'verifica', 'modifica-profilo']);
 
 /**
  * Copertina obbligatoria: quando esce una copertina nuova, al primo accesso (apertura dell'app, ritorno
