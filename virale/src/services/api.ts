@@ -495,7 +495,7 @@ type DemoAccount = {
   saved?: DemoUserState;
   /** Ultimo cambio del nome mostrato (si cambia una volta ogni 7 giorni, come sul server). */
   nameChangedAt?: string;
-  /** Quando è stato creato l'account demo (il voto conta dopo 24 ore, come sul server). */
+  /** Quando è stato creato l'account demo. */
   createdAt?: string;
   /** Account chiuso (verifica: età sotto il minimo), come profiles.banned_at sul server. */
   bannedAt?: string;
@@ -2443,13 +2443,8 @@ export async function getStatus(): Promise<Status> {
       needsPassword: false,
       unread: (demo.notifications ?? []).filter((n) => !n.read && (!n.actor || !demo.blocked.includes(n.actor.id))).length,
       settings: demo.settings!,
-      // Come sul server: vota chi ha l'età verificata e un account con più di 24 ore.
-      voter: acc
-        ? (() => {
-            const from = acc.createdAt ? new Date(Date.parse(acc.createdAt) + 86400000).toISOString() : null;
-            return { canVote: id?.status === 'approved' && (!from || Date.parse(from) <= Date.now()), from };
-          })()
-        : null,
+      // Come sul server: le visualizzazioni contano per la gara con l'età verificata, subito.
+      voter: acc ? { canVote: id?.status === 'approved', from: null } : null,
     };
   });
 }
