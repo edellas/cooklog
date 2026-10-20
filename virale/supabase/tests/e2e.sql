@@ -669,10 +669,17 @@ select identity_provider_start('00000000-0000-0000-0000-0000000000e5', 'dup-a');
 select identity_provider_start('00000000-0000-0000-0000-0000000000e6', 'dup-b');
 do $$ begin
   if identity_provider_result('00000000-0000-0000-0000-0000000000e5', 'dup-a', 'Approved', '1990-01-01', 'Mario', 'Rossi', 'CA12345AB') <> 'approved' then raise exception 'primo'; end if;
-  if identity_provider_result('00000000-0000-0000-0000-0000000000e6', 'dup-b', 'Approved', '1990-01-01', 'Mario', 'Rossi', 'CA12345AB') <> 'review' then raise exception 'doppione approvato'; end if;
-  raise notice 'ok, stessa persona su due account: decide un amministratore';
+  if identity_provider_result('00000000-0000-0000-0000-0000000000e6', 'dup-b', 'Approved', '1990-01-01', 'Mario', 'Rossi', 'CA12345AB') <> 'rejected' then raise exception 'stesso documento non rifiutato'; end if;
+  raise notice 'ok, stesso documento su due account: il secondo è rifiutato';
 end $$;
 reset role;
+do $$ begin
+  if (select status from identity_checks where user_id = '00000000-0000-0000-0000-0000000000e6') <> 'rejected'
+     or (select reject_reason from identity_checks where user_id = '00000000-0000-0000-0000-0000000000e6') not like '%già stato usato%' then
+    raise exception 'motivo del rifiuto per documento doppio';
+  end if;
+  raise notice 'ok, il rifiuto spiega che il documento è già usato';
+end $$;
 -- La copertina resta assegnata anche se il vincitore elimina l'account; rimuovere la copertina sceglie il secondo.
 do $$ declare w uuid; d date := arena_today(); author uuid; again uuid; begin
   w := arena_close_day(d);
