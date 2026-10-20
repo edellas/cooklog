@@ -3636,6 +3636,16 @@ grant execute on function public.is_active(uuid) to authenticated;
 grant execute on function public.can_see(uuid, uuid) to authenticated;
 grant execute on function public.is_blocked_pair(uuid, uuid) to authenticated;
 grant execute on function public.valid_media(jsonb) to authenticated;
+-- Le regole dello Storage (setup-produzione.sql) usano anche queste: se esistono (progetto già configurato), il
+-- "revoke" qui sopra le toglierebbe, e caricare foto e documenti fallirebbe con "permission denied".
+do $$ begin
+  if to_regprocedure('public.my_object_count(text)') is not null then
+    grant execute on function public.my_object_count(text) to authenticated;
+  end if;
+  if to_regprocedure('public.my_recent_object_count(text)') is not null then
+    grant execute on function public.my_recent_object_count(text) to authenticated;
+  end if;
+end $$;
 revoke truncate on all tables in schema public from anon, authenticated;
 -- Permessi: i client chiamano solo queste funzioni.
 revoke all on function public.arena_close_day(date) from public, anon, authenticated;
