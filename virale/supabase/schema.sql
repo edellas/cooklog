@@ -11,6 +11,9 @@
 
 create extension if not exists pgcrypto;
 
+-- Dal 30/10/2026 Supabase non dà più accesso alle tabelle nuove: ogni tabella riceve qui sotto le sue autorizzazioni
+-- (le revoke che seguono le restringono). Senza, un progetto nuovo risponderebbe "permission denied".
+
 -- ---------------------------------------------------------------------------
 -- Profili e contenuti
 -- ---------------------------------------------------------------------------
@@ -27,6 +30,8 @@ create table if not exists public.profiles (
   banned_at timestamptz,
   created_at timestamptz not null default now()
 );
+grant select on public.profiles to anon;
+grant select, insert, update, delete on public.profiles to authenticated, service_role;
 
 -- Un post: da 1 a 10 elementi, foto e/o video, come su TikTok.
 -- media = [{ "kind": "image"|"video", "url": "...", "width": 1080, "height": 1920, "duration_ms": 12000 }]
@@ -64,6 +69,8 @@ create table if not exists public.posts (
   hidden_reason text,
   created_at timestamptz not null default now()
 );
+grant select on public.posts to anon;
+grant select, insert, update, delete on public.posts to authenticated, service_role;
 create index if not exists idx_posts_author on public.posts (author_id, created_at desc);
 create index if not exists idx_posts_recent on public.posts (created_at desc);
 
@@ -73,12 +80,16 @@ create table if not exists public.post_likes (
   created_at timestamptz not null default now(),
   primary key (post_id, user_id)
 );
+grant select on public.post_likes to anon;
+grant select, insert, update, delete on public.post_likes to authenticated, service_role;
 create table if not exists public.post_saves (
   post_id uuid not null references public.posts(id) on delete cascade,
   user_id uuid not null references public.profiles(id) on delete cascade,
   created_at timestamptz not null default now(),
   primary key (post_id, user_id)
 );
+grant select on public.post_saves to anon;
+grant select, insert, update, delete on public.post_saves to authenticated, service_role;
 create index if not exists idx_post_saves_user on public.post_saves (user_id, created_at desc);
 create table if not exists public.comments (
   id uuid primary key default gen_random_uuid(),
@@ -87,6 +98,8 @@ create table if not exists public.comments (
   body text not null check (length(trim(body)) between 1 and 300),
   created_at timestamptz not null default now()
 );
+grant select on public.comments to anon;
+grant select, insert, update, delete on public.comments to authenticated, service_role;
 create index if not exists idx_comments_post on public.comments (post_id, created_at);
 create table if not exists public.follows (
   follower_id uuid not null references public.profiles(id) on delete cascade,
@@ -95,6 +108,8 @@ create table if not exists public.follows (
   primary key (follower_id, followee_id),
   check (follower_id <> followee_id)
 );
+grant select on public.follows to anon;
+grant select, insert, update, delete on public.follows to authenticated, service_role;
 create index if not exists idx_follows_followee on public.follows (followee_id);
 
 -- ---------------------------------------------------------------------------
@@ -107,6 +122,8 @@ create table if not exists public.blocks (
   primary key (blocker_id, blocked_id),
   check (blocker_id <> blocked_id)
 );
+grant select on public.blocks to anon;
+grant select, insert, update, delete on public.blocks to authenticated, service_role;
 create index if not exists idx_blocks_blocked on public.blocks (blocked_id);
 
 create table if not exists public.reports (
@@ -123,6 +140,8 @@ create table if not exists public.reports (
   created_at timestamptz not null default now(),
   unique (post_id, reporter_id)
 );
+grant select on public.reports to anon;
+grant select, insert, update, delete on public.reports to authenticated, service_role;
 create index if not exists idx_reports_open on public.reports (status, created_at) where status = 'open';
 create index if not exists idx_reports_post on public.reports (post_id);
 create index if not exists idx_reports_reporter on public.reports (reporter_id);
@@ -163,6 +182,8 @@ create table if not exists public.profile_private (
   birth_date date not null check (birth_date >= date '1900-01-01'),
   created_at timestamptz not null default now()
 );
+grant select on public.profile_private to anon;
+grant select, insert, update, delete on public.profile_private to authenticated, service_role;
 -- Si entra solo con Google o Facebook: il codice di recupero della password (solo la sua impronta) non serve più.
 alter table public.profile_private drop column if exists recovery_hash;
 alter table public.profile_private drop column if exists recovery_created_at;
@@ -185,6 +206,8 @@ create table if not exists public.identity_checks (
   reviewed_by uuid references public.profiles(id) on delete set null,
   reject_reason text check (length(reject_reason) <= 200)
 );
+grant select on public.identity_checks to anon;
+grant select, insert, update, delete on public.identity_checks to authenticated, service_role;
 create index if not exists idx_identity_pending on public.identity_checks (submitted_at) where status = 'pending';
 -- Verifica automatica (sezione 16): con quale metodo è arrivata la decisione e la sessione aperta presso il fornitore.
 alter table public.identity_checks add column if not exists method text not null default 'manual' check (method in ('manual', 'didit'));
@@ -233,6 +256,8 @@ create table if not exists public.storage_purge (
   queued_at timestamptz not null default now(),
   primary key (bucket, path)
 );
+grant select on public.storage_purge to anon;
+grant select, insert, update, delete on public.storage_purge to authenticated, service_role;
 alter table public.storage_purge enable row level security;
 revoke all on public.storage_purge from anon, authenticated;
 -- Database esistenti: anche le foto profilo (bucket "avatars") finiscono in pulizia.
@@ -267,6 +292,8 @@ create table if not exists public.user_reports (
   resolved_at timestamptz,
   created_at timestamptz not null default now()
 );
+grant select on public.user_reports to anon;
+grant select, insert, update, delete on public.user_reports to authenticated, service_role;
 create unique index if not exists uq_user_reports_comment on public.user_reports (comment_id, reporter_id) where kind = 'comment';
 create unique index if not exists uq_user_reports_profile_open on public.user_reports (target_user_id, reporter_id) where kind = 'profile' and status = 'open';
 create index if not exists idx_user_reports_open on public.user_reports (status, created_at) where status = 'open';
@@ -283,6 +310,8 @@ create table if not exists public.banned_usernames (
   reason text not null,
   banned_at timestamptz not null default now()
 );
+grant select on public.banned_usernames to anon;
+grant select, insert, update, delete on public.banned_usernames to authenticated, service_role;
 alter table public.banned_usernames enable row level security;
 revoke all on public.banned_usernames from anon, authenticated;
 
@@ -384,6 +413,8 @@ create table if not exists public.post_shares (
   created_at timestamptz not null default now(),
   primary key (post_id, user_id)
 );
+grant select on public.post_shares to anon;
+grant select, insert, update, delete on public.post_shares to authenticated, service_role;
 create index if not exists idx_post_shares_user on public.post_shares (user_id);
 alter table public.post_shares enable row level security;
 drop trigger if exists trg_shares_count on public.post_shares;
@@ -504,6 +535,8 @@ create table if not exists public.arena_config (
   -- Giorni concessi ai nuovi iscritti per caricare il documento d'identità.
   id_grace_days int not null default 7 check (id_grace_days between 1 and 60)
 );
+grant select on public.arena_config to anon;
+grant select, insert, update, delete on public.arena_config to authenticated, service_role;
 insert into public.arena_config default values on conflict do nothing;
 
 create or replace function public.arena_cfg()
@@ -526,6 +559,8 @@ create table if not exists public.arena_closed_days (
   contest_day date primary key,
   closed_at timestamptz not null default now()
 );
+grant select on public.arena_closed_days to anon;
+grant select, insert, update, delete on public.arena_closed_days to authenticated, service_role;
 alter table public.arena_closed_days enable row level security;
 revoke all on public.arena_closed_days from anon, authenticated;
 
@@ -587,6 +622,8 @@ create table if not exists public.arena_entries (
   unique (contest_day, author_id),
   unique (contest_day, post_id)
 );
+grant select on public.arena_entries to anon;
+grant select, insert, update, delete on public.arena_entries to authenticated, service_role;
 -- Campionamento in O(log n): due indici parziali con i predicati esatti usati da arena_pick.
 drop index if exists public.idx_arena_entries_pick;
 create index if not exists idx_arena_pick_lower on public.arena_entries (contest_day, rand_key) where status in ('active', 'finalist') and tier = 0;
@@ -623,6 +660,8 @@ create table if not exists public.arena_entry_stats (
   dwell_ms bigint not null default 0,
   primary key (entry_id, shard)
 );
+grant select on public.arena_entry_stats to anon;
+grant select, insert, update, delete on public.arena_entry_stats to authenticated, service_role;
 
 -- Una riga per (contenuto, spettatore): creata quando il server serve il contenuto,
 -- completata quando arriva la vista. Senza riga servita la vista viene ignorata.
@@ -637,6 +676,8 @@ create table if not exists public.arena_views (
   credited text[] not null default '{}',
   primary key (entry_id, viewer_id)
 );
+grant select on public.arena_views to anon;
+grant select, insert, update, delete on public.arena_views to authenticated, service_role;
 create index if not exists idx_arena_views_viewer on public.arena_views (viewer_id, contest_day);
 -- Ultima volta che il post è stato consegnato (served_at resta la prima): un candidato consegnato ma mai
 -- guardato (app chiusa, feed aggiornato) torna disponibile dopo 10 minuti, invece di sparire per sempre.
@@ -654,6 +695,8 @@ create table if not exists public.arena_tier_results (
   evaluated_at timestamptz not null default now(),
   primary key (entry_id, tier)
 );
+grant select on public.arena_tier_results to anon;
+grant select, insert, update, delete on public.arena_tier_results to authenticated, service_role;
 create index if not exists idx_arena_tier_results_cohort on public.arena_tier_results (contest_day, tier);
 
 create table if not exists public.daily_viral (
@@ -669,6 +712,8 @@ create table if not exists public.daily_viral (
   total_views bigint not null,
   created_at timestamptz not null default now()
 );
+grant select on public.daily_viral to anon;
+grant select, insert, update, delete on public.daily_viral to authenticated, service_role;
 create index if not exists idx_daily_viral_author on public.daily_viral (author_id, featured_on desc);
 -- Database già esistenti: le colonne erano "not null ... on delete cascade" (la riga spariva e il giorno si riassegnava).
 alter table public.daily_viral alter column entry_id drop not null;
@@ -2126,6 +2171,8 @@ create table if not exists public.notifications (
   -- Una notifica per persona e post: togliere e rimettere un mi piace non ne crea dieci.
   unique nulls not distinct (user_id, kind, actor_id, post_id)
 );
+grant select on public.notifications to anon;
+grant select, insert, update, delete on public.notifications to authenticated, service_role;
 create index if not exists idx_notifications_user on public.notifications (user_id, created_at desc);
 create index if not exists idx_notifications_actor on public.notifications (actor_id);
 create index if not exists idx_notifications_post on public.notifications (post_id);
@@ -2248,6 +2295,8 @@ create table if not exists public.post_views (
   day date not null,
   primary key (post_id, viewer_id, day)
 );
+grant select on public.post_views to anon;
+grant select, insert, update, delete on public.post_views to authenticated, service_role;
 create index if not exists idx_post_views_day on public.post_views (day);
 alter table public.post_views enable row level security;
 revoke all on public.post_views from anon, authenticated;
@@ -2417,6 +2466,8 @@ create table if not exists public.media_checks (
   checked_at timestamptz not null default now(),
   primary key (kind, path)
 );
+grant select on public.media_checks to anon;
+grant select, insert, update, delete on public.media_checks to authenticated, service_role;
 create index if not exists idx_media_checks_owner on public.media_checks (owner_id, checked_at);
 create index if not exists idx_media_checks_age on public.media_checks (checked_at);
 -- La coda di revisione dell'amministratore, senza leggere tutti i post.
@@ -2607,6 +2658,8 @@ create table if not exists public.user_interests (
   updated_at timestamptz not null default now(),
   primary key (user_id, key)
 );
+grant select on public.user_interests to anon;
+grant select, insert, update, delete on public.user_interests to authenticated, service_role;
 alter table public.user_interests enable row level security;
 revoke all on public.user_interests from anon, authenticated;
 
@@ -2617,6 +2670,8 @@ create table if not exists public.seen_posts (
   seen_at timestamptz not null default now(),
   primary key (user_id, post_id)
 );
+grant select on public.seen_posts to anon;
+grant select, insert, update, delete on public.seen_posts to authenticated, service_role;
 create index if not exists idx_seen_posts_at on public.seen_posts (seen_at);
 alter table public.seen_posts enable row level security;
 revoke all on public.seen_posts from anon, authenticated;
@@ -3083,6 +3138,8 @@ create table if not exists public.rate_events (
   kind text not null,
   at timestamptz not null default now()
 );
+grant select on public.rate_events to anon;
+grant select, insert, update, delete on public.rate_events to authenticated, service_role;
 create index if not exists idx_rate_events on public.rate_events (user_id, kind, at desc);
 alter table public.rate_events enable row level security;
 revoke all on public.rate_events from anon, authenticated;
@@ -3333,6 +3390,8 @@ create table if not exists public.push_tokens (
   platform text not null check (platform in ('ios', 'android')),
   updated_at timestamptz not null default now()
 );
+grant select on public.push_tokens to anon;
+grant select, insert, update, delete on public.push_tokens to authenticated, service_role;
 create index if not exists idx_push_tokens_user on public.push_tokens (user_id);
 alter table public.push_tokens enable row level security;
 revoke all on public.push_tokens from anon, authenticated;
@@ -3344,6 +3403,8 @@ create table if not exists public.push_prefs (
   contest boolean not null default true,
   social boolean not null default true
 );
+grant select on public.push_prefs to anon;
+grant select, insert, update, delete on public.push_prefs to authenticated, service_role;
 alter table public.push_prefs enable row level security;
 revoke all on public.push_prefs from anon, authenticated;
 
@@ -3360,6 +3421,8 @@ create table if not exists public.push_outbox (
   sent_at timestamptz,
   attempts int not null default 0
 );
+grant select on public.push_outbox to anon;
+grant select, insert, update, delete on public.push_outbox to authenticated, service_role;
 -- Chi ha fatto l'azione e su quale post: all'invio si ricontrolla che la notifica abbia ancora senso.
 alter table public.push_outbox add column if not exists actor_id uuid;
 alter table public.push_outbox add column if not exists post_id uuid;
@@ -3374,6 +3437,8 @@ create table if not exists public.push_broadcasts (
   cursor text,
   done_at timestamptz
 );
+grant select on public.push_broadcasts to anon;
+grant select, insert, update, delete on public.push_broadcasts to authenticated, service_role;
 alter table public.push_broadcasts enable row level security;
 revoke all on public.push_broadcasts from anon, authenticated;
 
