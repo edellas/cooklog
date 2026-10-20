@@ -20,7 +20,7 @@ export const supabase = isSupabaseConfigured
         autoRefreshToken: true,
         detectSessionInUrl: false,
         // Accesso con Google/Facebook: il ritorno porta un codice monouso che si scambia con la sessione
-        // (src/services/oauth.ts). Non cambia l'accesso con nome utente e password né le sessioni già salvate.
+        // (src/services/oauth.ts).
         flowType: 'pkce',
       },
     })

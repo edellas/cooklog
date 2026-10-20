@@ -43,7 +43,7 @@ import { Platform } from 'react-native';
 
 import { charCount } from '../design/text';
 import { OWNER } from '../legal/docs';
-import { canActKnown, friendlyError, GENERIC_ERROR, NETWORK_ERROR, SESSION_ERROR, TOO_BIG_ERROR } from './errors';
+import { canActKnown, friendlyError, SESSION_ERROR, TOO_BIG_ERROR } from './errors';
 import { getJson, removeKey, setJson } from './storage';
 import { MAX_UPLOAD_BYTES, prepareVideo } from './video';
 import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from './supabase';
@@ -492,8 +492,6 @@ type DemoUserState = Pick<DemoDb, 'likes' | 'saves' | 'following' | 'blocked' | 
 
 type DemoAccount = {
   me: Me;
-  /** Vuota per gli account che entrano con Google/Facebook (simulati): con la password non si entra. */
-  passwordHash: string;
   /** Account creato con l'accesso simulato di Google o Facebook. */
   social?: SocialProvider;
   firstName: string;
@@ -507,9 +505,6 @@ type DemoAccount = {
   createdAt?: string;
   /** Account chiuso (verifica: età sotto il minimo), come profiles.banned_at sul server. */
   bannedAt?: string;
-  /** Impronta del codice di recupero (mai il codice) e tentativi sbagliati recenti, come sul server. */
-  recoveryHash?: string | null;
-  recoveryFails?: number[];
 };
 
 const DEFAULT_SETTINGS: Settings = { revealMinutes: 0, idGraceDays: 7, cutoffHour: DEFAULT_ARENA_CONFIG.submissionCutoffHour, idProvider: 'manual' };
@@ -712,8 +707,9 @@ async function load(): Promise<DemoDb> {
   const today = demoDay(demo);
   demo.notifications ??= [];
   demo.viewed ??= [];
-  // Un profilo demo di prima delle password non ha un account con cui rientrare: si riparte dalla registrazione.
-  if (demo.me && !demo.accounts[demo.me.username]) demo.me = null;
+  // Si entra solo con Google o Facebook (simulati): un profilo demo senza un account così (versioni vecchie
+  // della demo) non ha un modo per rientrare, si riparte dal benvenuto.
+  if (demo.me && !demo.accounts[demo.me.username]?.social) demo.me = null;
   if (demo.state.day !== today) {
     // Recupera i giorni passati senza aprire l'app: ogni giornata ha la sua gara e la sua copertina.
     let day = demo.state.day;
@@ -834,18 +830,11 @@ export async function getAuthState(): Promise<{ me: Me | null; pending: SocialDr
   return withDemo((demo) => ({ me: demo.me, pending: demo.me ? null : (demo.pending ?? null) }));
 }
 
-/**
- * Accesso con nome utente e password. Supabase Auth vuole un'email: se ne usa una interna, derivata dal
- * nome utente, che non riceve mai posta (in Supabase la conferma via email va disattivata).
- */
-const LOGIN_DOMAIN = process.env.EXPO_PUBLIC_LOGIN_DOMAIN || 'utenti.virale.invalid';
-const loginEmail = (username: string) => `${username.trim().toLowerCase().replace(/^@/, '')}@${LOGIN_DOMAIN}`;
-const isLoginEmail = (email: string | null | undefined) => Boolean(email && email.toLowerCase().endsWith(`@${LOGIN_DOMAIN}`));
-
+/** Si entra solo con Google o Facebook (Supabase Auth OAuth, src/services/oauth.ts). */
 const SOCIAL_PROVIDERS: SocialProvider[] = ['google', 'facebook'];
-/** Con quale provider esterno si entra (null con nome utente e password o con i vecchi account anonimi). */
+/** Con quale provider esterno si entra (null per i vecchi account anonimi). */
 function socialProviderOf(user: User): SocialProvider | null {
-  if (user.is_anonymous || isLoginEmail(user.email)) return null;
+  if (user.is_anonymous) return null;
   const used = [user.app_metadata?.provider, ...((user.app_metadata?.providers as string[] | undefined) ?? [])];
   return SOCIAL_PROVIDERS.find((p) => used.includes(p)) ?? null;
 }
@@ -873,7 +862,6 @@ export function usernameReserved(u: string): boolean {
   return RESERVED_USERNAMES.includes(u) || /^(virale|admin)/.test(u);
 }
 export const MIN_AGE_YEARS = 14;
-export const PASSWORD_MIN = 8;
 
 /** Età compiuta alla data di oggi (giorno di gara, ora di Roma). */
 export function ageOn(birthDate: string, today = arenaDay()): number {
@@ -913,23 +901,6 @@ export function validateProfile(input: ProfileInput): ProfileProblem | null {
   if (usernameReserved(u)) return bad('username', USERNAME_RESERVED);
   if (!input.acceptedTerms) return bad('terms', 'Per registrarti devi accettare termini e linee guida.');
   return null;
-}
-
-/** Hash locale della password demo (la demo non ha un server: serve solo a non tenerla in chiaro). */
-async function demoHash(username: string, password: string): Promise<string> {
-  const text = `virale-demo:${username}:${password}`;
-  const subtle = (globalThis as { crypto?: Crypto }).crypto?.subtle;
-  if (subtle) {
-    const buf = await subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
-  }
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < text.length; i += 1) {
-    h1 = Math.imul(h1 ^ text.charCodeAt(i), 16777619) >>> 0;
-    h2 = Math.imul(h2 + text.charCodeAt(i), 2246822519) >>> 0;
-  }
-  return `${h1.toString(16)}${h2.toString(16)}`;
 }
 
 function emptyUserState(): DemoUserState {
@@ -1111,7 +1082,6 @@ export async function completeSocialProfile(input: ProfileInput): Promise<Me> {
     demo.accounts ??= {};
     demo.accounts[username] = {
       me,
-      passwordHash: '',
       social: pending.provider,
       firstName: first,
       lastName: last,
@@ -1169,29 +1139,6 @@ export async function demoSocialSignIn(provider: SocialProvider, username: strin
   }, true);
 }
 
-export async function login(username: string, password: string): Promise<Me> {
-  const u = username.trim().toLowerCase().replace(/^@/, '');
-  if (!u || !password) throw new Error('Scrivi nome utente e password.');
-  if (!isDemo) {
-    const { error } = await db().auth.signInWithPassword({ email: loginEmail(u), password });
-    if (error) throw new Error(authMessage(error.message));
-    const me = await getMe();
-    if (!me) {
-      await db().auth.signOut({ scope: 'local' }).catch(() => undefined);
-      throw new Error('La registrazione di questo account non è stata completata. Entra con Google o Facebook per creare il tuo account.');
-    }
-    return me;
-  }
-  const passwordHash = await demoHash(u, password);
-  return withDemo((demo) => {
-    const acc = demo.accounts?.[u];
-    if (!acc || acc.passwordHash !== passwordHash) throw new Error('Nome utente o password sbagliati.');
-    saveDemoUser(demo);
-    restoreDemoUser(demo, acc);
-    return acc.me;
-  }, true);
-}
-
 export async function logout(): Promise<void> {
   if (!isDemo) {
     // Prima si stacca il telefono dalle notifiche (serve ancora la sessione), poi si esce.
@@ -1205,169 +1152,6 @@ export async function logout(): Promise<void> {
     saveDemoUser(demo);
     demo.me = null;
   }, true);
-}
-
-/** Messaggi di Supabase Auth in italiano, comprensibili. */
-function authMessage(message: string): string {
-  if (/invalid login|credentials/i.test(message)) return 'Nome utente o password sbagliati.';
-  if (/different from the old/i.test(message)) return 'La nuova password deve essere diversa da quella attuale.';
-  if (/weak|leaked|pwned/i.test(message)) return 'Password troppo debole o già comparsa in furti di dati: scegline un\'altra.';
-  if (/at least \d+ characters|too short/i.test(message)) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
-  if (/rate limit|too many/i.test(message)) return 'Troppi tentativi: aspetta qualche minuto e riprova.';
-  if (/network|fetch/i.test(message)) return 'Connessione assente. Riprova.';
-  return friendlyError({ message, name: 'AuthApiError' });
-}
-
-/** Regole della password (le stesse nella funzione verifica-eta, rotta /recupero). */
-export function passwordProblem(password: string, username: string): string | null {
-  if (password.length < PASSWORD_MIN) return `La password deve avere almeno ${PASSWORD_MIN} caratteri.`;
-  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return 'La password deve contenere almeno una lettera e un numero.';
-  if (username && password.toLowerCase().includes(username.toLowerCase())) return 'La password non può contenere il nome utente.';
-  return null;
-}
-
-/**
- * Per gli account creati con il vecchio "Entra" (senza password): si collegano nome utente e password,
- * così si può uscire e rientrare. Serve la conferma via email spenta in Supabase.
- */
-export async function setPassword(password: string): Promise<void> {
-  const me = await getMe();
-  if (!me) throw new Error('Sessione scaduta: riapri l’app.');
-  const problem = passwordProblem(password, me.username);
-  if (problem) throw new Error(problem);
-  if (isDemo) return;
-  const { data, error } = await db().auth.updateUser({ email: loginEmail(me.username), password });
-  if (error) throw new Error(authMessage(error.message));
-  if (data.user?.new_email || !data.user?.email) {
-    throw new Error('Password non collegata: in Supabase va spenta la conferma via email (Authentication → Sign In / Providers → Email).');
-  }
-}
-
-export async function changePassword(current: string, next: string): Promise<void> {
-  const meNow = await getMe();
-  const problem = passwordProblem(next, meNow?.username ?? '');
-  if (problem) throw new Error(problem);
-  if (next === current) throw new Error('La nuova password deve essere diversa da quella attuale.');
-  if (!isDemo) {
-    const me = meNow;
-    if (!me) throw new Error('Sessione scaduta: accedi di nuovo.');
-    // Si verifica la password attuale prima di cambiarla: un telefono lasciato sbloccato non basta.
-    const check = await db().auth.signInWithPassword({ email: loginEmail(me.username), password: current });
-    if (check.error) throw new Error('La password attuale non è corretta.');
-    const { error } = await db().auth.updateUser({ password: next });
-    if (error) throw new Error(authMessage(error.message));
-    // Gli altri dispositivi collegati con la vecchia password vengono disconnessi, e non ricevono più le notifiche
-    // (un telefono perso o rubato): resta solo questo.
-    await db().auth.signOut({ scope: 'others' }).catch(() => undefined);
-    const keep = await getJson<string | null>(PUSH_TOKEN_KEY, null);
-    await rpc('drop_other_push_tokens', { p_keep: keep }).catch(() => undefined);
-    return;
-  }
-  const meName = (await getMe())?.username ?? '';
-  const [oldHash, newHash] = await Promise.all([demoHash(meName, current), demoHash(meName, next)]);
-  await withDemo((demo) => {
-    const acc = demo.me ? demo.accounts?.[demo.me.username] : undefined;
-    if (!acc || acc.passwordHash !== oldHash) throw new Error('La password attuale non è corretta.');
-    acc.passwordHash = newHash;
-  }, true);
-}
-
-// ---------------------------------------------------------------------------
-// Codice di recupero della password (niente email: con il codice se ne sceglie una nuova da sé)
-// ---------------------------------------------------------------------------
-const RECOVERY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-/** Il codice come lo si scrive: maiuscolo, senza spazi né trattini (come recovery_redeem in schema.sql). */
-const recoveryPlain = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
-/** Mentre lo si scrive: XXXX-XXXX-XXXX-XXXX. */
-export function formatRecoveryCode(text: string): string {
-  return (recoveryPlain(text).slice(0, 16).match(/.{1,4}/g) ?? []).join('-');
-}
-export const RECOVERY_WRONG = 'Nome utente o codice non validi.';
-const RECOVERY_TOO_MANY = 'Troppi tentativi: riprova tra un’ora.';
-
-/** Solo demo: un codice nuovo generato sul dispositivo (sul server lo fa create_recovery_code). */
-function demoRecoveryCode(): string {
-  const bytes = new Uint8Array(16);
-  const c = (globalThis as { crypto?: Crypto }).crypto;
-  if (c?.getRandomValues) c.getRandomValues(bytes);
-  else for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
-  const plain = Array.from(bytes, (b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join('');
-  return formatRecoveryCode(plain);
-}
-
-/**
- * Crea un codice di recupero nuovo (il precedente smette di valere) e lo restituisce: si vede solo adesso.
- * Con `currentPassword` (da Impostazioni) prima si controlla la password, come per cambiarla.
- */
-export async function createRecoveryCode(currentPassword?: string): Promise<string> {
-  if (!isDemo) {
-    if (currentPassword !== undefined) {
-      const me = await getMe();
-      if (!me) throw new Error(SESSION_ERROR);
-      const check = await db().auth.signInWithPassword({ email: loginEmail(me.username), password: currentPassword });
-      if (check.error) throw new Error(/invalid login|credentials/i.test(check.error.message) ? 'La password attuale non è corretta.' : authMessage(check.error.message));
-    }
-    return rpc<string>('create_recovery_code');
-  }
-  const username = (await getMe())?.username ?? '';
-  const given = currentPassword === undefined ? null : await demoHash(username, currentPassword);
-  const code = demoRecoveryCode();
-  const recoveryHash = await demoHash(username, `recupero:${recoveryPlain(code)}`);
-  await withDemo((demo) => {
-    const acc = demo.me ? demo.accounts?.[demo.me.username] : undefined;
-    if (!acc) throw new Error(SESSION_ERROR);
-    if (given !== null && acc.passwordHash !== given) throw new Error('La password attuale non è corretta.');
-    acc.recoveryHash = recoveryHash;
-  }, true);
-  return code;
-}
-
-/** Il problema della rotta /recupero spiegato a chi sta recuperando la password (non all'amministratore). */
-async function recoveryProblem(error: unknown): Promise<string> {
-  const e = error as { name?: string; context?: Response };
-  if (e.name === 'FunctionsFetchError') return NETWORK_ERROR;
-  const res = e.context;
-  if (res && (res.status === 400 || res.status === 429)) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    if (body.error) return body.error;
-  }
-  if (res?.status === 404) return 'Il recupero con il codice non è ancora attivo. Riprova più tardi.';
-  return GENERIC_ERROR;
-}
-
-/**
- * Password dimenticata: con nome utente e codice di recupero se ne sceglie una nuova. Il codice vale una volta
- * sola e gli altri dispositivi collegati escono. Poi si entra con la password nuova.
- */
-export async function recoverPassword(username: string, code: string, password: string): Promise<Me> {
-  const u = username.trim().toLowerCase().replace(/^@+/, '');
-  if (!u || recoveryPlain(code).length !== 16) throw new Error(RECOVERY_WRONG);
-  const weak = passwordProblem(password, u);
-  if (weak) throw new Error(weak);
-  if (!isDemo) {
-    const { data, error } = await db().functions.invoke<{ ok?: boolean; error?: string }>('verifica-eta/recupero', { body: { username: u, code, password } });
-    if (error) throw new Error(await recoveryProblem(error));
-    if (!data?.ok) throw new Error(data?.error ?? GENERIC_ERROR);
-    return login(u, password);
-  }
-  const [given, nextHash] = await Promise.all([demoHash(u, `recupero:${recoveryPlain(code)}`), demoHash(u, password)]);
-  // Il tentativo sbagliato va salvato: si restituisce l'errore invece di lanciarlo dentro withDemo.
-  const problem = await withDemo((demo): string | null => {
-    const acc = demo.accounts?.[u];
-    if (!acc) return RECOVERY_WRONG;
-    const recent = (acc.recoveryFails ?? []).filter((t) => Date.now() - t < 3600_000);
-    if (recent.length >= 5) return RECOVERY_TOO_MANY;
-    if (!acc.recoveryHash || acc.recoveryHash !== given) {
-      acc.recoveryFails = [...recent, Date.now()];
-      return RECOVERY_WRONG;
-    }
-    // Come sul server: i tentativi sbagliati restano contati per un'ora anche dopo quello giusto.
-    acc.recoveryHash = null;
-    acc.passwordHash = nextHash;
-    return null;
-  }, true);
-  if (problem) throw new Error(problem);
-  return login(u, password);
 }
 
 /** Come display_name_reserved (schema.sql): nomi da staff anche con spazi, punti, accenti o numeri al posto delle lettere. */
@@ -2453,7 +2237,6 @@ type StatusJson = {
   is_admin: boolean;
   banned?: boolean;
   needs_private?: boolean;
-  has_password?: boolean;
   voter?: { can_vote: boolean; from: string | null } | null;
   unread: number;
   settings: {
@@ -2470,15 +2253,8 @@ export async function getStatus(): Promise<Status> {
   if (!isDemo) {
     const [r, session] = await Promise.all([rpc<StatusJson>('my_status'), db().auth.getSession()]);
     const user = session.data.session?.user;
-    const social = user ? socialProviderOf(user) : null;
-    // Con un server non ancora aggiornato (senza has_password) si guarda l'email di accesso.
-    const hasPassword = typeof r.has_password === 'boolean' ? r.has_password : isLoginEmail(user?.email);
     return {
-      // Account creati con il vecchio "Entra" (anonimi): non hanno password finché non la impostano.
-      // Chi entra con Google o Facebook non ne ha bisogno.
-      needsPassword: Boolean(user) && !hasPassword && !social,
-      hasPassword,
-      social,
+      social: user ? socialProviderOf(user) : null,
       identity: r.identity
         ? {
             status: r.identity.status,
@@ -2507,8 +2283,6 @@ export async function getStatus(): Promise<Status> {
       isAdmin: Boolean(demo.me),
       banned: Boolean(acc?.bannedAt),
       needsPrivate: false,
-      needsPassword: false,
-      hasPassword: Boolean(acc?.passwordHash),
       social: acc?.social ?? null,
       unread: (demo.notifications ?? []).filter((n) => !n.read && (!n.actor || !demo.blocked.includes(n.actor.id))).length,
       settings: demo.settings!,

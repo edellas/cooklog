@@ -163,9 +163,9 @@ create table if not exists public.profile_private (
   birth_date date not null check (birth_date >= date '1900-01-01'),
   created_at timestamptz not null default now()
 );
--- Codice di recupero della password: solo l'impronta (bcrypt), mai il codice. Lo si vede una volta sola.
-alter table public.profile_private add column if not exists recovery_hash text;
-alter table public.profile_private add column if not exists recovery_created_at timestamptz;
+-- Si entra solo con Google o Facebook: il codice di recupero della password (solo la sua impronta) non serve più.
+alter table public.profile_private drop column if exists recovery_hash;
+alter table public.profile_private drop column if exists recovery_created_at;
 alter table public.profile_private enable row level security;
 drop policy if exists "private own" on public.profile_private;
 create policy "private own" on public.profile_private for select to authenticated using (id = auth.uid());
@@ -406,7 +406,7 @@ drop policy if exists "profiles insert own" on public.profiles;
 -- Data di creazione, ruolo ed espulsione li impone il trigger force_server_fields: un client non può
 -- retrodatare l'account (per votare subito) né nominarsi moderatore.
 create policy "profiles insert own" on public.profiles for insert to authenticated with check (auth.uid() = id);
--- La registrazione passa da complete_registration (età, dati privati, scadenza del documento): niente insert diretti.
+-- La registrazione passa da complete_social_profile (età, dati privati, scadenza del documento): niente insert diretti.
 -- Dei profili altrui si leggono solo i campi pubblici.
 revoke select, insert on public.profiles from anon, authenticated;
 grant select (id, username, display_name, bio, avatar_path, created_at) on public.profiles to authenticated;
@@ -1806,8 +1806,12 @@ $$;
 -- Età minima per iscriversi (in Italia 14 anni per i servizi online, art. 2-quinquies Codice privacy).
 create or replace function public.min_age_years() returns int language sql immutable as $$ select 14 $$;
 
--- Dominio dell'email interna usata per l'accesso (nomeutente@dominio): deve coincidere con EXPO_PUBLIC_LOGIN_DOMAIN.
-create or replace function public.login_domain() returns text language sql immutable as $$ select 'utenti.virale.invalid' $$;
+-- Si entra solo con Google o Facebook: via la registrazione con nome utente e password (email interna
+-- nomeutente@utenti.virale.invalid) e le funzioni che servivano solo a lei.
+drop function if exists public.complete_registration(text, text, text, date, boolean);
+drop function if exists public.has_password_login(uuid);
+drop function if exists public.is_login_email(text);
+drop function if exists public.login_domain();
 
 -- Regole dei nomi utente per le iscrizioni nuove (il check della tabella resta quello largo: i nomi già
 -- registrati restano validi). Da 3 a 24 caratteri a-z 0-9 _ . con almeno una lettera o un numero, senza
@@ -1848,12 +1852,11 @@ create or replace function public.username_available(p_username text)
 returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
   select public.username_ok(lower(p_username))
      and not exists (select 1 from profiles where username = lower(p_username))
-     and not exists (select 1 from banned_usernames where username = lower(p_username))
-     and not exists (select 1 from auth.users where lower(email) = lower(p_username) || '@' || public.login_domain());
+     and not exists (select 1 from banned_usernames where username = lower(p_username));
 $$;
 
--- Le regole di un profilo nuovo (le stesse per nome utente e password e per Google/Facebook): nome utente,
--- nome e cognome, data di nascita ed età minima, accettazione dei termini. Solleva l'errore da mostrare.
+-- Le regole di un profilo nuovo (primo accesso con Google o Facebook): nome utente, nome e cognome, data di
+-- nascita ed età minima, accettazione dei termini. Solleva l'errore da mostrare.
 create or replace function public.check_new_profile(p_user text, p_first text, p_last text, p_birth date, p_accept boolean)
 returns void language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
@@ -1880,7 +1883,7 @@ $$;
 
 -- Crea profilo pubblico, dati privati (nome, cognome, data di nascita) e scadenza per il documento.
 -- Il nome mostrato agli altri è "Nome I." (iniziale del cognome): il cognome completo resta privato.
--- Solo per complete_registration e complete_social_profile, dopo i loro controlli.
+-- Solo per complete_social_profile, dopo i suoi controlli.
 create or replace function public.create_profile(p_uid uuid, p_user text, p_first text, p_last text, p_birth date)
 returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -1895,57 +1898,17 @@ begin
 end;
 $$;
 
--- L'email interna di accesso con password (nomeutente@dominio)?
-create or replace function public.is_login_email(p_email text)
-returns boolean language sql immutable as $$
-  select coalesce(right(lower(p_email), length(public.login_domain()) + 1) = '@' || public.login_domain(), false);
-$$;
-
--- Si entra con nome utente e password: l'email di accesso è quella interna del proprio nome utente.
--- (Chi entra con Google o Facebook non ha una password; gli account anonimi di prima non l'hanno ancora.)
-create or replace function public.has_password_login(p_uid uuid)
-returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
-  select exists (select 1 from auth.users u join public.profiles p on p.id = u.id
-                  where u.id = p_uid and lower(u.email) = p.username || '@' || public.login_domain());
-$$;
-
--- Si entra con Google o Facebook (Supabase Auth OAuth): ha un'identità di un provider esterno e non l'email interna.
+-- Si entra con Google o Facebook (Supabase Auth OAuth): ha un'identità di un provider esterno.
 create or replace function public.is_social_user(p_uid uuid)
 returns boolean language sql stable security definer set search_path = public, auth, pg_temp as $$
-  select exists (select 1 from auth.identities i where i.user_id = p_uid and i.provider not in ('email', 'phone', 'anonymous'))
-     and not exists (select 1 from auth.users u where u.id = p_uid and public.is_login_email(u.email));
-$$;
-
-/**
- * Completa la registrazione con nome utente e password, dopo la creazione dell'utente in Supabase Auth
- * (email interna nomeutente@dominio).
- */
-create or replace function public.complete_registration(
-  p_username text, p_first_name text, p_last_name text, p_birth_date date, p_accept_terms boolean
-)
-returns jsonb language plpgsql security definer set search_path = public, auth, pg_temp as $$
-declare
-  v_uid uuid := auth.uid();
-  v_user text := lower(trim(p_username));
-begin
-  if v_uid is null then raise exception 'Autenticazione richiesta'; end if;
-  if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
-  perform public.check_new_profile(v_user, trim(p_first_name), trim(p_last_name), p_birth_date, p_accept_terms);
-  -- Il nome utente è legato all'email interna di accesso: non si registra "alice" con l'accesso di "bob".
-  if (select lower(email) from auth.users where id = v_uid) is distinct from v_user || '@' || public.login_domain() then
-    raise exception 'Nome utente non valido per questo accesso.';
-  end if;
-  return public.create_profile(v_uid, v_user, trim(p_first_name), trim(p_last_name), p_birth_date);
-exception when unique_violation then
-  raise exception 'Questo nome utente è già preso.';
-end;
+  select exists (select 1 from auth.identities i where i.user_id = p_uid and i.provider not in ('email', 'phone', 'anonymous'));
 $$;
 
 /**
  * Primo accesso con Google o Facebook: l'utente esiste in Supabase Auth (con l'email vera del provider, che
- * non si mostra a nessuno) ma non ha ancora un profilo. Lo completa da sé, con le stesse regole e la stessa
- * scadenza per il documento della registrazione con password. Il nome utente si sceglie qui e non è legato
- * all'email; un nome già preso, riservato, di un espulso o di una registrazione con password in corso è rifiutato.
+ * non si mostra a nessuno) ma non ha ancora un profilo. Lo completa da sé: nome utente, nome, cognome, data di
+ * nascita e termini; parte la scadenza per il documento. Il nome utente si sceglie qui e non è legato all'email;
+ * un nome già preso, riservato o di un espulso è rifiutato.
  */
 create or replace function public.complete_social_profile(
   p_username text, p_first_name text, p_last_name text, p_birth_date date, p_accept_terms boolean
@@ -1959,8 +1922,7 @@ begin
   if exists (select 1 from profiles where id = v_uid) then raise exception 'Hai già un profilo.'; end if;
   if not public.is_social_user(v_uid) then raise exception 'Questo accesso non è con Google o Facebook.'; end if;
   perform public.check_new_profile(v_user, trim(p_first_name), trim(p_last_name), p_birth_date, p_accept_terms);
-  if exists (select 1 from profiles where username = v_user)
-     or exists (select 1 from auth.users where lower(email) = v_user || '@' || public.login_domain()) then
+  if exists (select 1 from profiles where username = v_user) then
     raise exception 'Questo nome utente è già preso.';
   end if;
   return public.create_profile(v_uid, v_user, trim(p_first_name), trim(p_last_name), p_birth_date);
@@ -1969,9 +1931,8 @@ exception when unique_violation then
 end;
 $$;
 
--- Utenti di accesso rimasti senza profilo (li cancella la pulizia notturna, setup-produzione.sql): una
--- registrazione con password interrotta dopo un giorno (così il nome utente si libera); un accesso con Google o
--- Facebook mai completato dopo 7 giorni, per dare il tempo di finire il profilo.
+-- Utenti di accesso rimasti senza profilo (li cancella la pulizia notturna, setup-produzione.sql): un accesso con
+-- Google o Facebook mai completato con "Completa il profilo", dopo 7 giorni (il tempo per finirlo).
 create or replace function public.purge_orphan_logins()
 returns int language plpgsql security definer set search_path = public, auth, pg_temp as $$
 declare
@@ -1979,7 +1940,7 @@ declare
 begin
   delete from auth.users u
    where not exists (select 1 from public.profiles p where p.id = u.id)
-     and u.created_at < now() - case when public.is_login_email(u.email) then interval '1 day' else interval '7 days' end;
+     and u.created_at < now() - interval '7 days';
   get diagnostics v_n = row_count;
   return v_n;
 end;
@@ -2015,7 +1976,7 @@ begin
 end;
 $$;
 
--- Per chi si era iscritto prima delle password: nome, cognome e data di nascita, necessari per la verifica.
+-- Per i profili di vecchie iscrizioni senza nome, cognome e data di nascita, necessari per la verifica.
 create or replace function public.complete_private_data(p_first_name text, p_last_name text, p_birth_date date)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -2356,8 +2317,6 @@ returns jsonb language sql stable security definer set search_path = public, pg_
                  and (n.kind <> 'cover' or coalesce((n.data->>'featured_on')::date, '-infinity'::date) <= public.cover_day())
                  and (a.id is null or (a.banned_at is null and not public.is_blocked_pair_internal(auth.uid(), a.id)))),
     'needs_private', not exists (select 1 from profile_private where id = auth.uid()),
-    -- Si entra con nome utente e password (false per Google/Facebook): l'app mostra cambio password e codice di recupero.
-    'has_password', public.has_password_login(auth.uid()),
     -- Se le visualizzazioni di chi guarda contano per la gara (serve solo l'età verificata).
     'voter', (select jsonb_build_object('can_vote', public.can_vote(p.id), 'from', null)
                 from profiles p where p.id = auth.uid() limit 1),
@@ -3202,30 +3161,17 @@ returns boolean language sql stable security definer set search_path = public, p
      );
 $$;
 
--- L'email di accesso non si cambia dall'app (in Supabase la conferma via email è spenta, quindi un cambio sarebbe
--- immediato). Con nome utente e password l'email interna è legata al nome utente: un account non può prendersi
--- altri nomi cambiando email. Con Google o Facebook l'email è quella data dal provider: non la si può sostituire
--- con un indirizzo qualsiasi (altrimenti chi poi entrasse con Google con quell'indirizzo finirebbe collegato a
--- questo account), né con un'email interna senza profilo (terrebbe occupato un nome utente).
--- L'accesso con Google/Facebook non tocca auth.users.email (crea l'utente o aggiorna solo l'identità): non è bloccato.
+-- L'email di accesso non si cambia dall'app. Con Google o Facebook è quella data dal provider: non la si può
+-- sostituire con un indirizzo qualsiasi (altrimenti chi poi entrasse con Google con quell'indirizzo finirebbe
+-- collegato a questo account). L'accesso con Google/Facebook non tocca auth.users.email (crea l'utente o
+-- aggiorna solo l'identità): non è bloccato.
 create or replace function public.guard_login_email()
 returns trigger language plpgsql security definer set search_path = public, auth, pg_temp as $$
 declare
-  v_username text;
   v_new text := lower(coalesce(new.email, ''));
 begin
   if new.email is not distinct from old.email then return new; end if;
-  select username into v_username from public.profiles where id = new.id;
-  -- Email interna: solo quella del proprio nome utente (per esempio gli account anonimi di prima che impostano la password).
-  if public.is_login_email(v_new) then
-    if v_username is null or v_new <> v_username || '@' || public.login_domain() then
-      raise exception 'Il nome di accesso non si può cambiare.';
-    end if;
-    return new;
-  end if;
-  -- Chi entra con nome utente e password non cambia (né toglie) la sua email interna.
-  if public.is_login_email(old.email) then raise exception 'Il nome di accesso non si può cambiare.'; end if;
-  -- Altrimenti solo un'email già confermata da Google o Facebook per questo stesso utente.
+  -- Solo un'email già confermata da Google o Facebook per questo stesso utente.
   if v_new <> '' and exists (select 1 from auth.identities i
                               where i.user_id = new.id and i.provider not in ('email', 'phone', 'anonymous')
                                 and lower(i.identity_data ->> 'email') = v_new) then
@@ -3238,7 +3184,7 @@ do $$ begin
   drop trigger if exists trg_guard_login_email on auth.users;
   create trigger trg_guard_login_email before update of email on auth.users for each row execute function public.guard_login_email();
 exception when insufficient_privilege then
-  raise notice 'Non ho i permessi per il controllo sul nome di accesso (auth.users): salto.';
+  raise notice 'Non ho i permessi per il controllo sull''email di accesso (auth.users): salto.';
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -3352,78 +3298,13 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- 20) Codice di recupero della password (niente email: con il codice si sceglie una password nuova da sé)
+-- 20) Si entra solo con Google o Facebook: via codice di recupero e cambio della password
 -- ---------------------------------------------------------------------------
--- Crea (o sostituisce) il codice: 16 simboli senza quelli che si confondono (0/O, 1/I/L), XXXX-XXXX-XXXX-XXXX.
--- Si restituisce una volta sola; nel database resta solo l'impronta bcrypt. Al massimo 5 all'ora.
-create or replace function public.create_recovery_code()
-returns text language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_uid uuid := auth.uid();
-  v_alphabet constant text := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  v_bytes bytea := gen_random_bytes(16);
-  v_code text := '';
-begin
-  if v_uid is null or not public.is_active(v_uid) then raise exception 'Autenticazione richiesta'; end if;
-  if not exists (select 1 from profile_private where id = v_uid) then raise exception 'Prima inserisci nome, cognome e data di nascita.'; end if;
-  -- Chi entra con Google o Facebook non ha una password da recuperare.
-  if not public.has_password_login(v_uid) then raise exception 'Il tuo account non ha una password: non serve un codice di recupero.'; end if;
-  if (select count(*) from rate_events where user_id = v_uid and kind = 'recovery_code' and at > now() - interval '1 hour') >= 5 then
-    raise exception 'Hai creato troppi codici in poco tempo: riprova tra un’ora.';
-  end if;
-  insert into rate_events (user_id, kind) values (v_uid, 'recovery_code');
-  for i in 0..15 loop
-    -- 256 non è multiplo di 31: si scartano i valori alti per non favorire i primi simboli.
-    while get_byte(v_bytes, i) >= 248 loop
-      v_bytes := set_byte(v_bytes, i, get_byte(gen_random_bytes(1), 0));
-    end loop;
-    v_code := v_code || substr(v_alphabet, get_byte(v_bytes, i) % 31 + 1, 1);
-  end loop;
-  update profile_private set recovery_hash = crypt(v_code, gen_salt('bf', 8)), recovery_created_at = now() where id = v_uid;
-  return substr(v_code, 1, 4) || '-' || substr(v_code, 5, 4) || '-' || substr(v_code, 9, 4) || '-' || substr(v_code, 13, 4);
-end;
-$$;
-
--- Solo per la funzione verifica-eta (chiave di servizio), rotta /recupero. Restituisce l'id se il codice è
--- giusto (e, con p_consume, lo invalida: vale una volta sola), altrimenti null, sempre con la stessa risposta
--- per nome sbagliato, codice sbagliato o account espulso. Dopo 5 tentativi sbagliati in un'ora: si ferma.
-create or replace function public.recovery_redeem(p_username text, p_code text, p_consume boolean default true)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_id uuid;
-  v_hash text;
-  v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g'));
-begin
-  select p.id, v.recovery_hash into v_id, v_hash
-    from profiles p join profile_private v on v.id = p.id
-   where p.username = lower(trim(regexp_replace(coalesce(p_username, ''), '^@+', ''))) and p.banned_at is null;
-  -- Solo gli account con nome utente e password (chi entra con Google o Facebook non ha una password).
-  if v_id is null or not public.has_password_login(v_id) then return null; end if;
-  if (select count(*) from rate_events where user_id = v_id and kind = 'recovery_fail' and at > now() - interval '1 hour') >= 5 then
-    raise exception 'Troppi tentativi: riprova tra un’ora.';
-  end if;
-  if v_hash is null or length(v_code) <> 16 or crypt(v_code, v_hash) <> v_hash then
-    insert into rate_events (user_id, kind) values (v_id, 'recovery_fail');
-    return null;
-  end if;
-  if coalesce(p_consume, true) then
-    update profile_private set recovery_hash = null, recovery_created_at = null where id = v_id;
-  end if;
-  return v_id;
-end;
-$$;
-
--- Dopo il cambio di password con il codice: tutti i dispositivi collegati escono (anche quello di chi l'aveva rubata)
--- e nessun telefono riceve più le notifiche dell'account (un telefono perso non mostra più niente).
-create or replace function public.revoke_sessions(p_user_id uuid)
-returns void language plpgsql security definer set search_path = public, pg_temp as $$
-begin
-  if to_regclass('auth.sessions') is not null then
-    execute 'delete from auth.sessions where user_id = $1' using p_user_id;
-  end if;
-  delete from push_tokens where user_id = p_user_id;
-end;
-$$;
+drop function if exists public.create_recovery_code();
+drop function if exists public.recovery_redeem(text, text, boolean);
+drop function if exists public.revoke_sessions(uuid);
+drop function if exists public.drop_other_push_tokens(text);
+delete from public.rate_events where kind in ('recovery_code', 'recovery_fail');
 
 -- ---------------------------------------------------------------------------
 -- 21) "Non mi interessa": meno post così (gusti) e quel post non torna in Esplora
@@ -3628,12 +3509,6 @@ returns void language sql security definer set search_path = public, pg_temp as 
   delete from public.push_tokens where token = p_token and user_id = auth.uid();
 $$;
 
--- Cambio della password (gli altri dispositivi escono): solo questo telefono continua a ricevere le notifiche.
-create or replace function public.drop_other_push_tokens(p_keep text default null)
-returns void language sql security definer set search_path = public, pg_temp as $$
-  delete from public.push_tokens where user_id = auth.uid() and token is distinct from p_keep;
-$$;
-
 create or replace function public.get_push_prefs()
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object('cover', coalesce(pp.cover, true), 'contest', coalesce(pp.contest, true), 'social', coalesce(pp.social, true))
@@ -3811,13 +3686,11 @@ grant execute on function public.mod_resolve(uuid, text) to authenticated;
 grant execute on function public.can_act(uuid) to authenticated;
 grant execute on function public.is_admin(uuid) to authenticated;
 grant execute on function public.username_available(text) to anon, authenticated;
-grant execute on function public.complete_registration(text, text, text, date, boolean) to authenticated;
 -- Primo accesso con Google/Facebook: solo chi ha una sessione (anon no). Le funzioni di appoggio non si chiamano dall'app.
 revoke all on function public.complete_social_profile(text, text, text, date, boolean) from public, anon;
 grant execute on function public.complete_social_profile(text, text, text, date, boolean) to authenticated;
 revoke all on function public.create_profile(uuid, text, text, text, date) from public, anon, authenticated;
 revoke all on function public.check_new_profile(text, text, text, date, boolean) from public, anon, authenticated;
-revoke all on function public.has_password_login(uuid) from public, anon, authenticated;
 revoke all on function public.is_social_user(uuid) from public, anon, authenticated;
 revoke all on function public.purge_orphan_logins() from public, anon, authenticated;
 grant execute on function public.my_status() to authenticated;
@@ -3836,7 +3709,6 @@ grant execute on function public.mod_user_reports() to authenticated;
 grant execute on function public.mod_resolve_user_report(text, uuid, text) to authenticated;
 grant execute on function public.update_my_profile(text, text, text, boolean) to authenticated;
 grant execute on function public.search_profiles(text, int) to authenticated;
-grant execute on function public.create_recovery_code() to authenticated;
 grant execute on function public.not_interested(uuid) to authenticated;
 grant execute on function public.register_push_token(text, text) to authenticated;
 grant execute on function public.unregister_push_token(text) to authenticated;
@@ -3851,12 +3723,6 @@ grant execute on function public.push_claim(int) to service_role;
 grant execute on function public.push_done(bigint[]) to service_role;
 grant execute on function public.push_drop_tokens(text[]) to service_role;
 grant execute on function public.push_broadcast_take(int) to service_role;
-revoke all on function public.recovery_redeem(text, text, boolean) from public, anon, authenticated;
-revoke all on function public.revoke_sessions(uuid) from public, anon, authenticated;
-revoke all on function public.drop_other_push_tokens(text) from public, anon;
-grant execute on function public.drop_other_push_tokens(text) to authenticated;
-grant execute on function public.recovery_redeem(text, text, boolean) to service_role;
-grant execute on function public.revoke_sessions(uuid) to service_role;
 -- Pulizia dei file dal lavoro programmato: solo con la chiave di servizio.
 revoke all on function public.storage_purge_take(int) from public, anon, authenticated;
 revoke all on function public.storage_purge_finish(text, text[]) from public, anon, authenticated;

@@ -143,13 +143,9 @@ export type Status = {
   isAdmin: boolean;
   /** Account chiuso dalla moderazione o perché minore dell'età minima. */
   banned: boolean;
-  /** Iscritto prima delle password: mancano nome, cognome e data di nascita. */
+  /** Profilo di una vecchia iscrizione: mancano nome, cognome e data di nascita. */
   needsPrivate: boolean;
-  /** Account creato prima delle password: va impostata per poter uscire e rientrare. */
-  needsPassword: boolean;
-  /** Si entra con nome utente e password (cambio password e codice di recupero in Impostazioni). */
-  hasPassword: boolean;
-  /** Si entra con Google o Facebook (null con nome utente e password). */
+  /** Con quale provider si entra, Google o Facebook (null solo per vecchi account). */
   social: SocialProvider | null;
   unread: number;
   settings: Settings;

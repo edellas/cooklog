@@ -401,7 +401,7 @@ export default function VerifyScreen() {
   );
 }
 
-/** Chi si era iscritto prima delle password inserisce qui i dati da confrontare con il documento. */
+/** Profili di vecchie iscrizioni senza nome, cognome e data di nascita: li inseriscono qui, per il confronto con il documento. */
 function PrivateData({ onDone }: { onDone: () => void }) {
   const [first, setFirst] = useState('');
   const [last, setLast] = useState('');

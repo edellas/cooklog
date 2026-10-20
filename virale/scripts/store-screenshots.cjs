@@ -33,19 +33,17 @@ const DEVICES = [
 
     await page.goto(URL + '/'); await page.waitForTimeout(2500);
     await shot('01-benvenuto');
-    // Registrazione (come la fa una persona), poi il codice di recupero.
-    await vis('Crea un account').click(); await page.waitForTimeout(500);
+    // Iscrizione (come la fa una persona): "Continua con Google" (simulato in demo), poi Completa il profilo.
+    await vis('Continua con Google').click(); await page.waitForTimeout(500);
+    await vis('Nuovo account').click(); await page.waitForTimeout(1200);
+    await page.getByLabel('Nome utente').fill('emanuele');
     await page.getByLabel('Nome', { exact: true }).fill('Emanuele');
     await page.getByLabel('Cognome').fill('Rossi');
     await page.getByLabel('Giorno di nascita').fill('12');
     await page.getByLabel('Mese di nascita').fill('04');
     await page.getByLabel('Anno di nascita').fill('1996');
-    await page.getByLabel('Nome utente').fill('emanuele');
-    await page.getByLabel('Password', { exact: true }).fill('copertina2026');
-    await page.getByLabel('Ripeti la password').fill('copertina2026');
     await page.getByRole('checkbox').click();
-    await vis('Registrati').click(); await page.waitForTimeout(6000);
-    await vis('Ho salvato il codice').click(); await page.waitForTimeout(3200);
+    await vis('Entra in Virale').click(); await page.waitForTimeout(6000);
     await shot('02-copertina');
     await vis('Provini').click(); await page.waitForTimeout(2200);
     // La spiegazione di In gara (alla prima apertura) e l'avviso sulla verifica si chiudono; il suggerimento

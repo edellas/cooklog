@@ -94,7 +94,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [setMe]);
   useEffect(retry, [retry]);
 
-  // Sessione chiusa altrove (password cambiata su un altro telefono, token scaduto): si torna al benvenuto.
+  // Sessione chiusa altrove (account eliminato, token scaduto): si torna al benvenuto.
   useEffect(() => {
     if (!supabase) return;
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
