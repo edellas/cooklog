@@ -214,7 +214,7 @@ async function diagnosi(userId: string): Promise<Response> {
     if (res.ok) {
       const s = (await res.json()) as { session_id: string };
       checks.push('✓ Didit accetta chiave e workflow');
-      await fetch(`${DIDIT}/session/${encodeURIComponent(s.session_id)}/delete/`, { method: 'DELETE', headers: { 'x-api-key': env('DIDIT_API_KEY') } }).catch(() => undefined);
+      await deleteSession(s.session_id, (s as { session_number?: number }).session_number);
     } else {
       checks.push(`✗ ${await diditProblem(res, 'diagnosi')}`);
     }
@@ -267,6 +267,7 @@ async function webhook(req: Request): Promise<Response> {
 type Decision = {
   status: string;
   vendor_data?: string;
+  session_number?: number;
   id_verifications?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string }[];
   id_verification?: { date_of_birth?: string; first_name?: string; last_name?: string; document_number?: string };
 };
@@ -285,6 +286,28 @@ async function esito(userId: string): Promise<Response> {
   // Didit sta ancora lavorando (o l'utente non ha finito): si riprova fra poco.
   if (!['Approved', 'Declined', 'In Review'].includes(decision.status)) return json({ outcome: 'waiting', status: decision.status });
   return json({ outcome: await applyDecision(userId, check.provider_session, decision) });
+}
+
+/**
+ * Cancella una sessione su Didit (foto, video, dati). Prima l'indirizzo della singola sessione; se Didit non lo
+ * accetta, la cancellazione a gruppi documentata (POST /v3/sessions/delete/ con il numero della sessione).
+ * Mai un errore verso chi chiama: al massimo resta la conservazione automatica impostata nella console.
+ */
+async function deleteSession(sessionId: string, sessionNumber?: number): Promise<void> {
+  const headers = { 'x-api-key': env('DIDIT_API_KEY'), 'Content-Type': 'application/json' };
+  try {
+    const res = await fetch(`${DIDIT}/session/${encodeURIComponent(sessionId)}/delete/`, { method: 'DELETE', headers });
+    if (res.ok) return;
+    if (typeof sessionNumber === 'number') {
+      const batch = await fetch(`${DIDIT}/sessions/delete/`, { method: 'POST', headers, body: JSON.stringify({ session_numbers: [sessionNumber] }) });
+      if (batch.ok) return;
+      console.error('verifica-eta: cancellazione della sessione su Didit non riuscita', res.status, batch.status);
+    } else {
+      console.error('verifica-eta: cancellazione della sessione su Didit non riuscita', res.status);
+    }
+  } catch (e) {
+    console.error('verifica-eta: cancellazione della sessione su Didit non riuscita', e);
+  }
 }
 
 /** Registra la decisione di Didit e, se è definitiva, cancella la sessione su Didit. Usata dal webhook e da "esito". */
@@ -308,7 +331,7 @@ async function applyDecision(userId: string, sessionId: string, decision: Decisi
   // Decisione presa: su Didit non serve più nulla, si cancellano sessione, foto e video.
   // Se invece decide una persona ('review'), la sessione resta finché l'amministratore non l'ha vista.
   if (['approved', 'rejected', 'underage'].includes(String(outcome))) {
-    await fetch(`${DIDIT}/session/${encodeURIComponent(sessionId)}/delete/`, { method: 'DELETE', headers: { 'x-api-key': env('DIDIT_API_KEY') } }).catch(() => undefined);
+    await deleteSession(sessionId, decision.session_number);
   }
   return String(outcome);
 }
