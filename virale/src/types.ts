@@ -97,15 +97,24 @@ export type DraftMedia = { uri: string; kind: 'image' | 'video'; width: number; 
 
 export type NewPost = { media: DraftMedia[]; caption: string; joinContest: boolean };
 
-export type RegisterInput = {
+/** I dati del profilo che si completano al primo accesso (con Google o Facebook). */
+export type ProfileInput = {
   username: string;
   firstName: string;
   lastName: string;
   /** AAAA-MM-GG */
   birthDate: string;
-  password: string;
   acceptedTerms: boolean;
 };
+
+/** Accesso con un account esterno (Supabase Auth OAuth). */
+export type SocialProvider = 'google' | 'facebook';
+
+/**
+ * Accesso con Google o Facebook fatto, profilo ancora da completare: nome e cognome proposti dal provider
+ * (si possono correggere) e l'email, mostrata solo all'utente stesso.
+ */
+export type SocialDraft = { provider: SocialProvider; email: string | null; firstName: string; lastName: string };
 
 export type IdentityStatus = 'missing' | 'pending' | 'approved' | 'rejected';
 
@@ -138,6 +147,10 @@ export type Status = {
   needsPrivate: boolean;
   /** Account creato prima delle password: va impostata per poter uscire e rientrare. */
   needsPassword: boolean;
+  /** Si entra con nome utente e password (cambio password e codice di recupero in Impostazioni). */
+  hasPassword: boolean;
+  /** Si entra con Google o Facebook (null con nome utente e password). */
+  social: SocialProvider | null;
   unread: number;
   settings: Settings;
   /** Se le visualizzazioni di chi guarda contano nella gara (serve l'età verificata). */

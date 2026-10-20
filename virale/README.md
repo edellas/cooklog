@@ -12,7 +12,7 @@ App mobile multipiattaforma (iOS, Android e web dallo stesso codice) in Expo SDK
 
 | Schermata | Cosa succede |
 |---|---|
-| **Benvenuto** | Registrazione con nome, cognome, data di nascita, nome utente e password (niente email). Gli errori compaiono sotto il campo giusto; il nome utente si controlla mentre lo scrivi. Dopo l'iscrizione si riceve il **codice di recupero** della password ("Password dimenticata?"). |
+| **Benvenuto** | "Continua con Google" e "Continua con Facebook" (Supabase Auth OAuth con PKCE, nel browser di sistema). Al primo accesso **Completa il profilo**: nome utente (controllato mentre lo scrivi), nome, cognome, data di nascita, termini; finché non è fatto l'app non si usa. Gli account già creati con nome utente e password entrano da "Hai un account con password? Accedi", con "Password dimenticata?" e il **codice di recupero**. In demo l'accesso con Google/Facebook è simulato. |
 | **Copertina** | Il post vincitore della gara appena chiusa, a tutta pagina, con testata, numero dell'uscita e data. È identica per tutti. Il pulsante "Guarda i provini di oggi" porta alla gara; sotto, quando esce la prossima. Se vinci, una festa ("Hai vinto!") da condividere. |
 | **Provini** | Il feed verticale, in tre sezioni: **In gara** (i post candidati oggi, scelti dal server alla cieca: si vota guardando, ognuno lo vedi una volta sola), **Esplora** (tutti gli altri post, secondo i tuoi gusti, senza fine) e **Seguiti**. Doppio tocco = cerchio (il nostro mi piace), poi commenti, salva, condividi, segui, "Non mi interessa". Lente per cercare persone. |
 | **Pubblica** (pulsante giallo) | Da 1 a 10 foto e/o video dalla galleria o dalla fotocamera. I video pesanti si comprimono sul telefono prima del caricamento; la pubblicazione si può annullare. Si sceglie se candidarsi per la prossima copertina (un post al giorno). |
@@ -97,7 +97,7 @@ npm run check:release   # dati del titolare, sito, pagine legali: cosa manca pri
   psql -d virale_test -v ON_ERROR_STOP=1 -f supabase/tests/auth-stub.sql -f supabase/schema.sql -f supabase/tests/e2e.sql
   ```
 - **Carico**: con 20.000 post in gara, servire 10 Provini (già composti in JSON) e registrare 10 voti richiede circa 20 ms su un core (Postgres 16 locale, senza tuning).
-- **App web**: percorsi verificati in Chromium automatizzato (registrazione e codice di recupero, copertina, provini, cerchio, commenti, segnalazioni, ricerca, modifica del profilo, pubblicazione con foto e video e annullamento, profilo, archivio, regole, mezzanotte simulata, schermi piccoli, orizzontale e tablet). Quel Chromium non ha il codec H.264: nei test i video demo si servono come WebM.
+- **App web**: percorsi verificati in Chromium automatizzato (accesso simulato con Google e profilo da completare, accesso con password e codice di recupero, copertina, provini, cerchio, commenti, segnalazioni, ricerca, modifica del profilo, pubblicazione con foto e video e annullamento, profilo, archivio, regole, mezzanotte simulata, schermi piccoli, orizzontale e tablet). Quel Chromium non ha il codec H.264: nei test i video demo si servono come WebM.
 - **Funzione `verifica-eta`** (Deno): le rotte `/lavori` (pulizia dei file e invio delle notifiche push a blocchi di 100), `/apri`, `/recupero` e l'azione `modera` (controllo dei contenuti con OpenAI: soglie, fotogrammi dei video, didascalia, OpenAI assente o senza chiave) sono provate con richieste finte (supabase-js locale, senza rete).
 - **Sul telefono** vanno provati a mano: un video da 60 s (oltre 48 MB l'app chiede di accorciarlo), notifiche push, link condivisi aperti da WhatsApp, "Password dimenticata?", tastiera su iPhone (vedi PUBBLICARE.md, §6).
 
@@ -107,7 +107,7 @@ La guida completa per andare su App Store e Google Play è in **[PUBBLICARE.md](
 
 1. Crea un progetto **Supabase** in UE (piano Pro: con i video il piano gratuito non regge) ed esegui `supabase/schema.sql`, poi `supabase/setup-produzione.sql` (bucket `media`, `documenti` e `avatars`, permessi sui file, chiusura della gara all'orario della copertina, pulizie e lavori ogni minuto con `pg_cron` e `pg_net`).
 2. Nel **Vault** i segreti `virale_url` e `virale_cron_secret`; nella funzione `verifica-eta` i segreti `VIRALE_CRON_SECRET` (lo stesso valore), `VIRALE_SITO`, `OPENAI_API_KEY` (controllo automatico dei contenuti prima della pubblicazione, gratuito) e, facoltativo, `EXPO_ACCESS_TOKEN`.
-3. **Authentication → Providers**: Email attivo con *Confirm email* spento (si accede con nome utente e password), accessi anonimi spenti.
+3. **Authentication → Providers**: Email attivo con *Confirm email* spento (gli account già creati accedono con nome utente e password), accessi anonimi spenti; Google e Facebook attivi, con `virale://auth` tra i *Redirect URLs* (passo passo in PUBBLICARE.md, sezione 0).
 4. Variabili d'ambiente EAS: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, i dati del titolare `EXPO_PUBLIC_OWNER_*` e, per le notifiche su Android, il file `GOOGLE_SERVICES_JSON` (lo legge `app.config.js`; senza, la build riesce ma Android non riceve notifiche).
 5. `eas build` e `eas submit` con i profili di `eas.json`. Gli identificativi sono `app.virale.mobile`.
 

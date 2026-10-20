@@ -35,7 +35,7 @@ export function ownerEmail(): string | null {
 }
 
 /** Data di entrata in vigore dei documenti (aggiornala quando li modifichi). */
-export const LEGAL_UPDATED = '19 ottobre 2026';
+export const LEGAL_UPDATED = '20 ottobre 2026';
 
 /** Età minima: in Italia 14 anni per iscriversi da soli a un servizio online (art. 2-quinquies Codice privacy). */
 export const MIN_AGE = 14;
@@ -62,7 +62,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         heading: 'Chi può usare Virale',
         body: [
           `Devi avere almeno ${MIN_AGE} anni. Se hai meno di 18 anni, usa Virale solo con il permesso di un genitore o di chi ne fa le veci.`,
-          'Per registrarti indichi il tuo vero nome, cognome e data di nascita, un nome utente e una password. Un account è personale: non puoi crearne più di uno per partecipare alla gara né cederlo ad altri, e sei responsabile di custodire la password.',
+          'Per registrarti entri con il tuo account Google o Facebook e indichi il tuo vero nome, cognome e data di nascita e un nome utente. Chi si è registrato prima con nome utente e password continua ad accedere così. Un account è personale: non puoi crearne più di uno per partecipare alla gara né cederlo ad altri, e sei responsabile di custodire il tuo accesso (la password, o il tuo account Google o Facebook).',
           'Entro il periodo indicato nell’app (di regola 7 giorni) devi confermare la tua età con un documento d’identità: con la verifica automatica (documento e breve selfie) oppure caricando la foto del documento e un selfie con il documento. Finché non lo fai, scaduto il periodo, puoi guardare ma non pubblicare, commentare, cerchiare (il nostro mi piace), seguire né votare. Se il documento dimostra un’età inferiore al minimo, l’account viene chiuso.',
         ],
       },
@@ -117,7 +117,8 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
       {
         heading: 'Quali dati trattiamo',
         body: [
-          'Account: nome utente, password (conservata solo in forma cifrata, non la vediamo), nome visualizzato (il tuo nome e l’iniziale del cognome, che puoi cambiare una volta ogni 7 giorni), eventuale bio, eventuale foto profilo (visibile a tutti), un identificativo tecnico dell’account, data di accettazione dei termini.',
+          'Account: nome utente, password solo per gli account creati con nome utente e password (conservata solo in forma cifrata, non la vediamo), nome visualizzato (il tuo nome e l’iniziale del cognome, che puoi cambiare una volta ogni 7 giorni), eventuale bio, eventuale foto profilo (visibile a tutti), un identificativo tecnico dell’account, data di accettazione dei termini.',
+          'Accesso con Google o Facebook: se entri così, Google o Facebook (Meta) ci comunicano, dopo che l’hai autorizzato sulla loro pagina, il tuo nome, il tuo indirizzo email, l’eventuale immagine del profilo e un identificativo del tuo account presso di loro. Li usiamo solo per farti entrare e per proporti nome e cognome quando completi il profilo: l’immagine non la usiamo, non riceviamo la tua password né i tuoi amici o contatti e non pubblichiamo nulla sui tuoi profili social. L’email non è visibile agli altri utenti e non la usiamo per pubblicità o newsletter.',
           'Ricerca: puoi cercare le persone per nome o nome utente. Non conserviamo le ricerche e la ricerca non mostra mai i post in gara.',
           'Dati privati, che non mostriamo agli altri utenti: nome, cognome e data di nascita.',
           'Verifica dell’età, in uno di due modi. Automatica: tramite Didit inquadri il documento d’identità e fai un breve selfie; Didit controlla che il documento sia autentico e confronta il volto del selfie con la foto del documento (un confronto biometrico), e ci comunica solo l’esito con la data di nascita letta dal documento. Con le foto: carichi la foto del documento e un selfie con il documento, che vede soltanto un amministratore. In entrambi i casi le immagini vengono cancellate appena presa la decisione; conserviamo solo l’esito, la data di nascita, la data della verifica e chi ha deciso.',
@@ -127,13 +128,13 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'Gusti: dalle interazioni ricaviamo punteggi su autori, hashtag e tipo di contenuto (foto o video) che ti interessano di più, che perdono peso col tempo (si dimezzano ogni 14 giorni). Servono solo a ordinare i post in “In gara” ed “Esplora”: non li mostriamo a nessuno, non li usiamo per la pubblicità e non li cediamo.',
           'Notifiche sul telefono, solo se le attivi: un identificativo del telefono per le notifiche (token) e le categorie che hai scelto. Serve solo a inviarti le notifiche; lo cancelliamo quando esci dall’account, quando lo elimini, quando recuperi la password con il codice (da tutti i telefoni) o la cambi dall’app (da tutti tranne quello che stai usando) e quando il telefono non risulta più raggiungibile (per esempio dopo aver disinstallato l’app).',
           'Codice di recupero della password: ne conserviamo solo una forma cifrata, non il codice.',
-          'Non chiediamo email, numero di telefono, posizione o rubrica. Non usiamo pubblicità né tracciamento tra app di altre aziende.',
+          'Non chiediamo numero di telefono, posizione o rubrica; l’email la riceviamo solo se entri con Google o Facebook. Non usiamo pubblicità né tracciamento tra app di altre aziende.',
         ],
       },
       {
         heading: 'Perché e su quale base',
         body: [
-          'Fornire il servizio, mostrare i contenuti e far funzionare la gara: esecuzione del contratto (art. 6.1.b GDPR).',
+          'Fornire il servizio, mostrare i contenuti e far funzionare la gara: esecuzione del contratto (art. 6.1.b GDPR). Lo stesso vale per i dati che ricevi da Google o Facebook quando scegli di entrare con loro.',
           'Sicurezza, moderazione, prevenzione di abusi e di manipolazioni della gara: legittimo interesse (art. 6.1.f) e obblighi di legge (art. 6.1.c).',
           'Controllo automatico dei contenuti prima della pubblicazione: legittimo interesse a proteggere gli utenti, in particolare i minori, e obblighi di legge sulla moderazione (art. 6.1.f e 6.1.c). Riguarda i contenuti, non la persona: non porta da solo a sospensioni dell’account, i casi dubbi li decide una persona e, se pensi che un contenuto sia stato bloccato per errore, puoi scriverci.',
           `Verifica dell’età: obbligo di legge sull’età minima per i servizi online (art. 2-quinquies del Codice privacy, ${MIN_AGE} anni) e legittimo interesse a proteggere i minori (art. 6.1.c e 6.1.f). Con la verifica automatica, il confronto tra il volto del selfie e la foto del documento è un trattamento di dati biometrici (art. 9 GDPR): lo fa Didit, una sola volta e solo per questo scopo, e solo con il tuo consenso esplicito (art. 9.2.a), che dai toccando “Verifica ora” dopo averlo letto. Puoi non darlo: in quel caso carichi le foto e il confronto lo fa una persona, senza trattamenti automatici del volto.`,
@@ -144,6 +145,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         heading: 'Chi riceve i dati',
         body: [
           'Ciò che pubblichi è visibile agli altri utenti; la Copertina è visibile a chiunque apra l’app. Nome, nome utente, foto profilo e bio sono visibili agli altri utenti.',
+          'Se entri con Google o Facebook, il fornitore che hai scelto sa che hai usato il tuo account per entrare in Virale, secondo la sua informativa (Google Ireland Limited; Meta Platforms Ireland Limited). Non comunichiamo a loro i tuoi dati di Virale. Puoi togliere l’accesso a Virale dalle impostazioni del tuo account Google o Facebook.',
           'Quando condividi un post, il link porta a una pagina del nostro sito che apre il post nell’app (o lo store): la pagina non usa cookie né strumenti di tracciamento.',
           'Fornitori che trattano i dati per nostro conto come responsabili del trattamento: Supabase (database, archiviazione dei file e autenticazione) e, per la verifica automatica dell’età, Didit (didit.me). Per questi servizi usiamo server situati nell’Unione Europea.',
           'Per il controllo automatico dei contenuti usiamo il servizio di moderazione di OpenAI (openai.com), come responsabile del trattamento: riceve foto, fotogrammi dei video, didascalie e foto profilo solo per analizzarli e restituirci l’esito. Secondo le sue condizioni per i servizi API, OpenAI non li usa per addestrare i propri modelli e li conserva solo per un periodo limitato, per sicurezza e prevenzione degli abusi.',
@@ -163,6 +165,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
           'I post già visti, usati per non riproporteli in Esplora, dopo 30 giorni; i punteggi dei gusti non aggiornati da 120 giorni vengono cancellati.',
           'Le segnalazioni e le decisioni di moderazione si conservano fino a 12 mesi dalla decisione, per gestire ricorsi e abusi ripetuti, poi si cancellano. Se l’account segnalato o quello che ha segnalato viene eliminato, si cancellano subito le copie dei contenuti e le note salvate con la segnalazione.',
           'Le notifiche sul telefono già inviate si cancellano dopo 7 giorni; le notifiche nell’app dopo 90 giorni.',
+          'Se entri con Google o Facebook e non completi il profilo, i dati ricevuti si cancellano subito se tocchi “Annulla ed esci”, altrimenti entro 7 giorni.',
         ],
       },
       {
@@ -232,6 +235,7 @@ export const DOCS: Record<DocSlug, LegalDoc> = {
         heading: 'Cosa viene eliminato',
         body: [
           'Profilo, foto e video pubblicati, didascalie, commenti, cerchi, salvati, follow, blocchi e partecipazioni alla gara. Le tue Copertine spariscono anche dall’Archivio.',
+          'Se entravi con Google o Facebook vengono cancellati anche l’email, il nome e l’identificativo ricevuti da loro. Puoi togliere l’accesso a Virale anche dalle impostazioni del tuo account Google (Sicurezza → Connessioni a terze parti) o Facebook (Impostazioni → App e siti web).',
           'Le copie di sicurezza vengono sovrascritte entro 30 giorni. Le segnalazioni che ti riguardano possono essere conservate fino a 12 mesi per prevenire abusi.',
         ],
       },

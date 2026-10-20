@@ -7,7 +7,10 @@ recapitarle. La verifica automatica dell'età (Didit, facoltativa) fa un **confr
 selfie e documento, solo con il consenso esplicito dell'utente. Prima della pubblicazione foto, fotogrammi dei video,
 didascalie e foto profilo passano dal controllo automatico di OpenAI (Moderation API, chiamata solo dal server): è
 un fornitore che tratta i dati per nostro conto, non una "condivisione", e non cambia le risposte qui sotto
-(i dati sono gli stessi: foto, video, didascalie). Se aggiungi servizi (es. Sentry, analytics)
+(i dati sono gli stessi: foto, video, didascalie). L'accesso con **Google o Facebook** passa dalla pagina del
+provider nel browser (OAuth gestito da Supabase, nessun SDK di Google o Meta nell'app): riceviamo nome, email,
+immagine del profilo (non usata) e un identificativo, usati solo per l'accesso; l'email non è visibile agli altri
+utenti e non pubblichiamo nulla sui social. Se aggiungi servizi (es. Sentry, analytics)
 **aggiorna queste risposte e l'informativa**.
 
 ---
@@ -27,7 +30,7 @@ un fornitore che tratta i dati per nostro conto, non una "condivisione", e non c
 | Identificatori → ID utente | Sì | Sì | No | Funzionalità dell'app |
 | Identificatori → ID dispositivo (token per le notifiche push, solo se l'utente le attiva) | Sì | Sì | No | Funzionalità dell'app |
 | Utilizzo → Interazioni con il prodotto (visioni, mi piace, salvataggi, condivisioni) | Sì | Sì | No | Funzionalità dell'app (la gara si basa su queste) |
-| Contatti → Indirizzo email | Solo se l'utente ci scrive | Sì | No | Supporto |
+| Contatti → Indirizzo email (ricevuto da Google o Facebook con l'accesso; mai mostrato agli altri utenti) | Sì | Sì | No | Gestione account (accesso); Supporto se l'utente ci scrive |
 
 Nota: le foto del documento e del selfie vengono cancellate appena presa la decisione (anche da Didit). Nelle note per
 la revisione (`revisione.md`) spiega che la verifica serve all'età minima di legge e che, con la verifica automatica,
@@ -53,13 +56,17 @@ ricerca, diagnostica, altri dati sensibili, identificatori pubblicitari).
 | Informazioni personali → Nome | Sì | No | Obbligatorio (nome, cognome, nome utente) | Funzionalità app, Gestione account |
 | Informazioni personali → Altre informazioni (data di nascita) | Sì | No | Obbligatorio | Funzionalità app (età minima), Sicurezza |
 | Informazioni personali → Altre informazioni (documento d'identità e selfie, solo per la verifica dell'età, cancellati dopo la decisione; con la verifica automatica Didit confronta il volto del selfie con la foto del documento, un trattamento biometrico fatto solo con il consenso esplicito) | Sì | No | Obbligatorio per pubblicare | Prevenzione frodi, sicurezza e conformità |
-| Informazioni personali → ID utente | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
+| Informazioni personali → ID utente (anche l'identificativo dell'account Google o Facebook usato per entrare) | Sì | No | Obbligatorio | Funzionalità app, Gestione account |
+| Informazioni personali → Indirizzo email (ricevuto da Google o Facebook con l'accesso; mai mostrato agli altri utenti) | Sì | No | Obbligatorio per i nuovi account | Gestione account |
 | ID dispositivo o altri ID → ID dispositivo (token per le notifiche push) | Sì | No | Facoltativo (solo con le notifiche attive) | Funzionalità app (notifiche); non per pubblicità né tracciamento |
 | Foto e video → Foto (post e foto profilo) | Sì | No | Facoltativo | Funzionalità app, Sicurezza (controllo automatico prima della pubblicazione) |
 | Foto e video → Video | Sì | No | Facoltativo | Funzionalità app, Sicurezza (controllo automatico prima della pubblicazione) |
 | Attività nelle app → Interazioni con l'app | Sì | No | Obbligatorio | Funzionalità app, Prevenzione frodi |
 | Attività nelle app → Altri contenuti generati dagli utenti (commenti, didascalie, bio) | Sì | No | Facoltativo | Funzionalità app |
 | Messaggi → Email | Solo se l'utente scrive al supporto | No | Facoltativo | Supporto |
+
+Nota: l'accesso con Google o Facebook non è una "condivisione" con Google o Meta (sono loro a comunicarci i dati,
+su richiesta dell'utente) e non cambia la risposta "Tracciamento: No".
 
 I dati vengono trattati in modo effimero? **No** (restano finché l'utente non li elimina).
 

@@ -6,37 +6,22 @@ import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, w
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Field } from '../src/components/Field';
+import { FieldError, formStyles } from '../src/components/FormBits';
 import { Icon, type IconName } from '../src/components/Icon';
 import { Masthead } from '../src/components/Masthead';
 import { Press } from '../src/components/Press';
 import { RecoveryCodeCard } from '../src/components/RecoveryCode';
+import { SocialButton } from '../src/components/SocialButton';
 import { useToast } from '../src/components/Toast';
 import { Txt } from '../src/components/Txt';
 import { DEMO_MEDIA } from '../src/data/demoMedia';
-import { MIN_AGE, ownerEmail } from '../src/legal/docs';
+import { ownerEmail } from '../src/legal/docs';
 import { color, font, radius, space } from '../src/design/tokens';
-import {
-  createRecoveryCode,
-  formatRecoveryCode,
-  getSettings,
-  isDemo,
-  login,
-  PASSWORD_MIN,
-  recoverPassword,
-  register,
-  USERNAME_RESERVED,
-  USERNAME_RULES,
-  usernameAvailable,
-  usernameFormatOk,
-  usernameReserved,
-  validateRegistration,
-  type RegisterField,
-  type RegistrationProblem,
-} from '../src/services/api';
-import type { Me, RegisterInput } from '../src/types';
+import { createRecoveryCode, demoSocialAccounts, demoSocialSignIn, formatRecoveryCode, isDemo, login, PASSWORD_MIN, recoverPassword } from '../src/services/api';
+import { PROVIDER_NAME, signInWithSocial, takeWebAuthError } from '../src/services/oauth';
+import type { Me, SocialProvider } from '../src/types';
 import { useSession } from '../src/state/session';
 import { friendlyError } from '../src/services/errors';
-import { useNav } from '../src/state/nav';
 
 const COLUMNS = [
   ['cinqueterre', 'gatto-neve', 'selfie', 'lava', 'sposi'],
@@ -51,21 +36,29 @@ const POINTS: { icon: IconName; text: string }[] = [
   { icon: 'copertina', text: 'Ogni giorno un solo post diventa la copertina che vedono tutti.' },
 ];
 
-type Step = 'intro' | 'registrati' | 'accedi' | 'recupero' | 'codice';
-/** Account appena creato (o password appena cambiata): si entra dopo aver visto il codice di recupero. */
+type Step = 'intro' | 'accedi' | 'recupero' | 'codice' | 'demo';
+/** Password appena cambiata con il codice: si entra dopo aver visto il codice di recupero nuovo. */
 type Pending = { me: Me; code: string; lead?: string };
 
 export default function Welcome() {
   const insets = useSafeAreaInsets();
-  const { setMe } = useSession();
+  const { setMe, refreshAuth } = useSession();
   const toast = useToast();
   const [step, setStep] = useState<Step>('intro');
   const [pending, setPending] = useState<Pending | null>(null);
+  const [busy, setBusy] = useState<SocialProvider | null>(null);
+  const [socialError, setSocialError] = useState<string | null>(null);
+  const [demoProvider, setDemoProvider] = useState<SocialProvider>('google');
   const scroll = useRef<ScrollView>(null);
-  const formY = useRef(0);
+
+  // Sul web, di ritorno da Google/Facebook con un errore: lo si mostra sotto i pulsanti.
+  useEffect(() => {
+    const e = takeWebAuthError();
+    if (e) setSocialError(e);
+  }, []);
 
   // Su Android "indietro" dai moduli torna alla presentazione invece di chiudere l'app. Con il codice di
-  // recupero sullo schermo l'account esiste già: "indietro" non riporta al modulo.
+  // recupero sullo schermo la password è già cambiata: "indietro" non riporta al modulo.
   useEffect(() => {
     if (step === 'intro') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -80,7 +73,7 @@ export default function Welcome() {
     scroll.current?.scrollTo({ y: 0, animated: false });
   }, []);
 
-  // Dopo la registrazione (o il recupero della password) prima si mostra il codice di recupero, poi si entra.
+  // Dopo il recupero della password prima si mostra il codice di recupero nuovo, poi si entra.
   const enter = useCallback(
     async (me: Me, lead?: string) => {
       try {
@@ -95,8 +88,43 @@ export default function Welcome() {
     [go, setMe, toast],
   );
 
-  /** Porta in vista un punto del modulo (y misurata dentro il modulo). */
-  const scrollTo = useCallback((y: number) => scroll.current?.scrollTo({ y: Math.max(0, formY.current + y - space[6]), animated: true }), []);
+  /**
+   * Continua con Google / Facebook. Al primo accesso si passa a "Completa il profilo", altrimenti si entra
+   * (lo decide il Gate in app/_layout.tsx dallo stato della sessione). In demo l'accesso è simulato.
+   */
+  const social = async (provider: SocialProvider) => {
+    if (busy) return;
+    setSocialError(null);
+    if (isDemo) {
+      setDemoProvider(provider);
+      go('demo');
+      return;
+    }
+    try {
+      setBusy(provider);
+      const res = await signInWithSocial(provider);
+      // Sul web la pagina sta andando al provider: il pulsante resta in attesa.
+      if (res === 'redirect') return;
+      if (res === 'ok') {
+        const st = await refreshAuth();
+        if (!st.me && !st.pending) setSocialError('Accesso non riuscito. Riprova tra poco.');
+      }
+      setBusy(null);
+    } catch (e) {
+      setSocialError(friendlyError(e));
+      setBusy(null);
+    }
+  };
+
+  const demoPick = async (username: string | null) => {
+    try {
+      const me = await demoSocialSignIn(demoProvider, username);
+      if (me) setMe(me);
+      else await refreshAuth();
+    } catch (e) {
+      toast(friendlyError(e), 'error');
+    }
+  };
 
   return (
     <View style={styles.root}>
@@ -118,16 +146,13 @@ export default function Welcome() {
               <View style={{ flex: 1, minHeight: space[6] }} />
             </>
           ) : null}
-          <View
-            onLayout={(e) => {
-              formY.current = e.nativeEvent.layout.y;
-            }}>
+          <View>
             {step === 'intro' ? (
-              <Intro onRegister={() => go('registrati')} onLogin={() => go('accedi')} />
-            ) : step === 'registrati' ? (
-              <RegisterForm onSwitch={() => go('accedi')} onBack={() => go('intro')} onDone={(me) => enter(me)} scrollTo={scrollTo} />
+              <Intro busy={busy} error={socialError} onSocial={(p) => void social(p)} onLogin={() => go('accedi')} />
+            ) : step === 'demo' ? (
+              <DemoChooser provider={demoProvider} onBack={() => go('intro')} onPick={(u) => void demoPick(u)} />
             ) : step === 'accedi' ? (
-              <LoginForm onSwitch={() => go('registrati')} onBack={() => go('intro')} onForgot={() => go('recupero')} />
+              <LoginForm onBack={() => go('intro')} onForgot={() => go('recupero')} />
             ) : step === 'recupero' ? (
               <RecoverForm onBack={() => go('accedi')} onDone={(me) => enter(me, 'Password cambiata. Il codice usato non vale più: eccone uno nuovo.')} />
             ) : pending ? (
@@ -140,7 +165,7 @@ export default function Welcome() {
   );
 }
 
-function Intro({ onRegister, onLogin }: { onRegister: () => void; onLogin: () => void }) {
+function Intro({ busy, error, onSocial, onLogin }: { busy: SocialProvider | null; error: string | null; onSocial: (p: SocialProvider) => void; onLogin: () => void }) {
   return (
     <View style={{ gap: space[6] }}>
       <View style={{ gap: space[4] }}>
@@ -154,15 +179,54 @@ function Intro({ onRegister, onLogin }: { onRegister: () => void; onLogin: () =>
         ))}
       </View>
       <View style={{ gap: space[3] }}>
-        <Press style={styles.cta} onPress={onRegister} hapticOnPress="light" accessibilityRole="button">
-          <Txt variant="label" tone={color.canvas}>
-            Crea un account
+        <SocialButton provider="google" onPress={() => onSocial('google')} busy={busy === 'google'} disabled={busy !== null} />
+        <SocialButton provider="facebook" onPress={() => onSocial('facebook')} busy={busy === 'facebook'} disabled={busy !== null} />
+        <FieldError text={error} />
+        <Txt variant="meta" tone={color.paperFaint} style={{ textAlign: 'center' }}>
+          {isDemo
+            ? 'Demo: l’accesso è simulato e i dati restano su questo dispositivo.'
+            : 'Usiamo il tuo account solo per farti entrare: non pubblichiamo nulla a tuo nome e la tua email non è visibile agli altri utenti.'}
+        </Txt>
+        <Press onPress={onLogin} style={styles.switch} accessibilityRole="button">
+          <Txt variant="small" tone={color.paperDim}>
+            Hai un account con password? <Txt variant="small" style={formStyles.link}>Accedi</Txt>
           </Txt>
         </Press>
-        <Press style={styles.ghost} onPress={onLogin} accessibilityRole="button">
-          <Txt variant="label">Ho già un account</Txt>
-        </Press>
       </View>
+    </View>
+  );
+}
+
+/** Demo: la scelta dell'account simulato (come quella di Google): uno già creato qui, o uno nuovo. */
+function DemoChooser({ provider, onBack, onPick }: { provider: SocialProvider; onBack: () => void; onPick: (username: string | null) => void }) {
+  const [accounts, setAccounts] = useState<Me[] | null>(null);
+  useEffect(() => {
+    demoSocialAccounts(provider)
+      .then(setAccounts)
+      .catch(() => setAccounts([]));
+  }, [provider]);
+  return (
+    <View style={{ gap: space[3] }}>
+      <FormHead title={`Continua con ${PROVIDER_NAME[provider]}`} onBack={onBack} />
+      <Txt variant="small" tone={color.paperDim}>
+        {`Nella demo l’accesso con ${PROVIDER_NAME[provider]} è simulato: nessun dato lascia questo dispositivo. Scegli l’account con cui entrare.`}
+      </Txt>
+      {accounts === null ? <ActivityIndicator color={color.giallo} /> : null}
+      {(accounts ?? []).map((a) => (
+        <Press key={a.id} style={styles.account} onPress={() => onPick(a.username)} accessibilityRole="button" accessibilityLabel={`Entra come @${a.username}`}>
+          <Txt variant="label" style={{ flex: 1 }} numberOfLines={1}>
+            {a.displayName}
+          </Txt>
+          <Txt variant="small" tone={color.paperFaint}>
+            @{a.username}
+          </Txt>
+        </Press>
+      ))}
+      <Press style={styles.cta} onPress={() => onPick(null)} accessibilityRole="button">
+        <Txt variant="label" tone={color.canvas}>
+          Nuovo account
+        </Txt>
+      </Press>
     </View>
   );
 }
@@ -230,378 +294,7 @@ function PasswordField({
   );
 }
 
-/** L'errore di un campo, scritto subito sotto (e letto dallo screen reader). */
-function FieldError({ text }: { text: string | null | undefined }) {
-  if (!text) return null;
-  return (
-    <Txt variant="small" tone={color.matita} accessibilityLiveRegion="polite">
-      {text}
-    </Txt>
-  );
-}
-
-function Docs() {
-  const nav = useNav();
-  return (
-    <View style={styles.docs}>
-      {(
-        [
-          ['termini', 'Termini'],
-          ['linee-guida', 'Linee guida'],
-          ['privacy', 'Privacy'],
-        ] as const
-      ).map(([slug, label]) => (
-        <Press key={slug} style={styles.doc} onPress={() => nav.push(`/legale/${slug}`)} accessibilityRole="link" accessibilityLabel={`Leggi ${label}`}>
-          <Txt variant="small" style={styles.link}>
-            {label}
-          </Txt>
-        </Press>
-      ))}
-    </View>
-  );
-}
-
-/** I blocchi del modulo, per far scorrere fino a quello con l'errore. */
-type Block = 'name' | 'birth' | 'username' | 'password' | 'again' | 'terms';
-const BLOCK: Record<RegisterField, Block> = { first: 'name', last: 'name', birth: 'birth', username: 'username', password: 'password', again: 'again', terms: 'terms' };
-type NameCheck = 'idle' | 'checking' | 'free' | 'taken' | 'reserved';
-
-function RegisterForm({
-  onSwitch,
-  onBack,
-  onDone,
-  scrollTo,
-}: {
-  onSwitch: () => void;
-  onBack: () => void;
-  onDone: (me: Me) => Promise<void>;
-  scrollTo: (y: number) => void;
-}) {
-  const [first, setFirst] = useState('');
-  const [last, setLast] = useState('');
-  const [day, setDay] = useState('');
-  const [month, setMonth] = useState('');
-  const [year, setYear] = useState('');
-  const [username, setUsername] = useState('');
-  const [nameCheck, setNameCheck] = useState<NameCheck>('idle');
-  const [password, setPassword] = useState('');
-  const [again, setAgain] = useState('');
-  const [accepted, setAccepted] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<RegistrationProblem | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [graceDays, setGraceDays] = useState(7);
-  const inFlight = useRef(false);
-  const firstRef = useRef<TextInput>(null);
-  const lastRef = useRef<TextInput>(null);
-  const dayRef = useRef<TextInput>(null);
-  const monthRef = useRef<TextInput>(null);
-  const yearRef = useRef<TextInput>(null);
-  const userRef = useRef<TextInput>(null);
-  const passRef = useRef<TextInput>(null);
-  const againRef = useRef<TextInput>(null);
-  const ys = useRef<Partial<Record<Block, number>>>({});
-  useEffect(() => {
-    getSettings()
-      .then((st) => setGraceDays(st.idGraceDays))
-      .catch(() => undefined);
-  }, []);
-
-  // Nome utente: la disponibilità si controlla mentre si scrive (dopo mezzo secondo di pausa).
-  useEffect(() => {
-    if (username.length < 3 || !usernameFormatOk(username)) {
-      setNameCheck('idle');
-      return;
-    }
-    if (usernameReserved(username)) {
-      setNameCheck('reserved');
-      return;
-    }
-    let alive = true;
-    setNameCheck('checking');
-    const id = setTimeout(() => {
-      usernameAvailable(username)
-        .then((ok) => alive && setNameCheck(ok ? 'free' : 'taken'))
-        .catch(() => alive && setNameCheck('idle'));
-    }, 500);
-    return () => {
-      alive = false;
-      clearTimeout(id);
-    };
-  }, [username]);
-
-  const birthDate = `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-  const input: RegisterInput = { username, firstName: first, lastName: last, birthDate, password, acceptedTerms: accepted };
-  const takenText = `@${username} è già preso: prova ad aggiungere un numero.`;
-
-  /** Si modifica il campo con l'errore: l'errore sparisce. */
-  const edited = (field: RegisterField) => {
-    setError(null);
-    setProblem((p) => (p?.field === field ? null : p));
-  };
-
-  const show = (p: RegistrationProblem) => {
-    setProblem(p);
-    scrollTo(ys.current[BLOCK[p.field]] ?? 0);
-    const refs: Partial<Record<RegisterField, typeof firstRef>> = { first: firstRef, last: lastRef, username: userRef, password: passRef, again: againRef };
-    if (p.field === 'birth') (!day ? dayRef : !month ? monthRef : !year ? yearRef : dayRef).current?.focus();
-    else refs[p.field]?.current?.focus();
-  };
-
-  const submit = async () => {
-    if (inFlight.current) return;
-    const p =
-      validateRegistration(input, again) ??
-      (nameCheck === 'taken' ? ({ field: 'username', message: takenText } as const) : null);
-    if (p) return show(p);
-    try {
-      inFlight.current = true;
-      setBusy(true);
-      setProblem(null);
-      setError(null);
-      const me = await register(input);
-      await onDone(me);
-    } catch (e) {
-      const message = friendlyError(e);
-      if (/nome utente|un account con questo nome/i.test(message)) show({ field: 'username', message });
-      else setError(message);
-      setBusy(false);
-    } finally {
-      inFlight.current = false;
-    }
-  };
-
-  const at = (block: Block) => (e: { nativeEvent: { layout: { y: number } } }) => {
-    ys.current[block] = e.nativeEvent.layout.y;
-  };
-  const bad = (field: RegisterField) => problem?.field === field;
-  const userLine =
-    problem?.field === 'username'
-      ? null
-      : nameCheck === 'taken'
-        ? takenText
-        : nameCheck === 'reserved'
-          ? USERNAME_RESERVED
-          : null;
-
-  return (
-    <View style={{ gap: space[3] }}>
-      <FormHead title="Crea un account" onBack={onBack} />
-      <View style={styles.block} onLayout={at('name')}>
-        <View style={styles.row}>
-          <Field
-            ref={firstRef}
-            invalid={bad('first')}
-            containerStyle={{ flex: 1 }}
-            value={first}
-            onChangeText={(v) => {
-              setFirst(v);
-              edited('first');
-            }}
-            placeholder="Nome"
-            autoComplete="given-name"
-            textContentType="givenName"
-            maxLength={60}
-            accessibilityLabel="Nome"
-            returnKeyType="next"
-            submitBehavior="submit"
-            onSubmitEditing={() => lastRef.current?.focus()}
-          />
-          <Field
-            ref={lastRef}
-            invalid={bad('last')}
-            containerStyle={{ flex: 1 }}
-            value={last}
-            onChangeText={(v) => {
-              setLast(v);
-              edited('last');
-            }}
-            placeholder="Cognome"
-            autoComplete="family-name"
-            textContentType="familyName"
-            maxLength={60}
-            accessibilityLabel="Cognome"
-            returnKeyType="next"
-            submitBehavior="submit"
-            onSubmitEditing={() => dayRef.current?.focus()}
-          />
-        </View>
-        <FieldError text={bad('first') || bad('last') ? problem?.message : null} />
-        <Txt variant="meta" tone={color.paperFaint}>
-          Gli altri vedono solo il nome e l’iniziale del cognome.
-        </Txt>
-      </View>
-      <View style={styles.block} onLayout={at('birth')}>
-        <Txt variant="label" style={{ marginTop: space[1] }}>
-          Data di nascita
-        </Txt>
-        <View style={styles.row}>
-          <Field
-            ref={dayRef}
-            invalid={bad('birth')}
-            containerStyle={{ flex: 1 }}
-            value={day}
-            onChangeText={(v) => {
-              const d = v.replace(/\D/g, '').slice(0, 2);
-              setDay(d);
-              edited('birth');
-              if (d.length === 2) monthRef.current?.focus();
-            }}
-            placeholder="GG"
-            keyboardType="number-pad"
-            maxLength={2}
-            accessibilityLabel="Giorno di nascita"
-          />
-          <Field
-            ref={monthRef}
-            invalid={bad('birth')}
-            containerStyle={{ flex: 1 }}
-            value={month}
-            onChangeText={(v) => {
-              const m = v.replace(/\D/g, '').slice(0, 2);
-              setMonth(m);
-              edited('birth');
-              if (m.length === 2) yearRef.current?.focus();
-            }}
-            placeholder="MM"
-            keyboardType="number-pad"
-            maxLength={2}
-            accessibilityLabel="Mese di nascita"
-          />
-          <Field
-            ref={yearRef}
-            invalid={bad('birth')}
-            containerStyle={{ flex: 1.6 }}
-            value={year}
-            onChangeText={(v) => {
-              const y = v.replace(/\D/g, '').slice(0, 4);
-              setYear(y);
-              edited('birth');
-              if (y.length === 4) userRef.current?.focus();
-            }}
-            placeholder="AAAA"
-            keyboardType="number-pad"
-            maxLength={4}
-            accessibilityLabel="Anno di nascita"
-          />
-        </View>
-        <FieldError text={bad('birth') ? problem?.message : null} />
-      </View>
-      <View style={styles.block} onLayout={at('username')}>
-        <Field
-          ref={userRef}
-          invalid={bad('username') || nameCheck === 'taken' || nameCheck === 'reserved'}
-          returnKeyType="next"
-          submitBehavior="submit"
-          onSubmitEditing={() => passRef.current?.focus()}
-          prefix={
-            <Txt variant="body" tone={color.paperFaint}>
-              @
-            </Txt>
-          }
-          value={username}
-          onChangeText={(v) => {
-            setUsername(v.toLowerCase().replace(/[^a-z0-9_.]/g, ''));
-            edited('username');
-          }}
-          onBlur={() => {
-            if (username && !usernameFormatOk(username) && !problem) setProblem({ field: 'username', message: USERNAME_RULES });
-          }}
-          placeholder="nomeutente"
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="username-new"
-          textContentType="username"
-          maxLength={24}
-          accessibilityLabel="Nome utente"
-        />
-        <FieldError text={bad('username') ? problem?.message : userLine} />
-        {nameCheck === 'free' && !bad('username') ? (
-          <Txt variant="meta" tone={color.paperDim}>
-            {`@${username} è libero.`}
-          </Txt>
-        ) : null}
-      </View>
-      <View style={styles.block} onLayout={at('password')}>
-        <PasswordField
-          inputRef={passRef}
-          invalid={bad('password')}
-          isNew
-          value={password}
-          onChange={(v) => {
-            setPassword(v);
-            edited('password');
-          }}
-          placeholder="Password"
-          label="Password"
-        />
-        <FieldError text={bad('password') ? problem?.message : null} />
-        <Txt variant="meta" tone={color.paperFaint}>
-          Almeno {PASSWORD_MIN} caratteri, con lettere e numeri.
-        </Txt>
-      </View>
-      <View style={styles.block} onLayout={at('again')}>
-        <PasswordField
-          inputRef={againRef}
-          invalid={bad('again')}
-          isNew
-          value={again}
-          onChange={(v) => {
-            setAgain(v);
-            edited('again');
-          }}
-          placeholder="Ripeti la password"
-          label="Ripeti la password"
-          onSubmit={() => void submit()}
-        />
-        <FieldError text={bad('again') ? problem?.message : null} />
-      </View>
-      <Txt variant="meta" tone={color.paperFaint}>
-        Per pubblicare e votare conferma l’età entro {graceDays} {graceDays === 1 ? 'giorno' : 'giorni'}: bastano 2 minuti, te lo ricordiamo noi.
-      </Txt>
-      <View style={styles.block} onLayout={at('terms')}>
-        <Press
-          style={styles.terms}
-          scaleTo={1}
-          onPress={() => {
-            setAccepted((a) => !a);
-            edited('terms');
-          }}
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: accepted }}>
-          <View style={[styles.box, accepted && styles.boxOn, bad('terms') && styles.boxBad]}>{accepted ? <Icon name="check" size={16} color={color.canvas} strokeWidth={2.6} /> : null}</View>
-          <Txt variant="small" tone={color.paperDim} style={{ flex: 1 }}>
-            Ho almeno {MIN_AGE} anni e accetto Termini e Linee guida. Ho letto l’Informativa privacy.
-          </Txt>
-        </Press>
-        <FieldError text={bad('terms') ? problem?.message : null} />
-        <Docs />
-      </View>
-      <FieldError text={error} />
-      <Press style={[styles.cta, busy && styles.off]} onPress={() => void submit()} disabled={busy} accessibilityRole="button">
-        {busy ? (
-          <ActivityIndicator color={color.canvas} />
-        ) : (
-          <Txt variant="label" tone={color.canvas}>
-            Registrati
-          </Txt>
-        )}
-      </Press>
-      <Press onPress={onSwitch} style={styles.switch} accessibilityRole="button">
-        <Txt variant="small" tone={color.paperDim}>
-          Hai già un account? <Txt variant="small" style={styles.link}>Accedi</Txt>
-        </Txt>
-      </Press>
-      {isDemo ? (
-        <Txt variant="meta" tone={color.paperFaint} style={{ textAlign: 'center' }}>
-          Demo: i dati e il pubblico simulato restano su questo dispositivo.
-        </Txt>
-      ) : null}
-    </View>
-  );
-}
-
-function LoginForm({ onSwitch, onBack, onForgot }: { onSwitch: () => void; onBack: () => void; onForgot: () => void }) {
+function LoginForm({ onBack, onForgot }: { onBack: () => void; onForgot: () => void }) {
   const { setMe } = useSession();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -628,7 +321,10 @@ function LoginForm({ onSwitch, onBack, onForgot }: { onSwitch: () => void; onBac
 
   return (
     <View style={{ gap: space[3] }}>
-      <FormHead title="Accedi" onBack={onBack} />
+      <FormHead title="Accedi con la password" onBack={onBack} />
+      <Txt variant="small" tone={color.paperDim}>
+        Per gli account creati con nome utente e password.
+      </Txt>
       <Field
         prefix={
           <Txt variant="body" tone={color.paperFaint}>
@@ -663,13 +359,8 @@ function LoginForm({ onSwitch, onBack, onForgot }: { onSwitch: () => void; onBac
         )}
       </Press>
       <Press onPress={onForgot} style={styles.switch} accessibilityRole="button">
-        <Txt variant="small" style={styles.link}>
+        <Txt variant="small" style={formStyles.link}>
           Password dimenticata?
-        </Txt>
-      </Press>
-      <Press onPress={onSwitch} style={styles.switch} accessibilityRole="button">
-        <Txt variant="small" tone={color.paperDim}>
-          Non hai un account? <Txt variant="small" style={styles.link}>Registrati</Txt>
         </Txt>
       </Press>
     </View>
@@ -816,19 +507,11 @@ const styles = StyleSheet.create({
   ghost: { borderWidth: 1.5, borderColor: color.paper, borderRadius: radius.control, paddingVertical: 15, alignItems: 'center', minHeight: 52, justifyContent: 'center' },
   formHead: { flexDirection: 'row', alignItems: 'center', gap: space[3], marginBottom: space[1] },
   back: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.raised, alignItems: 'center', justifyContent: 'center' },
-  row: { flexDirection: 'row', gap: space[2] },
   eye: { position: 'absolute', right: space[4], top: 0, bottom: 0, justifyContent: 'center' },
   switch: { alignSelf: 'center', paddingVertical: space[2] },
   claim: { fontFamily: font.displayBook, fontSize: 22, lineHeight: 29, color: color.paper, textAlign: 'center', maxWidth: 320 },
   point: { flexDirection: 'row', gap: space[3], alignItems: 'flex-start' },
   cta: { backgroundColor: color.giallo, borderRadius: radius.control, paddingVertical: 16, alignItems: 'center', minHeight: 52, justifyContent: 'center' },
   off: { opacity: 0.45 },
-  terms: { flexDirection: 'row', gap: space[3], alignItems: 'flex-start', paddingVertical: space[1] },
-  box: { width: 24, height: 24, borderRadius: 7, borderWidth: 1.5, borderColor: color.paperDim, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
-  boxOn: { backgroundColor: color.giallo, borderColor: color.giallo },
-  boxBad: { borderColor: color.matita },
-  block: { gap: space[2] },
-  link: { color: color.paper, textDecorationLine: 'underline', fontFamily: font.uiMedium },
-  docs: { flexDirection: 'row', gap: space[2], marginTop: -space[2] },
-  doc: { minHeight: 44, justifyContent: 'center', paddingHorizontal: space[2] },
+  account: { flexDirection: 'row', alignItems: 'center', gap: space[3], backgroundColor: color.raised, borderRadius: radius.control, paddingHorizontal: space[4], minHeight: 52 },
 });
